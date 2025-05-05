@@ -1,0 +1,9 @@
+/tmp
+
+.env.example
+
+.env
+
+/logs
+
+.gitignore
