@@ -1,0 +1,14 @@
+name: Ping Render Health Route
+
+on:
+  schedule:
+    - cron: "*/14 * * * *" # Every 14 minutes
+  workflow_dispatch: # Allow manual trigger if needed
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send HEAD request to /health
+        run: |
+          curl -I -s -o /dev/null -w "%{http_code}\n" https://single-identity-service.onrender.com/health

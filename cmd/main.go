@@ -43,6 +43,10 @@ func main() {
 		})
 	})
 
+	r.HEAD("/health", func(c *gin.Context) {
+		c.Status(200)
+	})
+
 	logger.InfoLogger.Info("Server is started")
 
 	log.Printf("Starting server on port %s...", port)
