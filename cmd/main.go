@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
+	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/routes"
 
@@ -28,6 +30,13 @@ func main() {
 	if port == "" {
 		port = "8081"
 	}
+
+	// Step 1: Load bad words from a text file
+	badwords.LoadBadWords("badwords/en.txt")
+
+	logger.InfoLogger.Info("Bad words loaded successfully!")
+
+	fmt.Println("Bad words loaded successfully!")
 
 	r := gin.Default()
 

@@ -1,15 +1,14 @@
 package controllers
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
@@ -40,92 +39,90 @@ func (uc *UserController) Register(c *gin.Context) {
 
 	logger.InfoLogger.Info("Register handler called")
 
+	// 1. Define and bind the incoming JSON request body
 	var req struct {
 		Username    string                 `json:"username" binding:"required"`
 		FirstName   string                 `json:"first_name" binding:"required"`
 		LastName    string                 `json:"last_name" binding:"required"`
 		Email       string                 `json:"email" binding:"required,email"`
 		Password    string                 `json:"password" binding:"required,min=8"`
-		DateOfBirth custom_date.CustomDate `json:"date_of_birth" binding:"required"` // Expecting format "2000-05-01"
+		DateOfBirth custom_date.CustomDate `json:"date_of_birth" binding:"required"` // Expecting format "YYYY-MM-DD"
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Error("Error", err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		// Log the specific binding error
+		logger.ErrorLogger.Error(fmt.Errorf("error binding JSON: %w", err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}) // Return specific binding error to client
 		return
 	}
 
-	// Check if username contains bad words by calling the word filter service
-	requestBody, err := json.Marshal(map[string]string{
-		"text": req.Username,
-	})
+	// --- 2. Check if username contains bad words using the local badwords package ---
 
-	if err != nil {
-		logger.ErrorLogger.Error(err, "Failed to prepare validation request")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare validation request"})
-		return
-	}
+	// Call the local badwords package function
+	// This assumes badwords.LoadBadWords has been called once at application startup
+	logger.InfoLogger.Info(fmt.Sprintf("Checking username '%s' for bad words locally", req.Username))
+	containsBadWords := badwords.CheckText(req.Username).ContainsBadWords
 
-	wordFilterService := os.Getenv("WORD_FILTER_SERVICE_URL")
-	if wordFilterService == "" {
-		logger.ErrorLogger.Error("WORD_FILTER_SERVICE_URL environment variable is not set")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Word filter service configuration is missing"})
-		return
-	}
-
-	response, err := http.Post(
-		wordFilterService+"/check",
-		"application/json",
-		bytes.NewBuffer(requestBody),
-	)
-	logger.InfoLogger.Info("Word Filter Service Called")
-
-	if err != nil {
-		logger.ErrorLogger.Error("errors", err, "Failed to validate username")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate username"})
-		return
-	}
-	defer response.Body.Close()
-
-	var wordFilterResponse struct {
-		ContainsBadWords bool `json:"containsBadWords"`
-	}
-
-	if err := json.NewDecoder(response.Body).Decode(&wordFilterResponse); err != nil {
-		logger.ErrorLogger.Error(err, "Failed to decode validation response")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode validation response"})
-		return
-	}
-
-	if wordFilterResponse.ContainsBadWords {
+	if containsBadWords {
+		logger.InfoLogger.Info(fmt.Sprintf("Username check failed for '%s': contains inappropriate words", req.Username)) // Log the specific username being rejected
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Username contains inappropriate words"})
 		return
 	}
+	// --- End Local Badwords Check Logic ---
+
+	// --- 3. User Creation Logic ---
+	// Assuming db.DB, models.CreateUser, mail.GenerateSecureOTP, mail.SendOTP exist and work
 
 	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName, req.DateOfBirth.Time)
 	if err != nil {
-		logger.ErrorLogger.Error(err, "Failed to create user")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database: %w", err)) // Log the DB error
+
+		// Optional: Check for specific database errors (e.g., duplicate email/username)
+		// and return a more specific 409 Conflict error if applicable.
+		// Requires checking the underlying error type from your DB library (pgx, gorm, etc.)
+		// Example for pgx:
+		// if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" { // 23505 is unique_violation
+		//      logger.InfoLogger.Info(fmt.Sprintf("User creation failed for '%s': duplicate username or email", req.Username))
+		//      c.JSON(http.Conflict, gin.H{"error": "Username or email already exists"})
+		//      return
+		// }
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"}) // Generic error for unexpected DB issues
 		return
 	}
 
-	otp := mail.GenerateSecureOTP()
-	mail.SendOTP(req.Email, req.FirstName, req.LastName, otp)
+	// 4. Send OTP (Assuming this is part of your registration flow)
+	otp := mail.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
+	// Send email asynchronously using a goroutine to avoid blocking the response
+	go func() {
+		sendErr := mail.SendOTP(req.Email, req.FirstName, req.LastName, otp) // Assuming SendOTP sends the email and logs internal errors
+		if sendErr != nil {
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s: %w", req.Email, sendErr))
+			// Decide if a mail sending failure should cause registration to fail or just log.
+			// If critical, you might need transaction rollback or a retry mechanism.
+		} else {
+			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s", req.Email))
+		}
+	}()
+
+	// 5. Return Success Response
+	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v", user.ID)) // Log success with the new user's ID
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "User registered successfully",
 		"user": gin.H{
-			"id":        user.ID,
-			"username":  user.Username,
-			"email":     user.Email,
-			"otp":       otp,
+			"id":       user.ID,
+			"username": user.Username,
+			"email":    user.Email,
+			// WARNING: Do NOT return the generated OTP in a production API response!
+			// This is a major security vulnerability. REMOVE this line in production.
+			// "otp":       otp, // <-- REMOVE THIS IN PRODUCTION!
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
-			"DOB":       user.DateOfBirth,
+			"DOB":       user.DateOfBirth, // Ensure custom_date marshals to JSON correctly
 		},
 	})
-
-	logger.InfoLogger.Info("User registered successfully")
+	// No return needed here, JSON call ends the handler execution
 }
 
 // Login handles user login
