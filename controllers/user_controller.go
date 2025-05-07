@@ -172,7 +172,6 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
 		Username string `json:"username" binding:"required"`
-		Password string `json:"password" binding:"required,min=8"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
