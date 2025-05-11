@@ -296,7 +296,7 @@ func LoginUser(db *pgxpool.Pool, username, password string) (*User, string, stri
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
-	accessToken, err := GenerateAccessToken(user.ID, time.Minute*15)
+	accessToken, err := GenerateAccessToken(user.ID, time.Minute*1)
 	if err != nil {
 		return nil, "", "", err
 	}

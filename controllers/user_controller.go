@@ -285,7 +285,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	// Simulate refresh token API call
 	time.Sleep(1 * time.Second) // Simulating network latency
 
-	refreshToken := c.GetHeader("Refresh_token")
+	refreshToken := c.GetHeader("Refresh-Token")
 	if refreshToken == "" {
 		logger.ErrorLogger.Error("No refresh token provided in header")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No refresh token provided"})
