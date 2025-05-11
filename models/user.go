@@ -32,16 +32,16 @@ const (
 
 // User Model
 type User struct {
-	ID           uuid.UUID
-	Username     string
-	Email        string
-	PasswordHash string
-	RefreshToken *string
-	OTPHash      *string
-	FirstName    string
-	LastName     string
-	DateOfBirth  custom_date.CustomDate
-	IsVerified   bool
+	ID              uuid.UUID
+	Username        string
+	Email           string
+	PasswordHash    string
+	RefreshToken    *string
+	OTPHash         *string
+	FirstName       string
+	LastName        string
+	DateOfBirth     custom_date.CustomDate
+	IsVerifiedEmail bool
 }
 
 // GenerateUUIDv7 generates a new UUIDv7
@@ -325,13 +325,41 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 // GetUserByUsername retrieves a user by username
 func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 	var user User
-	query := `SELECT id, username, email, password_hash, refresh_token FROM users WHERE username = $1`
+	// Declare a temporary variable to scan the DATE into
+	var dobTime time.Time
+
+	// If the 'dob' column in your database is NULLABLE,
+	// you should scan into a pointer instead:
+	// var dobTimePtr *time.Time
+
+	query := `SELECT id, username, email, first_name, last_name, dob, password_hash, refresh_token FROM users WHERE username = $1`
+
+	// *** Scan the 'dob' column into the temporary time.Time variable ***
 	err := db.QueryRow(context.Background(), query, username).Scan(
-		&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.RefreshToken,
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.FirstName,
+		&user.LastName,
+		&dobTime, // *** Scan into the standard time.Time variable ***
+		// &dobTimePtr, // Use this if scanning a NULLABLE column
+		&user.PasswordHash,
+		&user.RefreshToken,
 	)
 	if err != nil {
+		logger.ErrorLogger.Errorf("failed to get user by username: %v", err) // Added specific logging
 		return nil, err
 	}
+
+	// *** Assign the scanned time.Time to the custom_date.CustomDate field ***
+	// If you scanned into dobTimePtr, handle the pointer:
+	// if dobTimePtr != nil {
+	//     user.DateOfBirth = custom_date.CustomDate{Time: *dobTimePtr}
+	// } else {
+	//     // Decide how to handle a null DOB (e.g., leave DateOfBirth as its zero value)
+	// }
+	user.DateOfBirth = custom_date.CustomDate{Time: dobTime} // *** Assign here ***
+
 	return &user, nil
 }
 
@@ -346,4 +374,19 @@ func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 		return nil, err
 	}
 	return &user, nil
+}
+
+// IsEmailVerified checks if a user's email is verified
+func IsEmailVerified(db *pgxpool.Pool, userID uuid.UUID) (bool, error) {
+	logger.InfoLogger.Info("IsEmailVerified called on models")
+
+	var isVerified bool
+	query := `SELECT is_verified_email FROM users WHERE id = $1`
+	err := db.QueryRow(context.Background(), query, userID).Scan(&isVerified)
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to check email verification status: %v", err)
+		return false, err
+	}
+
+	return isVerified, nil
 }

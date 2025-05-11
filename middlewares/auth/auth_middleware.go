@@ -77,10 +77,17 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// ✅ Check if user is verified
-		if !user.IsVerified {
-			logger.ErrorLogger.Errorf("User is not verified: %s", user.ID)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Email not verified"})
+		// Check is email verified
+		isVerified, err := models.IsEmailVerified(db.DB, user.ID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Error checking email verification: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+			c.Abort()
+			return
+		}
+		if !isVerified {
+			logger.ErrorLogger.Error("Email not verified")
+			c.JSON(http.StatusForbidden, gin.H{"error": "Email not verified"})
 			c.Abort()
 			return
 		}

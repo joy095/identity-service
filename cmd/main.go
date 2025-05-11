@@ -11,6 +11,7 @@ import (
 
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/middlewares/cors"
 	logger_middleware "github.com/joy095/identity/middlewares/logger"
 
 	"github.com/gin-gonic/gin"
@@ -39,6 +40,9 @@ func main() {
 	fmt.Println("Bad words loaded successfully!")
 
 	r := gin.Default()
+
+	// Apply CORS Middleware
+	r.Use(cors.CorsMiddleware())
 
 	// Apply Logger Middleware
 	r.Use(logger_middleware.GinLogger())

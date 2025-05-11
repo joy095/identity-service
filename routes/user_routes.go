@@ -31,6 +31,7 @@ func RegisterRoutes(router *gin.Engine) {
 	{
 		protected.POST("/logout", userController.Logout)
 
+		// Profile route
 		protected.GET("/user/:username", userController.GetUserByUsername)
 
 	}

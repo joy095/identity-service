@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +35,8 @@ func NewUserController() *UserController {
 	return &UserController{}
 }
 
+var lowercaseUsernameRegex = regexp.MustCompile("^[a-z0-9_-]{3,20}$")
+
 // Register handles user registration
 func (uc *UserController) Register(c *gin.Context) {
 
@@ -46,13 +49,21 @@ func (uc *UserController) Register(c *gin.Context) {
 		LastName    string                 `json:"last_name" binding:"required"`
 		Email       string                 `json:"email" binding:"required,email"`
 		Password    string                 `json:"password" binding:"required,min=8"`
-		DateOfBirth custom_date.CustomDate `json:"date_of_birth" binding:"required"` // Expecting format "YYYY-MM-DD"
+		DateOfBirth custom_date.CustomDate `json:"age" binding:"required"` // Expecting format "YYYY-MM-DD"
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		// Log the specific binding error
 		logger.ErrorLogger.Error(fmt.Errorf("error binding JSON: %w", err))
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()}) // Return specific binding error to client
+		return
+	}
+
+	req.Username = strings.ToLower(req.Username)
+
+	// --- Add Regex Validation Here ---
+	if !lowercaseUsernameRegex.MatchString(req.Username) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username must be 3-20 characters long, containing only lowercase letters, numbers, hyphens, or underscores."})
 		return
 	}
 
@@ -76,16 +87,6 @@ func (uc *UserController) Register(c *gin.Context) {
 	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName, req.DateOfBirth.Time)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database: %w", err)) // Log the DB error
-
-		// Optional: Check for specific database errors (e.g., duplicate email/username)
-		// and return a more specific 409 Conflict error if applicable.
-		// Requires checking the underlying error type from your DB library (pgx, gorm, etc.)
-		// Example for pgx:
-		// if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" { // 23505 is unique_violation
-		//      logger.InfoLogger.Info(fmt.Sprintf("User creation failed for '%s': duplicate username or email", req.Username))
-		//      c.JSON(http.Conflict, gin.H{"error": "Username or email already exists"})
-		//      return
-		// }
 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"}) // Generic error for unexpected DB issues
 		return
@@ -112,7 +113,7 @@ func (uc *UserController) Register(c *gin.Context) {
 		"message": "User registered successfully",
 		"user": gin.H{
 			"id":       user.ID,
-			"username": user.Username,
+			"username": req.Username,
 			"email":    user.Email,
 			// WARNING: Do NOT return the generated OTP in a production API response!
 			// This is a major security vulnerability. REMOVE this line in production.
@@ -149,9 +150,12 @@ func (uc *UserController) Login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"email":    user.Email,
+			"id":        user.ID,
+			"username":  user.Username,
+			"email":     user.Email,
+			"firstName": user.FirstName,
+			"lastName":  user.LastName,
+			"age":       user.DateOfBirth.Time.Format("2006-01-02"),
 		},
 		"tokens": gin.H{
 			"access_token":  accessToken,
@@ -423,9 +427,12 @@ func (uc *UserController) GetUserByUsername(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"email":    user.Email,
+			"id":         user.ID,
+			"username":   user.Username,
+			"email":      user.Email,
+			"age":        user.DateOfBirth,
+			"first_name": user.FirstName,
+			"last_name":  user.LastName,
 		},
 	})
 
