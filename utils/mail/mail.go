@@ -292,8 +292,8 @@ func VerifyOTP(c *gin.Context) {
 		return
 	}
 
-	// Generate access token (15 minutes)
-	accessToken, err := models.GenerateAccessToken(user.ID, 15*time.Minute)
+	// Generate access token (60 minutes)
+	accessToken, err := models.GenerateAccessToken(user.ID, 60*time.Minute)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate access token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
@@ -301,7 +301,7 @@ func VerifyOTP(c *gin.Context) {
 	}
 
 	// Generate refresh token (7 days)
-	refreshToken, err := models.GenerateRefreshToken(user.ID, 7*24*time.Hour)
+	refreshToken, err := models.GenerateRefreshToken(user.ID, 30*24*time.Hour) // Refresh Token expires in 30 days
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate refresh token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
@@ -334,9 +334,8 @@ func VerifyOTP(c *gin.Context) {
 	logger.InfoLogger.Info("Email verified and tokens generated successfully")
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":       "Email verified successfully",
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
 	})
 }
 

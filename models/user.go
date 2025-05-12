@@ -250,12 +250,12 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 		return nil, "", "", fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
 
-	refreshToken, err := GenerateRefreshToken(userID, time.Hour*24*7) // Stronger Refresh Token for 7 days
+	refreshToken, err := GenerateRefreshToken(userID, time.Hour*24*30) // Stronger Refresh Token for 30 days
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	accessToken, err := GenerateAccessToken(userID, time.Minute*15)
+	accessToken, err := GenerateAccessToken(userID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -296,12 +296,12 @@ func LoginUser(db *pgxpool.Pool, username, password string) (*User, string, stri
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
-	accessToken, err := GenerateAccessToken(user.ID, time.Minute*1)
+	accessToken, err := GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	refreshToken, err := GenerateRefreshToken(user.ID, time.Hour*24*7) // Stronger Refresh Token for 7 days
+	refreshToken, err := GenerateRefreshToken(user.ID, time.Hour*24*30) // Stronger Refresh Token for 30 days
 	if err != nil {
 		return nil, "", "", err
 	}

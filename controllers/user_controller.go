@@ -158,8 +158,8 @@ func (uc *UserController) Login(c *gin.Context) {
 			"age":       user.DateOfBirth.Time.Format("2006-01-02"),
 		},
 		"tokens": gin.H{
-			"access_token":  accessToken,
-			"refresh_token": refreshToken,
+			"accessToken":  accessToken,
+			"refreshToken": refreshToken,
 		},
 	})
 
@@ -279,6 +279,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
 }
 
+// RefreshToken function
 func (uc *UserController) RefreshToken(c *gin.Context) {
 	logger.InfoLogger.Info("RefreshToken token function called")
 
@@ -319,7 +320,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	}
 
 	// Generate a new access token
-	accessToken, err := models.GenerateAccessToken(user.ID, time.Minute*15)
+	accessToken, err := models.GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		logger.ErrorLogger.Error("error", "Failed to generate access token")
 
@@ -328,7 +329,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	}
 
 	// Generate a new refresh token (optional, for token rotation)
-	newRefreshToken, err := models.GenerateRefreshToken(user.ID, time.Hour*24*7) // Stronger Refresh Token for 7 days
+	newRefreshToken, err := models.GenerateRefreshToken(user.ID, time.Hour*24*30) // Stronger Refresh Token for 30 days
 	if err != nil {
 		logger.ErrorLogger.Error("error", "Failed to generate refresh token")
 
