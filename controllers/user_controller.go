@@ -347,17 +347,11 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 
 	// Return the new tokens
 	c.JSON(http.StatusOK, gin.H{
-		"access_token":  accessToken,
-		"refresh_token": newRefreshToken,
-		"user": gin.H{
-			"id":       user.ID,
-			"username": user.Username,
-			"email":    user.Email,
-		},
+		"accessToken":  accessToken,
+		"refreshToken": newRefreshToken,
 	})
 
 	logger.InfoLogger.Info("RefreshToken is created successfully")
-	c.JSON(http.StatusCreated, gin.H{"message": "RefreshToken is created successfully"})
 }
 
 // Logout handles user logout
