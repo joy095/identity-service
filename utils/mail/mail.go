@@ -137,6 +137,7 @@ func SendOTP(emailAddress, firstName, lastName, otp string) error {
 	return email.Send(smtpClient)
 }
 
+// SendOTP sends an OTP to the provided email address
 func SendForgotPasswordOTP(emailAddress, otp string) error {
 	logger.InfoLogger.Info("SendForgotPasswordOTP called on mail")
 
@@ -309,12 +310,12 @@ func VerifyOTP(c *gin.Context) {
 	}
 
 	// Store refresh token in Redis
-	err = redisclient.GetRedisClient().Set(ctx, "refresh:"+request.Email, refreshToken, 7*24*time.Hour).Err()
-	if err != nil {
-		logger.ErrorLogger.Error("Failed to store refresh token")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
-		return
-	}
+	// err = redisclient.GetRedisClient().Set(ctx, "refresh:"+request.Email, refreshToken, 7*24*time.Hour).Err()
+	// if err != nil {
+	// 	logger.ErrorLogger.Error("Failed to store refresh token")
+	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
+	// 	return
+	// }
 
 	// Delete OTP from Redis after successful verification
 	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
@@ -407,5 +408,152 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Password reset successful",
+	})
+}
+
+// SendOTPCustomer
+func SendOTPCustomer(emailAddress, otp string) error {
+	logger.InfoLogger.Info("SendOTP called on mail")
+
+	var user models.Customer
+	query := `SELECT id, email FROM customers WHERE email = $1`
+
+	// query := `SELECT id FROM users WHERE id = $1`
+	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
+	if err != nil {
+		return err
+	}
+
+	// Store OTP before sending email
+	if err := StoreOTP(emailAddress, otp); err != nil {
+		return err
+	}
+
+	tmpl, err := template.ParseFiles("templates/customer_otp.html")
+	if err != nil {
+		return err
+	}
+
+	var body bytes.Buffer
+	data := struct {
+		OTP  string
+		Year int
+	}{
+		OTP:  otp,
+		Year: time.Now().Year(),
+	}
+
+	if err := tmpl.Execute(&body, data); err != nil {
+		return err
+	}
+
+	// Create a new SMTP client for each email
+	smtpClient, err := newSMTPClient()
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
+		return fmt.Errorf("failed to connect to SMTP server: %w", err)
+	}
+	defer smtpClient.Close()
+
+	email := mail.NewMSG()
+	email.SetFrom(os.Getenv("FROM_EMAIL")).
+		AddTo(user.Email).
+		SetSubject("Your OTP Code").
+		SetBody(mail.TextHTML, body.String())
+
+	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
+
+	return email.Send(smtpClient)
+}
+
+// Verify Customer OTP for for account and return JWT token
+func VerifyCustomerOTP(c *gin.Context) {
+	logger.InfoLogger.Info("VerifyOTP called on mail")
+
+	var request struct {
+		Email string `json:"email"`
+		OTP   string `json:"otp"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		logger.ErrorLogger.Error("Invalid request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
+	if request.Email == "" || request.OTP == "" {
+		logger.ErrorLogger.Error("Email and OTP are required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Email and OTP are required"})
+		return
+	}
+
+	// Retrieve OTP hash from Redis
+	storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
+	if err != nil {
+		logger.ErrorLogger.Error("OTP expired or not found")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
+		return
+	}
+
+	// Verify OTP
+	if hashOTP(request.OTP) != storedHash {
+		logger.ErrorLogger.Error("Incorrect OTP")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
+		return
+	}
+
+	// Get user by email to retrieve userID
+	user, err := models.GetCustomerByEmail(db.DB, request.Email)
+	if err != nil {
+		logger.ErrorLogger.Errorf("User not found: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Generate access token (60 minutes)
+	accessToken, err := models.GenerateAccessToken(user.ID, 60*time.Minute)
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to generate access token")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
+		return
+	}
+
+	// Generate refresh token (7 days)
+	refreshToken, err := models.GenerateRefreshToken(user.ID, 30*24*time.Hour) // Refresh Token expires in 30 days
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to generate refresh token")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+		return
+	}
+
+	// Store refresh token in Redis
+	// err = redisclient.GetRedisClient().Set(ctx, "refresh:"+request.Email, refreshToken, 7*24*time.Hour).Err()
+	// if err != nil {
+	// 	logger.ErrorLogger.Error("Failed to store refresh token")
+	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
+	// 	return
+	// }
+
+	// Delete OTP from Redis after successful verification
+	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
+		logger.ErrorLogger.Error("Failed to delete OTP from Redis")
+	}
+
+	// Update user's email verification and refresh token in DB
+	_, err = db.DB.Exec(context.Background(),
+		"UPDATE customers SET is_verified_email = true, refresh_token = $1 WHERE email = $2",
+		refreshToken, request.Email)
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to update user data")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user data"})
+		return
+	}
+
+	logger.InfoLogger.Info("Email verified and tokens generated successfully")
+
+	c.JSON(http.StatusOK, gin.H{
+		"accessToken":  accessToken,
+		"refreshToken": refreshToken,
 	})
 }

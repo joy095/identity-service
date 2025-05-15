@@ -10,22 +10,16 @@ import (
 	"time"
 
 	"github.com/joy095/identity/badwords"
-	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models"
 
-	"github.com/joy095/identity/utils/custom_date"
 	"github.com/joy095/identity/utils/mail"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
-
-func init() {
-	config.LoadEnv()
-}
 
 // UserController handles user-related requests
 type UserController struct{}
@@ -44,12 +38,11 @@ func (uc *UserController) Register(c *gin.Context) {
 
 	// 1. Define and bind the incoming JSON request body
 	var req struct {
-		Username    string                 `json:"username" binding:"required"`
-		FirstName   string                 `json:"first_name" binding:"required"`
-		LastName    string                 `json:"last_name" binding:"required"`
-		Email       string                 `json:"email" binding:"required,email"`
-		Password    string                 `json:"password" binding:"required,min=8"`
-		DateOfBirth custom_date.CustomDate `json:"age" binding:"required"` // Expecting format "YYYY-MM-DD"
+		Username  string `json:"username" binding:"required"`
+		FirstName string `json:"first_name" binding:"required"`
+		LastName  string `json:"last_name" binding:"required"`
+		Email     string `json:"email" binding:"required,email"`
+		Password  string `json:"password" binding:"required,min=8"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -84,7 +77,7 @@ func (uc *UserController) Register(c *gin.Context) {
 	// --- 3. User Creation Logic ---
 	// Assuming db.DB, models.CreateUser, mail.GenerateSecureOTP, mail.SendOTP exist and work
 
-	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName, req.DateOfBirth.Time)
+	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database: %w", err)) // Log the DB error
 
@@ -115,12 +108,8 @@ func (uc *UserController) Register(c *gin.Context) {
 			"id":       user.ID,
 			"username": req.Username,
 			"email":    user.Email,
-			// WARNING: Do NOT return the generated OTP in a production API response!
-			// This is a major security vulnerability. REMOVE this line in production.
-			// "otp":       otp, // <-- REMOVE THIS IN PRODUCTION!
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
-			"DOB":       user.DateOfBirth, // Ensure custom_date marshals to JSON correctly
 		},
 	})
 	// No return needed here, JSON call ends the handler execution
@@ -155,7 +144,6 @@ func (uc *UserController) Login(c *gin.Context) {
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
-			"age":       user.DateOfBirth.Time.Format("2006-01-02"),
 		},
 		"tokens": gin.H{
 			"accessToken":  accessToken,
@@ -425,7 +413,6 @@ func (uc *UserController) GetUserByUsername(c *gin.Context) {
 			"id":         user.ID,
 			"username":   user.Username,
 			"email":      user.Email,
-			"age":        user.DateOfBirth,
 			"first_name": user.FirstName,
 			"last_name":  user.LastName,
 		},

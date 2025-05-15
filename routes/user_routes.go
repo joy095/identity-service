@@ -3,14 +3,13 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/controllers"
-	"github.com/joy095/identity/controllers/relations"
 	"github.com/joy095/identity/middlewares/auth"
 	"github.com/joy095/identity/utils/mail"
 )
 
 func RegisterRoutes(router *gin.Engine) {
 	userController := controllers.NewUserController()
-	relationController := relations.NewRelationController()
+	// relationController := relations.NewRelationController()
 
 	// Public routes
 	router.POST("/register", userController.Register)
@@ -37,12 +36,12 @@ func RegisterRoutes(router *gin.Engine) {
 	}
 
 	// Relationship routes using JWT by default to send accept and reject requests
-	router.POST("/relation/request", relationController.SendRequest)
-	router.POST("/relation/accept", relationController.AcceptRequest)
-	router.POST("/relation/reject", relationController.RejectRequest)
-	router.GET("/relation/pending", relationController.ListPendingRequests)
-	router.GET("/relation/connections", relationController.ListConnections)
-	router.GET("/relation/status/:username", relationController.CheckConnectionStatus)
+	// router.POST("/relation/request", relationController.SendRequest)
+	// router.POST("/relation/accept", relationController.AcceptRequest)
+	// router.POST("/relation/reject", relationController.RejectRequest)
+	// router.GET("/relation/pending", relationController.ListPendingRequests)
+	// router.GET("/relation/connections", relationController.ListConnections)
+	// router.GET("/relation/status/:username", relationController.CheckConnectionStatus)
 
 }
 

@@ -49,6 +49,8 @@ func main() {
 
 	routes.RegisterRoutes(r)
 
+	routes.RegisterCustomerRoutes(r)
+
 	r.GET("/health", func(c *gin.Context) {
 
 		c.JSON(200, gin.H{

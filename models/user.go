@@ -16,7 +16,6 @@ import (
 
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/utils"
-	"github.com/joy095/identity/utils/custom_date"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -40,7 +39,6 @@ type User struct {
 	OTPHash         *string
 	FirstName       string
 	LastName        string
-	DateOfBirth     custom_date.CustomDate
 	IsVerifiedEmail bool
 }
 
@@ -237,7 +235,7 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 }
 
 // CreateUser registers a new user and returns JWT & refresh token
-func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName string, dateOfBirth time.Time) (*User, string, string, error) {
+func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName string) (*User, string, string, error) {
 	logger.InfoLogger.Info("CreateUser called on models")
 
 	passwordHash, err := HashPassword(password)
@@ -250,19 +248,9 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 		return nil, "", "", fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
 
-	refreshToken, err := GenerateRefreshToken(userID, time.Hour*24*30) // Stronger Refresh Token for 30 days
-	if err != nil {
-		return nil, "", "", err
-	}
-
-	accessToken, err := GenerateAccessToken(userID, time.Minute*60) // Access Token for 1 hour
-	if err != nil {
-		return nil, "", "", err
-	}
-
-	query := `INSERT INTO users (id, username, email, password_hash, refresh_token, first_name, last_name, dob) 
-              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`
-	_, err = db.Exec(context.Background(), query, userID, username, email, passwordHash, refreshToken, firstName, lastName, dateOfBirth)
+	query := `INSERT INTO users (id, username, email, password_hash, first_name, last_name) 
+              VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+	_, err = db.Exec(context.Background(), query, userID, username, email, passwordHash, firstName, lastName)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -272,13 +260,11 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 		Username:     username,
 		Email:        email,
 		PasswordHash: passwordHash,
-		RefreshToken: &refreshToken,
 		FirstName:    firstName,
 		LastName:     lastName,
-		DateOfBirth:  custom_date.CustomDate{Time: dateOfBirth},
 	}
 
-	return user, accessToken, refreshToken, nil
+	return user, "", "", nil
 
 }
 
@@ -350,15 +336,6 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 		logger.ErrorLogger.Errorf("failed to get user by username: %v", err) // Added specific logging
 		return nil, err
 	}
-
-	// *** Assign the scanned time.Time to the custom_date.CustomDate field ***
-	// If you scanned into dobTimePtr, handle the pointer:
-	// if dobTimePtr != nil {
-	//     user.DateOfBirth = custom_date.CustomDate{Time: *dobTimePtr}
-	// } else {
-	//     // Decide how to handle a null DOB (e.g., leave DateOfBirth as its zero value)
-	// }
-	user.DateOfBirth = custom_date.CustomDate{Time: dobTime} // *** Assign here ***
 
 	return &user, nil
 }
