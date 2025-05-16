@@ -72,8 +72,6 @@ func LoginCustomers(db *pgxpool.Pool, email string) (*User, string, string, erro
 		return nil, "", "", err
 	}
 
-
-
 	accessToken, err := GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		return nil, "", "", err
@@ -94,7 +92,6 @@ func LoginCustomers(db *pgxpool.Pool, email string) (*User, string, string, erro
 	return user, accessToken, refreshToken, nil
 }
 
-
 func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, string, string, error) {
 	// logger.InfoLogger.Info("LoginCustomer (OTP verification) called on models") // Uncomment if logger
 
@@ -102,35 +99,33 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 	redisKey := "otp:" + strings.ToLower(strings.TrimSpace(email)) // Match key format used in StoreOTP
 	storedHash, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
 	if err != nil {
-		// Handle Redis errors (e.g., key not found, connection issues)
-		// logger.ErrorLogger.Error("Failed to retrieve OTP from Redis: " + err.Error()) // Uncomment if logger
-		// Return a generic error to the user for security
+
 		return nil, "", "", errors.New("OTP expired or not found")
 	}
 
 	// 2. Verify the provided OTP
 	providedHash := utils.HashOTP(strings.TrimSpace(otp)) // You need hashOTP function accessible here
 	if providedHash != storedHash {
-		// logger.ErrorLogger.Error("Incorrect OTP provided for email: " + email) // Uncomment if logger
-		// Consider adding rate limiting here to prevent brute force
+
 		return nil, "", "", errors.New("incorrect OTP")
 	}
 
 	// 3. Get customer by email
-	// It's good practice to fetch the user *after* verifying the OTP to
-	// reduce unnecessary database lookups for invalid OTP attempts.
-	customer, err := GetCustomerByEmail(db, email)
+
+	user, err := GetCustomerByEmail(db, email)
 	if err != nil {
 		// GetCustomerByEmail already handles "not found" and other DB errors
 		return nil, "", "", fmt.Errorf("failed to get customer after OTP verification: %w", err)
 	}
 
-		// storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
+	customer := &Customer{
+		ID:    user.ID,
+		Email: user.Email,
+	}
 
 	// 4. Delete OTP from Redis after successful verification
 	if err := redisclient.GetRedisClient().Del(ctx, redisKey).Err(); err != nil {
-		// Log this error, but don't fail the login process as verification was successful
-		// logger.ErrorLogger.Error("Failed to delete used OTP from Redis for email %s: %w", email, err) // Uncomment if logger
+
 	}
 
 	// 5. Generate access token
@@ -153,9 +148,7 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 		`UPDATE customers SET is_verified_email = TRUE, refresh_token = $1 WHERE id = $2`,
 		refreshToken, customer.ID) // Update based on ID after fetching the user
 	if err != nil {
-		// logger.ErrorLogger.Error("Failed to update customer verification status and refresh token for user ID %s: %w", customer.ID, err) // Uncomment if logger
-		// Decide if this should cause login failure or just log a warning.
-		// For critical data like refresh tokens, failure might be appropriate.
+
 		return nil, "", "", fmt.Errorf("failed to update customer data after login: %w", err)
 	}
 

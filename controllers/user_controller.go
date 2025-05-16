@@ -87,8 +87,12 @@ func (uc *UserController) Register(c *gin.Context) {
 	}
 
 	// 4. Send OTP (Assuming this is part of your registration flow)
-	otp := utils.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
-	// Send email asynchronously using a goroutine to avoid blocking the response
+	otp, err := utils.GenerateSecureOTP()
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
+		return
+	}
 	go func() {
 		sendErr := mail.SendOTP(req.Email, req.FirstName, req.LastName, otp) // Assuming SendOTP sends the email and logs internal errors
 		if sendErr != nil {
@@ -185,7 +189,12 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	}
 
 	// Generate secure OTP
-	otp := utils.GenerateSecureOTP()
+	otp, err := utils.GenerateSecureOTP()
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
+		return
+	}
 
 	err = mail.StoreOTP(req.Username+"-"+req.Email, otp)
 	if err != nil {
