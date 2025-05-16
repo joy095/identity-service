@@ -293,14 +293,6 @@ func VerifyOTP(c *gin.Context) {
 		return
 	}
 
-	// Store refresh token in Redis
-	// err = redisclient.GetRedisClient().Set(ctx, "refresh:"+request.Email, refreshToken, 7*24*time.Hour).Err()
-	// if err != nil {
-	// 	logger.ErrorLogger.Error("Failed to store refresh token")
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
-	// 	return
-	// }
-
 	// Delete OTP from Redis after successful verification
 	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
 		logger.ErrorLogger.Error("Failed to delete OTP from Redis")

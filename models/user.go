@@ -311,14 +311,8 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 // GetUserByUsername retrieves a user by username
 func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 	var user User
-	// Declare a temporary variable to scan the DATE into
-	var dobTime time.Time
 
-	// If the 'dob' column in your database is NULLABLE,
-	// you should scan into a pointer instead:
-	// var dobTimePtr *time.Time
-
-	query := `SELECT id, username, email, first_name, last_name, dob, password_hash, refresh_token FROM users WHERE username = $1`
+	query := `SELECT id, username, email, first_name, last_name,  password_hash, refresh_token FROM users WHERE username = $1`
 
 	// *** Scan the 'dob' column into the temporary time.Time variable ***
 	err := db.QueryRow(context.Background(), query, username).Scan(
@@ -327,8 +321,6 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 		&user.Email,
 		&user.FirstName,
 		&user.LastName,
-		&dobTime, // *** Scan into the standard time.Time variable ***
-		// &dobTimePtr, // Use this if scanning a NULLABLE column
 		&user.PasswordHash,
 		&user.RefreshToken,
 	)
