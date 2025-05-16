@@ -14,9 +14,16 @@ func RegisterCustomerRoutes(router *gin.Engine) {
 
 		// Public routes
 		customerGroup.POST("/register", customerController.CustomerRegister)
-		router.POST("/login", customerController.CustomerLogin)
 
+		// Verify email when registering
 		customerGroup.POST("/verify-otp", mail.VerifyCustomerOTP)
+
+		// otp route for login
+		customerGroup.POST("/request-login-otp", customerController.RequestCustomerLogin)  
+
+		// Login with email
+		customerGroup.POST("/login", customerController.CustomerLogin)
+
 
 		// protectedCustomerRoutes := customerGroup.Group("/")
 		// Apply your authentication middleware ONLY to this sub-group

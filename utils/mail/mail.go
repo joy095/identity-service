@@ -60,7 +60,7 @@ func StoreOTP(email, otp string) error {
 func SendOTP(emailAddress, firstName, lastName, otp string) error {
 	logger.InfoLogger.Info("SendOTP called on mail")
 
-	var user models.User
+	var user models.Customer
 	query := `SELECT id, email FROM users WHERE email = $1`
 
 	// query := `SELECT id FROM users WHERE id = $1`
@@ -204,10 +204,16 @@ func RequestOTP(c *gin.Context) {
 		return
 	}
 
-	otp := utils.GenerateSecureOTP()
+	otp, err := utils.GenerateSecureOTP()
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
+		return
+	}
+
 	err = StoreOTP(request.Email, otp)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to store OTP")
+		logger.ErrorLogger.Error("Failed to store OTP in RequestOTP")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP"})
 		return
 	}
@@ -390,59 +396,59 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 }
 
 // SendOTPCustomer
-func SendOTPCustomer(emailAddress, otp string) error {
-	logger.InfoLogger.Info("SendOTP called on mail")
+// func SendOTPCustomer(emailAddress, otp string) error {
+// 	logger.InfoLogger.Info("SendOTP called on mail")
 
-	var user models.Customer
-	query := `SELECT id, email FROM customers WHERE email = $1`
+// 	var user models.Customer
+// 	query := `SELECT id, email FROM customers WHERE email = $1`
 
-	// query := `SELECT id FROM users WHERE id = $1`
-	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
-	if err != nil {
-		return err
-	}
+// 	// query := `SELECT id FROM users WHERE id = $1`
+// 	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	// Store OTP before sending email
-	if err := StoreOTP(emailAddress, otp); err != nil {
-		return err
-	}
+// 	// Store OTP before sending email
+// 	if err := StoreOTP(emailAddress, otp); err != nil {
+// 		return err
+// 	}
 
-	tmpl, err := template.ParseFiles("templates/customer_otp.html")
-	if err != nil {
-		return err
-	}
+// 	tmpl, err := template.ParseFiles("templates/customer_otp.html")
+// 	if err != nil {
+// 		return err
+// 	}
 
-	var body bytes.Buffer
-	data := struct {
-		OTP  string
-		Year int
-	}{
-		OTP:  otp,
-		Year: time.Now().Year(),
-	}
+// 	var body bytes.Buffer
+// 	data := struct {
+// 		OTP  string
+// 		Year int
+// 	}{
+// 		OTP:  otp,
+// 		Year: time.Now().Year(),
+// 	}
 
-	if err := tmpl.Execute(&body, data); err != nil {
-		return err
-	}
+// 	if err := tmpl.Execute(&body, data); err != nil {
+// 		return err
+// 	}
 
-	// Create a new SMTP client for each email
-	smtpClient, err := newSMTPClient()
-	if err != nil {
-		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
-		return fmt.Errorf("failed to connect to SMTP server: %w", err)
-	}
-	defer smtpClient.Close()
+// 	// Create a new SMTP client for each email
+// 	smtpClient, err := newSMTPClient()
+// 	if err != nil {
+// 		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
+// 		return fmt.Errorf("failed to connect to SMTP server: %w", err)
+// 	}
+// 	defer smtpClient.Close()
 
-	email := mail.NewMSG()
-	email.SetFrom(os.Getenv("FROM_EMAIL")).
-		AddTo(user.Email).
-		SetSubject("Your OTP Code").
-		SetBody(mail.TextHTML, body.String())
+// 	email := mail.NewMSG()
+// 	email.SetFrom(os.Getenv("FROM_EMAIL")).
+// 		AddTo(user.Email).
+// 		SetSubject("Your OTP Code").
+// 		SetBody(mail.TextHTML, body.String())
 
-	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
+// 	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
 
-	return email.Send(smtpClient)
-}
+// 	return email.Send(smtpClient)
+// }
 
 // Verify Customer OTP for for account and return JWT token
 func VerifyCustomerOTP(c *gin.Context) {
@@ -534,4 +540,93 @@ func VerifyCustomerOTP(c *gin.Context) {
 		"accessToken":  accessToken,
 		"refreshToken": refreshToken,
 	})
+}
+
+// continue OTP hash comparison...
+func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
+	logger.InfoLogger.Info("SendOTP called on mail")
+
+	var user models.Customer
+	query := `SELECT id, email FROM customers WHERE email = $1`
+
+	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
+	if err != nil {
+		return err
+	}
+
+	// Store OTP before sending email
+	if err := StoreOTP(emailAddress, otp); err != nil {
+		return err
+	}
+
+	tmpl, err := template.ParseFiles(templatePath)
+	if err != nil {
+		return err
+	}
+
+	// Rest of function remains the same
+	data := struct {
+		OTP  string
+		Year int
+	}{
+		OTP:  otp,
+		Year: time.Now().Year(),
+	}
+
+	var body bytes.Buffer
+	if err := tmpl.Execute(&body, data); err != nil {
+		return err
+	}
+
+	// Create a new SMTP client for each email
+	smtpClient, err := newSMTPClient()
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
+		return fmt.Errorf("failed to connect to SMTP server: %w", err)
+	}
+	defer smtpClient.Close()
+
+	email := mail.NewMSG()
+	email.SetFrom(os.Getenv("FROM_EMAIL")).
+		AddTo(user.Email).
+		SetSubject("Your OTP Code").
+		SetBody(mail.TextHTML, body.String())
+
+	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
+
+	return email.Send(smtpClient)
+}
+
+// Send OTP to customer for login
+func SendCustomerLoginOTP(c *gin.Context) {
+	logger.InfoLogger.Info("SendCustomerLoginOTP called on mail")
+
+	var request struct {
+		Email string `json:"email" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&request); err != nil {
+		logger.ErrorLogger.Error("Invalid request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	otp, err := utils.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
+		return
+	}
+
+	err = SendCustomerOTP(request.Email, otp, "templates/customer_otp_login.html")
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to send OTP")
+
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
+		return
+	}
+
+	logger.InfoLogger.Info("OTP send successfully")
+
+	c.JSON(http.StatusOK, gin.H{"message": "OTP sent successfully"})
 }

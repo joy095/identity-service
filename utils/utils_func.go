@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/joy095/identity/config"
+	"github.com/joy095/identity/logger"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -15,42 +16,65 @@ func init() {
 }
 
 func GetJWTSecret() []byte {
-
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		fmt.Println("WARNING: JWT_SECRET environment variable not set.")
+		logger.ErrorLogger.Error("SECURITY RISK: JWT_SECRET environment variable not set - using insecure default")
+		if os.Getenv("GO_ENV") == "production" {
+			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET")
+		}
 		return []byte("default-insecure-secret-only-for-development")
 	}
 	return []byte(secret)
 }
 
 func GetJWTRefreshSecret() []byte {
-
 	secret := os.Getenv("JWT_SECRET_REFRESH")
 	if secret == "" {
-		fmt.Println("WARNING: JWT_SECRET_REFRESH environment variable not set.")
+		logger.ErrorLogger.Error("SECURITY RISK: JWT_SECRET_REFRESH environment variable not set - using insecure default")
+		if os.Getenv("GO_ENV") == "production" {
+			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET_REFRESH")
+		}
 		return []byte("default-insecure--refresh-secret-only-for-development")
 	}
 	return []byte(secret)
 }
 
 // Generate a secure OTP using crypto/rand
-func GenerateSecureOTP() string {
+func GenerateSecureOTP() (string, error) {
 	const otpChars = "0123456789"
 	bytes := make([]byte, 6)
 	_, err := rand.Read(bytes)
 	if err != nil {
 		log.Println("Error generating secure OTP:", err)
-		return "000000"
+		return "", fmt.Errorf("failed to generate secure OTP: %w", err)
 	}
 	for i := range bytes {
 		bytes[i] = otpChars[bytes[i]%byte(len(otpChars))]
 	}
-	return string(bytes)
+	return string(bytes), nil
 }
 
+// HashOTP hashes an OTP using Argon2id with a secure salt
+// Parameters chosen based on OWASP recommendations for balance of security and performance
 func HashOTP(otp string) string {
-	salt := []byte("some_random_salt")
+	// In a production system, each OTP should have a unique salt
+	// For OTP verification where we need to compare against stored hash, we use a constant salt
+	// derived from application secrets
+	saltBase := os.Getenv("OTP_SALT_SECRET")
+	if saltBase == "" {
+		logger.ErrorLogger.Warn("OTP_SALT_SECRET not set, using fallback")
+		saltBase = "change_this_in_production"
+	}
+
+	// Create a salt that's unique to this application but constant for comparison
+	salt := []byte(saltBase + "-otp-verification-salt")
+
+	// Argon2id parameters:
+	// - 1 iteration: acceptable for short-lived OTPs
+	// - 64MB memory: reasonable resource usage
+	// - 4 threads: good parallelism without excessive resource usage
+	// - 32 bytes output: sufficiently secure hash length
 	hashed := argon2.IDKey([]byte(otp), salt, 1, 64*1024, 4, 32)
+
 	return fmt.Sprintf("%x", hashed)
 }
