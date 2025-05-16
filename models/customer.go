@@ -2,12 +2,16 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/utils"
 )
 
 // User Model
@@ -105,7 +109,7 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 	}
 
 	// 2. Verify the provided OTP
-	providedHash := hashOTP(strings.TrimSpace(otp)) // You need hashOTP function accessible here
+	providedHash := utils.HashOTP(strings.TrimSpace(otp)) // You need hashOTP function accessible here
 	if providedHash != storedHash {
 		// logger.ErrorLogger.Error("Incorrect OTP provided for email: " + email) // Uncomment if logger
 		// Consider adding rate limiting here to prevent brute force
@@ -120,6 +124,8 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 		// GetCustomerByEmail already handles "not found" and other DB errors
 		return nil, "", "", fmt.Errorf("failed to get customer after OTP verification: %w", err)
 	}
+
+		// storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
 
 	// 4. Delete OTP from Redis after successful verification
 	if err := redisclient.GetRedisClient().Del(ctx, redisKey).Err(); err != nil {

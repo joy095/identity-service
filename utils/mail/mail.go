@@ -3,10 +3,8 @@ package mail
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"fmt"
 	"html/template"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,13 +14,13 @@ import (
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/utils"
 
 	"github.com/joy095/identity/logger"
 
 	"github.com/gin-gonic/gin"
 	redisclient "github.com/joy095/identity/config/redis"
 	mail "github.com/xhit/go-simple-mail/v2"
-	"golang.org/x/crypto/argon2"
 )
 
 // var smtpClient *mail.SMTPClient
@@ -50,31 +48,11 @@ func newSMTPClient() (*mail.SMTPClient, error) {
 	return server.Connect()
 }
 
-// Generate a secure OTP using crypto/rand
-func GenerateSecureOTP() string {
-	const otpChars = "0123456789"
-	bytes := make([]byte, 6)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		log.Println("Error generating secure OTP:", err)
-		return "000000"
-	}
-	for i := range bytes {
-		bytes[i] = otpChars[bytes[i]%byte(len(otpChars))]
-	}
-	return string(bytes)
-}
-
 // Hash OTP using Argon2 for security
-func hashOTP(otp string) string {
-	salt := []byte("some_random_salt")
-	hashed := argon2.IDKey([]byte(otp), salt, 1, 64*1024, 4, 32)
-	return fmt.Sprintf("%x", hashed)
-}
 
 // Store OTP hash in Redis with expiration
 func StoreOTP(email, otp string) error {
-	hashedOTP := hashOTP(otp)
+	hashedOTP := utils.HashOTP(otp)
 	return redisclient.GetRedisClient().Set(context.Background(), "otp:"+email, hashedOTP, 10*time.Minute).Err()
 }
 
@@ -226,7 +204,7 @@ func RequestOTP(c *gin.Context) {
 		return
 	}
 
-	otp := GenerateSecureOTP()
+	otp := utils.GenerateSecureOTP()
 	err = StoreOTP(request.Email, otp)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to store OTP")
@@ -279,7 +257,7 @@ func VerifyOTP(c *gin.Context) {
 	}
 
 	// Verify OTP
-	if hashOTP(request.OTP) != storedHash {
+	if utils.HashOTP(request.OTP) != storedHash {
 		logger.ErrorLogger.Error("Incorrect OTP")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
 		return
@@ -368,7 +346,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// Verify OTP
-	if hashOTP(request.OTP) != storedHash {
+	if utils.HashOTP(request.OTP) != storedHash {
 		logger.ErrorLogger.Error("Incorrect OTP")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
 		return
@@ -497,7 +475,7 @@ func VerifyCustomerOTP(c *gin.Context) {
 	}
 
 	// Verify OTP
-	if hashOTP(request.OTP) != storedHash {
+	if utils.HashOTP(request.OTP) != storedHash {
 		logger.ErrorLogger.Error("Incorrect OTP")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
 		return

@@ -8,6 +8,7 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/utils"
 	"github.com/joy095/identity/utils/mail"
 )
 
@@ -40,7 +41,7 @@ func (uc *UserController) CustomerRegister(c *gin.Context) {
 	}
 
 	// Send OTP (Assuming this is part of your registration flow)
-	otp := mail.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
+	otp := utils.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
 	// Send email asynchronously using a goroutine to avoid blocking the response
 	go func() {
 		sendErr := mail.SendOTPCustomer(req.Email, otp) // Assuming SendOTPCustomer sends the email and logs internal errors

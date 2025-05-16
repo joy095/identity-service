@@ -13,6 +13,7 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/utils"
 
 	"github.com/joy095/identity/utils/mail"
 
@@ -75,7 +76,7 @@ func (uc *UserController) Register(c *gin.Context) {
 	// --- End Local Badwords Check Logic ---
 
 	// --- 3. User Creation Logic ---
-	// Assuming db.DB, models.CreateUser, mail.GenerateSecureOTP, mail.SendOTP exist and work
+	// Assuming db.DB, models.CreateUser, utils.GenerateSecureOTP, mail.SendOTP exist and work
 
 	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName)
 	if err != nil {
@@ -86,7 +87,7 @@ func (uc *UserController) Register(c *gin.Context) {
 	}
 
 	// 4. Send OTP (Assuming this is part of your registration flow)
-	otp := mail.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
+	otp := utils.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
 	// Send email asynchronously using a goroutine to avoid blocking the response
 	go func() {
 		sendErr := mail.SendOTP(req.Email, req.FirstName, req.LastName, otp) // Assuming SendOTP sends the email and logs internal errors
@@ -105,9 +106,9 @@ func (uc *UserController) Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "User registered successfully",
 		"user": gin.H{
-			"id":       user.ID,
-			"username": req.Username,
-			"email":    user.Email,
+			"id":        user.ID,
+			"username":  req.Username,
+			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
 		},
@@ -184,7 +185,7 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	}
 
 	// Generate secure OTP
-	otp := mail.GenerateSecureOTP()
+	otp := utils.GenerateSecureOTP()
 
 	err = mail.StoreOTP(req.Username+"-"+req.Email, otp)
 	if err != nil {
