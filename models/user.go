@@ -234,6 +234,24 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 	return token, claims, nil
 }
 
+//
+
+func IsUsernameAvailable(db *pgxpool.Pool, username string) (bool, error) {
+	logger.InfoLogger.Info("IsUsernameAvailable called on models")
+
+	query := `SELECT COUNT(*) FROM users WHERE username = $1`
+
+	var count int
+	err := db.QueryRow(context.Background(), query, username).Scan(&count)
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to check username availability: %v", err)
+		return false, fmt.Errorf("failed to check username availability: %v", err)
+	}
+
+	return count == 0, nil
+
+}
+
 // CreateUser registers a new user and returns JWT & refresh token
 func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName string) (*User, string, string, error) {
 	logger.InfoLogger.Info("CreateUser called on models")
