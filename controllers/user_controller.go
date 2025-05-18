@@ -56,7 +56,7 @@ func (uc *UserController) UsernameAvailability(c *gin.Context) {
 	logger.InfoLogger.Info("UsernameAvailability controller called")
 
 	var req struct {
-		Username string `json:"username" binding:"required"`
+		Username string `json:"username" binding:"required" min:"3" max:"20"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -100,8 +100,8 @@ func (uc *UserController) Register(c *gin.Context) {
 	// 1. Define and bind the incoming JSON request body
 	var req struct {
 		Username  string `json:"username" binding:"required"`
-		FirstName string `json:"first_name" binding:"required"`
-		LastName  string `json:"last_name" binding:"required"`
+		FirstName string `json:"firstName" binding:"required"`
+		LastName  string `json:"lastName" binding:"required"`
 		Email     string `json:"email" binding:"required,email"`
 		Password  string `json:"password" binding:"required,min=8"`
 	}
@@ -174,14 +174,11 @@ func (uc *UserController) Register(c *gin.Context) {
 	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v, Username: %s", user.ID, user.Username)) // Log success with the new user's ID and username
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "User registered successfully",
-		"user": gin.H{
-			"id":        user.ID,
-			"username":  req.Username, // Use lowercased username
-			"email":     user.Email,
-			"firstName": user.FirstName,
-			"lastName":  user.LastName,
-		},
+		"id":        user.ID,
+		"username":  req.Username, // Use lowercased username
+		"email":     user.Email,
+		"firstName": user.FirstName,
+		"lastName":  user.LastName,
 	})
 	// No return needed here, JSON call ends the controller execution
 }
