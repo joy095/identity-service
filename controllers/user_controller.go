@@ -198,6 +198,8 @@ func (uc *UserController) Login(c *gin.Context) {
 		return
 	}
 
+	req.Username = strings.ToLower(req.Username)
+
 	user, accessToken, refreshToken, err := models.LoginUser(db.DB, req.Username, req.Password)
 	if err != nil {
 		logger.ErrorLogger.Error("Invalid credentials: " + err.Error())
