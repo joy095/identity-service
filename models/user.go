@@ -234,6 +234,24 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 	return token, claims, nil
 }
 
+//
+
+func IsUsernameAvailable(db *pgxpool.Pool, username string) (bool, error) {
+	logger.InfoLogger.Info("IsUsernameAvailable called on models")
+
+	query := `SELECT COUNT(*) FROM users WHERE username = $1`
+
+	var count int
+	err := db.QueryRow(context.Background(), query, username).Scan(&count)
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to check username availability: %v", err)
+		return false, fmt.Errorf("failed to check username availability: %v", err)
+	}
+
+	return count == 0, nil
+
+}
+
 // CreateUser registers a new user and returns JWT & refresh token
 func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName string) (*User, string, string, error) {
 	logger.InfoLogger.Info("CreateUser called on models")
@@ -311,14 +329,8 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 // GetUserByUsername retrieves a user by username
 func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 	var user User
-	// Declare a temporary variable to scan the DATE into
-	var dobTime time.Time
 
-	// If the 'dob' column in your database is NULLABLE,
-	// you should scan into a pointer instead:
-	// var dobTimePtr *time.Time
-
-	query := `SELECT id, username, email, first_name, last_name, dob, password_hash, refresh_token FROM users WHERE username = $1`
+	query := `SELECT id, username, email, first_name, last_name,  password_hash, refresh_token FROM users WHERE username = $1`
 
 	// *** Scan the 'dob' column into the temporary time.Time variable ***
 	err := db.QueryRow(context.Background(), query, username).Scan(
@@ -327,8 +339,6 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 		&user.Email,
 		&user.FirstName,
 		&user.LastName,
-		&dobTime, // *** Scan into the standard time.Time variable ***
-		// &dobTimePtr, // Use this if scanning a NULLABLE column
 		&user.PasswordHash,
 		&user.RefreshToken,
 	)

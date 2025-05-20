@@ -32,16 +32,76 @@ func NewUserController() *UserController {
 
 var lowercaseUsernameRegex = regexp.MustCompile("^[a-z0-9_-]{3,20}$")
 
+// validateUsername performs common username validation checks
+func validateUsername(username string) error {
+	// Ensure username is lowercase (already done before calling this, but good practice)
+	username = strings.ToLower(username)
+
+	// Regex Validation
+	if !lowercaseUsernameRegex.MatchString(username) {
+		return fmt.Errorf("username must be 3-20 characters long, containing only lowercase letters, numbers, hyphens, or underscores")
+	}
+
+	// Bad Words Check
+	if badwords.CheckText(username).ContainsBadWords {
+		return fmt.Errorf("username contains inappropriate words")
+	}
+
+	// No issues found
+	return nil
+}
+
+// UsernameAvailability checks if a username is available
+func (uc *UserController) UsernameAvailability(c *gin.Context) {
+	logger.InfoLogger.Info("UsernameAvailability controller called")
+
+	var req struct {
+		Username string `json:"username" binding:"required" min:"3" max:"20"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorLogger.Error("Invalid payload: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Convert to lowercase early
+	req.Username = strings.ToLower(req.Username)
+
+	// Use the shared validation function
+	if err := validateUsername(req.Username); err != nil {
+		logger.InfoLogger.Info(fmt.Sprintf("Username validation failed for '%s': %v", req.Username, err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check availability in the database
+	isAvailable, err := models.IsUsernameAvailable(db.DB, req.Username)
+	if err != nil {
+		logger.ErrorLogger.Error("Database error checking username availability: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	if !isAvailable {
+		logger.InfoLogger.Info(fmt.Sprintf("Username '%s' is not available", req.Username))
+		c.JSON(http.StatusOK, gin.H{"available": false, "message": "Username is already taken"})
+	} else {
+		logger.InfoLogger.Info(fmt.Sprintf("Username '%s' is available", req.Username))
+		c.JSON(http.StatusOK, gin.H{"available": true})
+	}
+}
+
 // Register handles user registration
 func (uc *UserController) Register(c *gin.Context) {
 
-	logger.InfoLogger.Info("Register handler called")
+	logger.InfoLogger.Info("Register controller called")
 
 	// 1. Define and bind the incoming JSON request body
 	var req struct {
 		Username  string `json:"username" binding:"required"`
-		FirstName string `json:"first_name" binding:"required"`
-		LastName  string `json:"last_name" binding:"required"`
+		FirstName string `json:"firstName" binding:"required"`
+		LastName  string `json:"lastName" binding:"required"`
 		Email     string `json:"email" binding:"required,email"`
 		Password  string `json:"password" binding:"required,min=8"`
 	}
@@ -53,76 +113,79 @@ func (uc *UserController) Register(c *gin.Context) {
 		return
 	}
 
+	// Convert username to lowercase early
 	req.Username = strings.ToLower(req.Username)
 
-	// --- Add Regex Validation Here ---
-	if !lowercaseUsernameRegex.MatchString(req.Username) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username must be 3-20 characters long, containing only lowercase letters, numbers, hyphens, or underscores."})
+	// Use the shared username validation function
+	if err := validateUsername(req.Username); err != nil {
+		logger.InfoLogger.Info(fmt.Sprintf("Username validation failed for '%s' during registration: %v", req.Username, err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// --- 2. Check if username contains bad words using the local badwords package ---
-
-	// Call the local badwords package function
-	// This assumes badwords.LoadBadWords has been called once at application startup
-	logger.InfoLogger.Info(fmt.Sprintf("Checking username '%s' for bad words locally", req.Username))
-	containsBadWords := badwords.CheckText(req.Username).ContainsBadWords
-
-	if containsBadWords {
-		logger.InfoLogger.Info(fmt.Sprintf("Username check failed for '%s': contains inappropriate words", req.Username)) // Log the specific username being rejected
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username contains inappropriate words"})
+	// 2. Check if username is already taken before attempting creation
+	// This provides a more specific error message than letting CreateUser fail on a unique constraint
+	isAvailable, err := models.IsUsernameAvailable(db.DB, req.Username)
+	if err != nil {
+		logger.ErrorLogger.Error("Database error checking username availability during registration: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
-	// --- End Local Badwords Check Logic ---
+	if !isAvailable {
+		logger.InfoLogger.Info(fmt.Sprintf("Registration failed for '%s': username already taken", req.Username))
+		c.JSON(http.StatusConflict, gin.H{"error": "Username is already taken"}) // Use 409 Conflict for resource conflict
+		return
+	}
 
-	// --- 3. User Creation Logic ---
+	// 3. User Creation Logic
 	// Assuming db.DB, models.CreateUser, utils.GenerateSecureOTP, mail.SendOTP exist and work
-
 	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database: %w", err)) // Log the DB error
-
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"}) // Generic error for unexpected DB issues
+		// Note: models.CreateUser should ideally handle email uniqueness and return a specific error
+		// type if the email is taken. If it does, you should add a check here for that error.
+		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database for '%s': %w", req.Username, err)) // Log the DB error
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})                           // Generic error for unexpected DB issues
 		return
 	}
 
 	// 4. Send OTP (Assuming this is part of your registration flow)
 	otp, err := utils.GenerateSecureOTP()
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for user %s: %w", req.Username, err))
+		// Decide if failure to generate OTP should stop registration.
+		// For now, we return an error. You might choose to proceed without sending email or queue it.
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
 		return
 	}
+
+	// Asynchronously send email
 	go func() {
 		sendErr := mail.SendOTP(req.Email, req.FirstName, req.LastName, otp) // Assuming SendOTP sends the email and logs internal errors
 		if sendErr != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s: %w", req.Email, sendErr))
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, req.Username, sendErr))
 			// Decide if a mail sending failure should cause registration to fail or just log.
 			// If critical, you might need transaction rollback or a retry mechanism.
 		} else {
-			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s", req.Email))
+			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email, req.Username))
 		}
 	}()
 
 	// 5. Return Success Response
-	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v", user.ID)) // Log success with the new user's ID
+	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v, Username: %s", user.ID, user.Username)) // Log success with the new user's ID and username
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message": "User registered successfully",
-		"user": gin.H{
-			"id":        user.ID,
-			"username":  req.Username,
-			"email":     user.Email,
-			"firstName": user.FirstName,
-			"lastName":  user.LastName,
-		},
+		"id":        user.ID,
+		"username":  req.Username, // Use lowercased username
+		"email":     user.Email,
+		"firstName": user.FirstName,
+		"lastName":  user.LastName,
 	})
-	// No return needed here, JSON call ends the handler execution
+	// No return needed here, JSON call ends the controller execution
 }
 
 // Login handles user login
 func (uc *UserController) Login(c *gin.Context) {
-	logger.InfoLogger.Info("Login handler called")
+	logger.InfoLogger.Info("Login controller called")
 
 	var req struct {
 		Username string `json:"username" binding:"required"`
@@ -134,6 +197,8 @@ func (uc *UserController) Login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	req.Username = strings.ToLower(req.Username)
 
 	user, accessToken, refreshToken, err := models.LoginUser(db.DB, req.Username, req.Password)
 	if err != nil {
@@ -161,7 +226,7 @@ func (uc *UserController) Login(c *gin.Context) {
 
 // Forget Password
 func (uc *UserController) ForgotPassword(c *gin.Context) {
-	logger.InfoLogger.Info("ForgotPassword handler called")
+	logger.InfoLogger.Info("ForgotPassword controller called")
 
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
@@ -220,7 +285,7 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 
 // Change Password function
 func (uc *UserController) ChangePassword(c *gin.Context) {
-	logger.InfoLogger.Info("ChangePassword handler called")
+	logger.InfoLogger.Info("ChangePassword controller called")
 
 	var req struct {
 		Username    string `json:"username" binding:"required"`
@@ -355,7 +420,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 
 // Logout handles user logout
 func (uc *UserController) Logout(c *gin.Context) {
-	logger.InfoLogger.Info("Logout handler called")
+	logger.InfoLogger.Info("Logout controller called")
 
 	var req struct {
 		UserID string `json:"user_id" binding:"required,uuid"`
@@ -420,11 +485,11 @@ func (uc *UserController) GetUserByUsername(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":         user.ID,
-			"username":   user.Username,
-			"email":      user.Email,
-			"first_name": user.FirstName,
-			"last_name":  user.LastName,
+			"id":        user.ID,
+			"username":  user.Username,
+			"email":     user.Email,
+			"firstName": user.FirstName,
+			"lastName":  user.LastName,
 		},
 	})
 
