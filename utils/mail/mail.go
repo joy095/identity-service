@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -13,24 +14,20 @@ import (
 
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
-	"github.com/joy095/identity/models"
-	"github.com/joy095/identity/utils"
-
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models" // Assuming models.User and models.Customer are defined here
+	"github.com/joy095/identity/utils"
 
 	"github.com/gin-gonic/gin"
 	redisclient "github.com/joy095/identity/config/redis"
 	mail "github.com/xhit/go-simple-mail/v2"
 )
 
-// var smtpClient *mail.SMTPClient
-
 var ctx = context.Background()
 var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 
 func init() {
 	config.LoadEnv()
-
 }
 
 // Create a new SMTP client connection
@@ -48,29 +45,144 @@ func newSMTPClient() (*mail.SMTPClient, error) {
 	return server.Connect()
 }
 
-// Hash OTP using Argon2 for security
-
-// Store OTP hash in Redis with expiration
-func StoreOTP(email, otp string) error {
+// StoreOTP hash in Redis with expiration
+// key can be "otp:email", "password_reset_otp:username-email", "email_change_otp:userID"
+func StoreOTP(key string, otp string) error {
 	hashedOTP := utils.HashOTP(otp)
-	return redisclient.GetRedisClient().Set(context.Background(), "otp:"+email, hashedOTP, 10*time.Minute).Err()
+	return redisclient.GetRedisClient().Set(context.Background(), key, hashedOTP, 10*time.Minute).Err()
 }
 
-// continue OTP hash comparison...
+// RetrieveOTP hash from Redis
+func RetrieveOTP(key string) (string, error) {
+	storedHash, err := redisclient.GetRedisClient().Get(ctx, key).Result()
+	if err != nil {
+		return "", errors.New("OTP expired or not found")
+	}
+	return storedHash, nil
+}
+
+// ClearOTP from Redis
+func ClearOTP(key string) error {
+	return redisclient.GetRedisClient().Del(ctx, key).Err()
+}
+
+// ErrOTPNotFound is returned when an OTP is not found or expired.
+var ErrOTPNotFound = errors.New("otp not found or expired")
+
+// StoreEmailChangeOTP stores the OTP and new email for verification using Redis.
+// The key is based on userID to correctly associate the pending email change with the user.
+func StoreEmailChangeOTP(userID string, newEmail string, otp string) error {
+	keyEmail := fmt.Sprintf("email_change_otp:%s:email", userID)
+	keyOTP := fmt.Sprintf("email_change_otp:%s:otp", userID)
+	expiry := 10 * time.Minute
+
+	// Store the new email
+	err := redisclient.GetRedisClient().Set(context.Background(), keyEmail, newEmail, expiry).Err()
+	if err != nil {
+		return fmt.Errorf("failed to store new email for verification: %w", err)
+	}
+
+	// Store the hashed OTP
+	hashedOTP := utils.HashOTP(otp)
+	err = redisclient.GetRedisClient().Set(context.Background(), keyOTP, hashedOTP, expiry).Err()
+	if err != nil {
+		// Attempt to clean up the email key if OTP storage fails
+		redisclient.GetRedisClient().Del(context.Background(), keyEmail)
+		return fmt.Errorf("failed to store OTP for email change: %w", err)
+	}
+	return nil
+}
+
+// RetrieveEmailChangeOTP retrieves the stored OTP hash and new email for verification from Redis.
+func RetrieveEmailChangeOTP(userID string) (string, string, error) {
+	keyEmail := fmt.Sprintf("email_change_otp:%s:email", userID)
+	keyOTP := fmt.Sprintf("email_change_otp:%s:otp", userID)
+
+	newEmail, err := redisclient.GetRedisClient().Get(context.Background(), keyEmail).Result()
+	if err != nil {
+		return "", "", ErrOTPNotFound
+	}
+
+	storedHash, err := redisclient.GetRedisClient().Get(context.Background(), keyOTP).Result()
+	if err != nil {
+		// If OTP is not found but email is, it's still an OTP issue. Clean up email.
+		redisclient.GetRedisClient().Del(context.Background(), keyEmail)
+		return "", "", ErrOTPNotFound
+	}
+	return storedHash, newEmail, nil
+}
+
+// ClearEmailChangeOTP removes the stored OTP and new email after successful verification from Redis.
+func ClearEmailChangeOTP(userID string) error {
+	keyEmail := fmt.Sprintf("email_change_otp:%s:email", userID)
+	keyOTP := fmt.Sprintf("email_change_otp:%s:otp", userID)
+	err1 := redisclient.GetRedisClient().Del(context.Background(), keyEmail).Err()
+	err2 := redisclient.GetRedisClient().Del(context.Background(), keyOTP).Err()
+	if err1 != nil || err2 != nil {
+		return fmt.Errorf("failed to clear email change OTP from Redis: email err: %w, otp err: %w", err1, err2)
+	}
+	return nil
+}
+
+// SendEmailChangeOTP sends an OTP to the user's new email for verification.
+func SendEmailChangeOTP(email, firstName, lastName, otp string) error {
+	logger.InfoLogger.Infof("SendEmailChangeOTP called to %s for user %s %s", email, firstName, lastName)
+
+	tmpl, err := template.ParseFiles("templates/email_change_otp.html") // Ensure this template exists
+	if err != nil {
+		return fmt.Errorf("failed to parse email change OTP template: %w", err)
+	}
+
+	var body bytes.Buffer
+	data := struct {
+		FirstName string
+		LastName  string
+		OTP       string
+		Year      int
+	}{
+		FirstName: strings.TrimSpace(firstName),
+		LastName:  strings.TrimSpace(lastName),
+		OTP:       otp,
+		Year:      time.Now().Year(),
+	}
+
+	if err := tmpl.Execute(&body, data); err != nil {
+		return fmt.Errorf("failed to execute email change template: %w", err)
+	}
+
+	smtpClient, err := newSMTPClient()
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
+		return fmt.Errorf("failed to connect to SMTP server: %w", err)
+	}
+	defer smtpClient.Close()
+
+	emailMsg := mail.NewMSG()
+	emailMsg.SetFrom(os.Getenv("FROM_EMAIL")).
+		AddTo(email). // Send to the NEW email address
+		SetSubject("Verify Your New Email Address").
+		SetBody(mail.TextHTML, body.String())
+
+	logger.InfoLogger.Info("Sending email change OTP email to: ", email)
+
+	return emailMsg.Send(smtpClient)
+}
+
+// SendOTP sends an OTP for initial registration/verification.
 func SendOTP(emailAddress, firstName, lastName, otp string) error {
-	logger.InfoLogger.Info("SendOTP called on mail")
+	logger.InfoLogger.Info("SendOTP called on mail (for user registration)")
 
-	var user models.Customer
-	query := `SELECT id, email FROM users WHERE email = $1`
+	var user models.User // Changed from models.Customer for user registration context
+	// Assuming `users` table contains first_name and last_name
+	query := `SELECT id, email, first_name, last_name FROM users WHERE email = $1`
 
-	// query := `SELECT id FROM users WHERE id = $1`
-	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
+	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName)
 	if err != nil {
 		return err
 	}
 
-	// Store OTP before sending email
-	if err := StoreOTP(emailAddress, otp); err != nil {
+	// Store OTP using the email as key
+	if err := StoreOTP("otp:"+emailAddress, otp); err != nil {
 		return err
 	}
 
@@ -96,7 +208,6 @@ func SendOTP(emailAddress, firstName, lastName, otp string) error {
 		return err
 	}
 
-	// Create a new SMTP client for each email
 	smtpClient, err := newSMTPClient()
 	if err != nil {
 		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
@@ -104,25 +215,30 @@ func SendOTP(emailAddress, firstName, lastName, otp string) error {
 	}
 	defer smtpClient.Close()
 
-	email := mail.NewMSG()
-	email.SetFrom(os.Getenv("FROM_EMAIL")).
+	emailMsg := mail.NewMSG()
+	emailMsg.SetFrom(os.Getenv("FROM_EMAIL")).
 		AddTo(user.Email).
 		SetSubject("Your OTP Code").
 		SetBody(mail.TextHTML, body.String())
 
 	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
 
-	return email.Send(smtpClient)
+	return emailMsg.Send(smtpClient)
 }
 
-// SendOTP sends an OTP to the provided email address
+// SendForgotPasswordOTP sends an OTP to the provided email address for password reset.
 func SendForgotPasswordOTP(emailAddress, otp string) error {
 	logger.InfoLogger.Info("SendForgotPasswordOTP called on mail")
 
 	var user models.User
-	query := `SELECT id, email FROM users WHERE email = $1`
-	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
+	query := `SELECT id, email, first_name, last_name, username FROM users WHERE email = $1` // Include first_name, last_name, username
+	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.Username)
 	if err != nil {
+		return err
+	}
+
+	// Store OTP using a key that includes username and email for password reset
+	if err := StoreOTP("forgot_password_otp:"+user.Username+"-"+user.Email, otp); err != nil {
 		return err
 	}
 
@@ -155,18 +271,18 @@ func SendForgotPasswordOTP(emailAddress, otp string) error {
 	}
 	defer smtpClient.Close()
 
-	email := mail.NewMSG()
-	email.SetFrom(os.Getenv("FROM_EMAIL")).
+	emailMsg := mail.NewMSG()
+	emailMsg.SetFrom(os.Getenv("FROM_EMAIL")).
 		AddTo(user.Email).
 		SetSubject("Reset Your Password - OTP").
 		SetBody(mail.TextHTML, body.String())
 
 	logger.InfoLogger.Infof("Sending password reset OTP email to: %s", user.Email)
 
-	return email.Send(smtpClient)
+	return emailMsg.Send(smtpClient)
 }
 
-// Request OTP API
+// Request OTP API (for initial registration/email verification)
 func RequestOTP(c *gin.Context) {
 	logger.InfoLogger.Info("RequestOTP called on mail")
 
@@ -184,7 +300,6 @@ func RequestOTP(c *gin.Context) {
 
 	if request.Email == "" {
 		logger.ErrorLogger.Error("Email is required")
-
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Email is required"})
 		return
 	}
@@ -211,7 +326,8 @@ func RequestOTP(c *gin.Context) {
 		return
 	}
 
-	err = StoreOTP(request.Email, otp)
+	// Use generic StoreOTP
+	err = StoreOTP("otp:"+request.Email, otp)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to store OTP in RequestOTP")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP"})
@@ -221,17 +337,15 @@ func RequestOTP(c *gin.Context) {
 	err = SendOTP(request.Email, request.FirstName, request.LastName, otp)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to send OTP")
-
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
 		return
 	}
 
 	logger.InfoLogger.Info("OTP send successfully")
-
 	c.JSON(http.StatusOK, gin.H{"message": "OTP sent successfully"})
 }
 
-// Verify OTP and return JWT token
+// Verify OTP and return JWT token (for initial registration/email verification)
 func VerifyOTP(c *gin.Context) {
 	logger.InfoLogger.Info("VerifyOTP called on mail")
 
@@ -254,8 +368,8 @@ func VerifyOTP(c *gin.Context) {
 		return
 	}
 
-	// Retrieve OTP hash from Redis
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
+	// Retrieve OTP hash from Redis using the key "otp:email"
+	storedHash, err := RetrieveOTP("otp:" + request.Email)
 	if err != nil {
 		logger.ErrorLogger.Error("OTP expired or not found")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
@@ -294,7 +408,7 @@ func VerifyOTP(c *gin.Context) {
 	}
 
 	// Delete OTP from Redis after successful verification
-	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
+	if err := ClearOTP("otp:" + request.Email); err != nil {
 		logger.ErrorLogger.Error("Failed to delete OTP from Redis")
 	}
 
@@ -335,8 +449,8 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 
 	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
 
-	// Retrieve OTP hash from Redis
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Username+"-"+request.Email).Result()
+	// Retrieve OTP hash from Redis using the password reset key
+	storedHash, err := RetrieveOTP("forgot_password_otp:" + request.Username + "-" + request.Email)
 	if err != nil {
 		logger.ErrorLogger.Error("OTP expired or not found")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
@@ -371,12 +485,11 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to update password" + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
-
 		return
 	}
 
 	// Delete OTP from Redis
-	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Username+"-"+request.Email).Err(); err != nil {
+	if err := ClearOTP("forgot_password_otp:" + request.Username + "-" + request.Email); err != nil {
 		logger.ErrorLogger.Warn("Failed to delete OTP after use")
 	}
 
@@ -387,64 +500,9 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	})
 }
 
-// SendOTPCustomer
-// func SendOTPCustomer(emailAddress, otp string) error {
-// 	logger.InfoLogger.Info("SendOTP called on mail")
-
-// 	var user models.Customer
-// 	query := `SELECT id, email FROM customers WHERE email = $1`
-
-// 	// query := `SELECT id FROM users WHERE id = $1`
-// 	err := db.DB.QueryRow(context.Background(), query, emailAddress).Scan(&user.ID, &user.Email)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	// Store OTP before sending email
-// 	if err := StoreOTP(emailAddress, otp); err != nil {
-// 		return err
-// 	}
-
-// 	tmpl, err := template.ParseFiles("templates/customer_otp.html")
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	var body bytes.Buffer
-// 	data := struct {
-// 		OTP  string
-// 		Year int
-// 	}{
-// 		OTP:  otp,
-// 		Year: time.Now().Year(),
-// 	}
-
-// 	if err := tmpl.Execute(&body, data); err != nil {
-// 		return err
-// 	}
-
-// 	// Create a new SMTP client for each email
-// 	smtpClient, err := newSMTPClient()
-// 	if err != nil {
-// 		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
-// 		return fmt.Errorf("failed to connect to SMTP server: %w", err)
-// 	}
-// 	defer smtpClient.Close()
-
-// 	email := mail.NewMSG()
-// 	email.SetFrom(os.Getenv("FROM_EMAIL")).
-// 		AddTo(user.Email).
-// 		SetSubject("Your OTP Code").
-// 		SetBody(mail.TextHTML, body.String())
-
-// 	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
-
-// 	return email.Send(smtpClient)
-// }
-
 // Verify Customer OTP for for account and return JWT token
 func VerifyCustomerOTP(c *gin.Context) {
-	logger.InfoLogger.Info("VerifyOTP called on mail")
+	logger.InfoLogger.Info("VerifyCustomerOTP called on mail")
 
 	var request struct {
 		Email string `json:"email"`
@@ -465,7 +523,7 @@ func VerifyCustomerOTP(c *gin.Context) {
 	}
 
 	// Retrieve OTP hash from Redis
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
+	storedHash, err := RetrieveOTP("otp:" + request.Email)
 	if err != nil {
 		logger.ErrorLogger.Error("OTP expired or not found")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
@@ -503,16 +561,8 @@ func VerifyCustomerOTP(c *gin.Context) {
 		return
 	}
 
-	// Store refresh token in Redis
-	// err = redisclient.GetRedisClient().Set(ctx, "refresh:"+request.Email, refreshToken, 7*24*time.Hour).Err()
-	// if err != nil {
-	// 	logger.ErrorLogger.Error("Failed to store refresh token")
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
-	// 	return
-	// }
-
 	// Delete OTP from Redis after successful verification
-	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
+	if err := ClearOTP("otp:" + request.Email); err != nil {
 		logger.ErrorLogger.Error("Failed to delete OTP from Redis")
 	}
 
@@ -534,9 +584,9 @@ func VerifyCustomerOTP(c *gin.Context) {
 	})
 }
 
-// continue OTP hash comparison...
+// SendCustomerOTP sends an OTP to a customer.
 func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
-	logger.InfoLogger.Info("SendOTP called on mail")
+	logger.InfoLogger.Info("SendCustomerOTP called on mail")
 
 	var user models.Customer
 	query := `SELECT id, email FROM customers WHERE email = $1`
@@ -546,8 +596,8 @@ func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
 		return err
 	}
 
-	// Store OTP before sending email
-	if err := StoreOTP(emailAddress, otp); err != nil {
+	// Store OTP using email as key for customer OTPs
+	if err := StoreOTP("otp:"+emailAddress, otp); err != nil {
 		return err
 	}
 
@@ -556,7 +606,6 @@ func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
 		return err
 	}
 
-	// Rest of function remains the same
 	data := struct {
 		OTP  string
 		Year int
@@ -570,7 +619,6 @@ func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
 		return err
 	}
 
-	// Create a new SMTP client for each email
 	smtpClient, err := newSMTPClient()
 	if err != nil {
 		logger.ErrorLogger.Errorf("failed to connect to SMTP server: %v", err)
@@ -578,15 +626,15 @@ func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
 	}
 	defer smtpClient.Close()
 
-	email := mail.NewMSG()
-	email.SetFrom(os.Getenv("FROM_EMAIL")).
+	emailMsg := mail.NewMSG()
+	emailMsg.SetFrom(os.Getenv("FROM_EMAIL")).
 		AddTo(user.Email).
 		SetSubject("Your OTP Code").
 		SetBody(mail.TextHTML, body.String())
 
 	logger.InfoLogger.Info("Sending OTP email to: ", user.Email)
 
-	return email.Send(smtpClient)
+	return emailMsg.Send(smtpClient)
 }
 
 // Send OTP to customer for login
@@ -603,7 +651,7 @@ func SendCustomerLoginOTP(c *gin.Context) {
 		return
 	}
 
-	otp, err := utils.GenerateSecureOTP() // Assuming this generates a random string and potentially stores it securely
+	otp, err := utils.GenerateSecureOTP()
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
@@ -613,12 +661,10 @@ func SendCustomerLoginOTP(c *gin.Context) {
 	err = SendCustomerOTP(request.Email, otp, "templates/customer_otp_login.html")
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to send OTP")
-
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
 		return
 	}
 
 	logger.InfoLogger.Info("OTP send successfully")
-
 	c.JSON(http.StatusOK, gin.H{"message": "OTP sent successfully"})
 }

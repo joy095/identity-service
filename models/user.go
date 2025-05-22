@@ -36,7 +36,7 @@ type User struct {
 	Email           string
 	PasswordHash    string
 	RefreshToken    *string
-	OTPHash         *string
+	OTP             *string // Renamed from OTPHash to OTP to reflect potential storage of raw OTP or hash
 	FirstName       string
 	LastName        string
 	IsVerifiedEmail bool
@@ -211,7 +211,6 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 
 		log.Printf("Token validation error: %v", err)
 
-		// Use more specific error messages instead of ValidationError constants
 		// if strings.Contains(err.Error(), "token is malformed") {
 		// 	return nil, nil, fmt.Errorf("token is malformed: %v", err)
 		// } else if strings.Contains(err.Error(), "token is expired") {
@@ -234,8 +233,7 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 	return token, claims, nil
 }
 
-//
-
+// IsUsernameAvailable checks if a username is available in the database.
 func IsUsernameAvailable(db *pgxpool.Pool, username string) (bool, error) {
 	logger.InfoLogger.Info("IsUsernameAvailable called on models")
 
@@ -267,7 +265,7 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 	}
 
 	query := `INSERT INTO users (id, username, email, password_hash, first_name, last_name) 
-              VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+			  VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
 	_, err = db.Exec(context.Background(), query, userID, username, email, passwordHash, firstName, lastName)
 	if err != nil {
 		return nil, "", "", err
@@ -330,9 +328,8 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 	var user User
 
-	query := `SELECT id, username, email, first_name, last_name,  password_hash, refresh_token FROM users WHERE username = $1`
+	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email FROM users WHERE username = $1`
 
-	// *** Scan the 'dob' column into the temporary time.Time variable ***
 	err := db.QueryRow(context.Background(), query, username).Scan(
 		&user.ID,
 		&user.Username,
@@ -341,9 +338,10 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 		&user.LastName,
 		&user.PasswordHash,
 		&user.RefreshToken,
+		&user.IsVerifiedEmail,
 	)
 	if err != nil {
-		logger.ErrorLogger.Errorf("failed to get user by username: %v", err) // Added specific logging
+		logger.ErrorLogger.Errorf("failed to get user by username: %v", err)
 		return nil, err
 	}
 
@@ -353,14 +351,47 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 // GetUserByID retrieves a user by id
 func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 	var user User
-	query := `SELECT id, username, email, password_hash, refresh_token FROM users WHERE id = $1`
+	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email FROM users WHERE id = $1`
 	err := db.QueryRow(context.Background(), query, id).Scan(
-		&user.ID, &user.Username, &user.Email, &user.PasswordHash, &user.RefreshToken,
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.FirstName,
+		&user.LastName,
+		&user.PasswordHash,
+		&user.RefreshToken,
+		&user.IsVerifiedEmail,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &user, nil
+}
+
+// UpdateUserFields updates specific fields of a user's profile.
+func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {
+	if len(updates) == 0 {
+		return nil // No updates to perform
+	}
+
+	setClauses := []string{}
+	args := []interface{}{}
+	argCounter := 1
+
+	for field, value := range updates {
+		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", field, argCounter))
+		args = append(args, value)
+		argCounter++
+	}
+
+	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(setClauses, ", "), argCounter)
+	args = append(args, userID)
+
+	_, err := db.Exec(context.Background(), query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update user fields: %w", err)
+	}
+	return nil
 }
 
 // IsEmailVerified checks if a user's email is verified
