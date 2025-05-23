@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
+	"sync" // For thread-safe access to badWordsMap
 
-	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/logger" // Assuming this logger is available
 )
 
 // BadWordRequest represents a request to check text for bad words
@@ -20,54 +20,70 @@ type BadWordResponse struct {
 	ContainsBadWords bool `json:"containsBadWords"`
 }
 
-// badWords is a list of bad words or patterns loaded from a text file.
-var badWords []string
+// badWordsMap is a set of bad words for efficient lookups.
+// Using a map[string]struct{} is an efficient way to implement a set in Go.
+var badWordsMap map[string]struct{}
 
-// LoadBadWords loads bad words from a text file.
+// mutex to protect concurrent access to badWordsMap
+var mu sync.RWMutex
+
+// LoadBadWords loads bad words from a text file into a map for fast lookups.
 // Each line in the file represents a bad word or pattern.
-func LoadBadWords(filename string) (bool, error) {
+func LoadBadWords(filename string) error {
 	logger.InfoLogger.Info("LoadBadWords called")
 
 	data, err := os.ReadFile(filename)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("failed to read bad words file: %w", err)
 	}
 
-	// Split the file content into lines
-	badWords = strings.Split(string(data), "\n")
+	lines := strings.Split(string(data), "\n")
+	newBadWordsMap := make(map[string]struct{})
 
-	// Trim whitespace and remove empty lines
-	for i := 0; i < len(badWords); i++ {
-		badWords[i] = strings.TrimSpace(badWords[i])
-		if badWords[i] == "" {
-			badWords = slices.Delete(badWords, i, i+1)
-			i-- // Adjust index after removing an empty line
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine != "" {
+			newBadWordsMap[strings.ToLower(trimmedLine)] = struct{}{} // Store in lowercase for case-insensitive matching
 		}
 	}
 
-	fmt.Printf("Loaded %d bad words from text file\n", len(badWords))
-	return true, nil
+	mu.Lock()
+	badWordsMap = newBadWordsMap
+	mu.Unlock()
+
+	fmt.Printf("Loaded %d bad words from text file\n", len(badWordsMap))
+	return nil
 }
 
-// ContainsBadWords checks if the input text contains any bad words.
-// It now checks if the exact word matches any word in the bad words list.
+// ContainsBadWords checks if the input text contains any bad words using the map for efficient lookups.
 func ContainsBadWords(text string) bool {
 	logger.InfoLogger.Info("ContainsBadWords called")
+
+	if badWordsMap == nil || len(badWordsMap) == 0 {
+		logger.InfoLogger.Warn("Bad words list is empty or not loaded.")
+		return false // No bad words to check against
+	}
+
 	// Convert input to lowercase and split into words
-	words := strings.Fields(strings.ToLower(text))
+	// Using FieldsFunc to handle various delimiters including newlines, tabs, etc.
+	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !('a' <= r && r <= 'z' || '0' <= r && r <= '9') // Split on anything that's not a letter or number
+	})
 
-	// Check each word against the bad words list
+	mu.RLock() // Use RLock for read-only access
+	defer mu.RUnlock()
+
+	// Check each word against the bad words map
 	for _, word := range words {
-		// Remove any punctuation from the word
-		word = strings.Trim(word, ".,!?;:\"'()[]{}")
+		// No need to trim punctuation explicitly if FieldsFunc handles it well.
+		// If you only want to remove leading/trailing punctuation, keep the Trim.
+		// For example, "hello." would become "hello"
+		// word = strings.Trim(word, ".,!?;:\"'()[]{}")
 
-		// Check if this word is in the bad words list
-		for _, badWord := range badWords {
-			if strings.ToLower(badWord) == word {
-				logger.InfoLogger.Infof("Bad word detected: %s\n", word)
-				fmt.Printf("Bad word detected: %s\n", word)
-				return true
-			}
+		if _, found := badWordsMap[word]; found {
+			logger.InfoLogger.Infof("Bad word detected: %s\n", word)
+			fmt.Printf("Bad word detected: %s\n", word)
+			return true
 		}
 	}
 	return false
@@ -81,26 +97,49 @@ func CheckText(text string) BadWordResponse {
 }
 
 // AddBadWord adds a new bad word to the list.
-func AddBadWord(badWord string) (bool, error) {
+func AddBadWord(badWord string) error {
 	if badWord == "" {
-		return false, errors.New("bad word must not be empty")
+		return errors.New("bad word must not be empty")
 	}
-	badWords = append(badWords, badWord)
-	return true, nil
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if badWordsMap == nil {
+		badWordsMap = make(map[string]struct{})
+	}
+	badWordsMap[strings.ToLower(badWord)] = struct{}{}
+	logger.InfoLogger.Infof("Added bad word: %s", badWord)
+	return nil
 }
 
 // RemoveBadWord removes a bad word from the list.
 func RemoveBadWord(badWord string) bool {
-	for i, bw := range badWords {
-		if bw == badWord {
-			badWords = slices.Delete(badWords, i, i+1)
-			return true
-		}
+	mu.Lock()
+	defer mu.Unlock()
+
+	if badWordsMap == nil {
+		return false
+	}
+
+	// Ensure we are removing the lowercase version
+	badWordLower := strings.ToLower(badWord)
+	if _, found := badWordsMap[badWordLower]; found {
+		delete(badWordsMap, badWordLower)
+		logger.InfoLogger.Infof("Removed bad word: %s", badWord)
+		return true
 	}
 	return false
 }
 
-// ListBadWords returns the current list of bad words.
+// ListBadWords returns the current list of bad words (as a slice for convenience).
 func ListBadWords() []string {
-	return badWords
+	mu.RLock()
+	defer mu.RUnlock()
+
+	words := make([]string, 0, len(badWordsMap))
+	for word := range badWordsMap {
+		words = append(words, word)
+	}
+	return words
 }
