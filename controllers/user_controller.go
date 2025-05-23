@@ -110,7 +110,6 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		Username  *string `json:"username"`
 		FirstName *string `json:"firstName"`
 		LastName  *string `json:"lastName"`
-		Email     *string `json:"email"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -127,8 +126,6 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 	}
 
 	updates := make(map[string]interface{})
-	emailChanged := false
-	var newEmail string
 
 	if req.Username != nil && *req.Username != "" && strings.ToLower(*req.Username) != currentUser.Username {
 		lowerCaseUsername := strings.ToLower(*req.Username)
@@ -161,73 +158,38 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		updates["last_name"] = *req.LastName
 	}
 
-	// Handle email update - requires OTP verification
-	if req.Email != nil && *req.Email != "" && *req.Email != currentUser.Email {
-		// Basic email format validation (more thorough validation should be done by binding:"email")
-		if !strings.Contains(*req.Email, "@") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email format"})
-			return
-		}
-		emailChanged = true
-		newEmail = *req.Email
-	}
-
-	if len(updates) == 0 && !emailChanged {
+	if len(updates) == 0 {
 		c.JSON(http.StatusOK, gin.H{"message": "No changes detected for profile update"})
 		return
 	}
 
 	// Apply immediate updates (username, first_name, last_name)
-	if len(updates) > 0 {
-		err = models.UpdateUserFields(db.DB, userID, updates)
-		if err != nil {
-			logger.ErrorLogger.Error(fmt.Sprintf("Failed to update user fields for ID %s: %v", userID, err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
-			return
-		}
-	}
-
-	// Handle email change with OTP verification
-	if emailChanged {
-		otp, err := utils.GenerateSecureOTP()
-		if err != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for email change for user %s: %w", userID, err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP for email verification"})
-			return
-		}
-
-		// Store the OTP and the new email with the user's ID
-		if err := mail.StoreEmailChangeOTP(userID.String(), newEmail, otp); err != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to store email change OTP for user %s: %w", userID, err))
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate email change verification"})
-			return
-		}
-
-		// Send the OTP email asynchronously
-		go func() {
-			sendErr := mail.SendEmailChangeOTP(newEmail, currentUser.FirstName, currentUser.LastName, otp)
-			if sendErr != nil {
-				logger.ErrorLogger.Error(fmt.Errorf("failed to send email change OTP to %s for user %s: %w", newEmail, userID, sendErr))
-			} else {
-				logger.InfoLogger.Info(fmt.Sprintf("Email change OTP sent successfully to: %s for user %s", newEmail, userID))
-			}
-		}()
-
-		c.JSON(http.StatusOK, gin.H{
-			"message":              "Profile updated successfully. If email was changed, an OTP has been sent to the new email for verification.",
-			"email_change_pending": true, // Indicate that email verification is pending
-		})
-	} else {
-		// If only other fields were updated, or no changes
-		c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
+	err = models.UpdateUserFields(db.DB, userID, updates)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Sprintf("Failed to update user fields for ID %s: %v", userID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
+		return
 	}
 
 	logger.InfoLogger.Info(fmt.Sprintf("User profile update process completed for ID: %s", userID))
+	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
 }
 
-// SendProfileUpdateOTP sends an OTP to a new email for verification during profile update.
-func (uc *UserController) SendProfileUpdateOTP(c *gin.Context) {
-	logger.InfoLogger.Info("SendProfileUpdateOTP controller called")
+// UpdateEmailWithPassword handles updating a user's email, requiring current password for verification.
+func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
+	logger.InfoLogger.Info("UpdateEmailWithPassword controller called")
+
+	var req struct {
+		NewEmail string `json:"newEmail" binding:"required,email"`
+		Password string `json:"password" binding:"required"`
+		Username string `json:"username" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorLogger.Error("Invalid payload for UpdateEmailWithPassword: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
 	userIDFromToken, exists := c.Get("user_id")
 	if !exists {
@@ -235,20 +197,11 @@ func (uc *UserController) SendProfileUpdateOTP(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
+
 	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
-
-	var req struct {
-		Email string `json:"email" binding:"required,email"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Error("Invalid payload for SendProfileUpdateOTP: " + err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -259,148 +212,139 @@ func (uc *UserController) SendProfileUpdateOTP(c *gin.Context) {
 		return
 	}
 
-	// Generate a new OTP
-	otp, err := utils.GenerateSecureOTP()
+	// 1. Verify current password
+	// Assume models.ComparePasswords can take user.ID or user.Username and the plain password
+	// Assuming `models.ComparePasswords` takes the plain password and the stored hashed password,
+	// or it fetches the user by username/ID and compares. Let's assume it fetches by username
+	// as is common in your models, but it should ideally use user.ID here for directness.
+	// If `models.ComparePasswords` requires a username, you'd use `currentUser.Username`.
+	validPassword, err := models.ComparePasswords(db.DB, req.Password, currentUser.Username)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for email change for user %s: %w", userID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
+		logger.ErrorLogger.Error(fmt.Sprintf("Error comparing passwords for user %s: %v", currentUser.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during password verification"})
+		return
+	}
+	if !validPassword {
+		logger.InfoLogger.Info(fmt.Sprintf("Incorrect current password provided by user %s during email update attempt", currentUser.Username))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect current password"})
 		return
 	}
 
-	// Store the OTP with the user's ID and the target new email
-	if err := mail.StoreEmailChangeOTP(userID.String(), req.Email, otp); err != nil {
+	// 2. Check if the new email is already the current email
+	if req.NewEmail == currentUser.Email {
+		c.JSON(http.StatusOK, gin.H{"message": "New email is the same as the current email. No update needed."})
+		return
+	}
+
+	// 4. Generate and send OTP to the new email
+	otp, err := utils.GenerateSecureOTP()
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for email change for user %s: %w", userID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP for email verification"})
+		return
+	}
+
+	// Store the OTP and the new email with the user's ID
+	if err := mail.StoreOTP(mail.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Username, otp); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store email change OTP for user %s: %w", userID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP. Please try again."})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate email change verification"})
 		return
 	}
 
 	// Send the OTP email asynchronously
 	go func() {
-		sendErr := mail.SendEmailChangeOTP(req.Email, currentUser.FirstName, currentUser.LastName, otp)
+		sendErr := mail.SendEmailChangeNewOTP(req.NewEmail, currentUser.FirstName, currentUser.LastName, otp)
 		if sendErr != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to send email change OTP to %s for user %s: %w", req.Email, userID, sendErr))
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send email change OTP to %s for user %s: %w", req.NewEmail, userID, sendErr))
 		} else {
-			logger.InfoLogger.Info(fmt.Sprintf("Email change OTP sent successfully to: %s for user %s", req.Email, userID))
+			logger.InfoLogger.Info(fmt.Sprintf("Email change OTP sent successfully to: %s for user %s", req.NewEmail, userID))
 		}
 	}()
 
-	c.JSON(http.StatusOK, gin.H{"message": "OTP sent to new email for verification."})
+	logger.InfoLogger.Info(fmt.Sprintf("Email change initiated for user %s. OTP sent to %s.", userID, req.NewEmail))
+	c.JSON(http.StatusOK, gin.H{
+		"message":              "An OTP has been sent to your new email for verification. Please verify to complete the email change.",
+		"email_change_pending": true,
+	})
 }
 
 // VerifyProfileUpdateOTP verifies the OTP for an email change during profile update.
-func (uc *UserController) VerifyProfileUpdateOTP(c *gin.Context) {
-	logger.InfoLogger.Info("VerifyProfileUpdateOTP controller called")
-
-	userIDFromToken, exists := c.Get("user_id")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	userID, err := uuid.Parse(userIDFromToken.(string))
-	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
+func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
+	logger.InfoLogger.Info("VerifyEmailChangeOTP called")
 
 	var req struct {
-		Email string `json:"email" binding:"required,email"`
-		OTP   string `json:"otp" binding:"required,len=6"` // Assuming 6-digit OTP
+		Email    string `json:"email" binding:"required,email"`
+		OTP      string `json:"otp" binding:"required,len=6"`
+		Username string `json:"username" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Error("Invalid payload for VerifyProfileUpdateOTP: " + err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		logger.ErrorLogger.Error("Invalid request for VerifyEmailChangeOTP: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()}) // Added err.Error() for better debugging
 		return
 	}
 
-	// Retrieve the stored OTP hash and the email it was sent to
-	storedOTP, storedEmail, err := mail.RetrieveEmailChangeOTP(userID.String())
+	req.Email = strings.ToLower(strings.Trim(req.Email, " "))
+
+	user, err := models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
 	if err != nil {
-		if errors.Is(err, mail.ErrOTPNotFound) {
-			logger.InfoLogger.Info(fmt.Sprintf("OTP not found or expired for user %s", userID))
-			c.JSON(http.StatusBadRequest, gin.H{"error": "OTP not found or expired. Please request a new one."})
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s", req.Username)
+			// For security, always return a generic success message even if email isn't found
+			// to avoid user enumeration.
+			c.JSON(http.StatusOK, gin.H{"message": "If the email is registered, an OTP has been sent for password reset."})
 			return
 		}
-		logger.ErrorLogger.Error(fmt.Errorf("error retrieving stored OTP for user %s: %w", userID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during OTP verification"})
-		return
-	}
-
-	// Check if the provided email matches the email stored for this verification
-	if storedEmail != req.Email {
-		logger.InfoLogger.Info(fmt.Sprintf("Email mismatch for user %s: requested %s, stored %s", userID, req.Email, storedEmail))
-		c.JSON(http.StatusBadRequest, gin.H{"error": "The provided email does not match the email pending verification."})
-		return
-	}
-
-	// Verify the OTP
-	if utils.HashOTP(req.OTP) != storedOTP {
-		logger.InfoLogger.Info(fmt.Sprintf("Invalid OTP for user %s, email %s", userID, req.Email))
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP"})
-		return
-	}
-
-	// If OTP is valid, update the user's email in the database
-	updates := map[string]interface{}{"email": req.Email, "is_verified_email": true} // Set email as verified after change
-	err = models.UpdateUserFields(db.DB, userID, updates)
-	if err != nil {
-		logger.ErrorLogger.Error(fmt.Sprintf("Failed to update user email for ID %s: %v", userID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email in database"})
-		return
-	}
-
-	// Clear the OTP from Redis after successful verification
-	if err := mail.ClearEmailChangeOTP(userID.String()); err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to clear OTP for user %s: %w", userID, err))
-	}
-
-	logger.InfoLogger.Info(fmt.Sprintf("User email updated successfully for ID: %s to %s", userID, req.Email))
-	c.JSON(http.StatusOK, gin.H{"message": "Email updated successfully!"})
-}
-
-// GetUserProfile retrieves the profile information for the authenticated user.
-func (uc *UserController) GetUserProfile(c *gin.Context) {
-	logger.InfoLogger.Info("GetUserProfile function called")
-
-	userIDFromToken, exists := c.Get("user_id")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDFromToken.(string))
-	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		logger.ErrorLogger.Error(fmt.Errorf("database error fetching user by email: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
-	user, err := models.GetUserByID(db.DB, userID.String())
+	otp, err := utils.GenerateSecureOTP()
 	if err != nil {
-		logger.ErrorLogger.Errorf("User not found for ID %s: %v", userID, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User profile not found"})
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for user %s: %w", req.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"id":              user.ID,
-		"username":        user.Username,
-		"firstName":       user.FirstName,
-		"lastName":        user.LastName,
-		"email":           user.Email,
-		"isVerifiedEmail": user.IsVerifiedEmail, // Include email verification status
-	})
+	if err := mail.StoreOTP(mail.EMAIL_VERIFICATION_OTP_PREFIX+req.Username, otp); err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to store registration OTP for username %s: %w", req.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP for verification"})
+		return
+	}
 
-	logger.InfoLogger.Info(fmt.Sprintf("User profile retrieved successfully for ID: %s", userID))
+	go func() {
+		sendErr := mail.SendEmailChangeNewOTP(req.Email, user.FirstName, user.LastName, otp)
+		if sendErr != nil {
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, req.Username, sendErr))
+		} else {
+			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email, req.Username))
+		}
+	}()
+
+	ctx := context.Background() // Define ctx here or pass it from a middleware if available
+
+	// Update user's email
+	_, err = db.DB.Exec(ctx, "UPDATE users SET email = $1, is_verified_email = TRUE WHERE id = $2", req.Email, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to update email for user %s: %v", user.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email"})
+		return
+	}
+
+	logger.InfoLogger.Info("Email change OTP verified and email updated successfully")
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Email updated successfully!",
+	})
 }
 
 // isValidUsernameChar checks if the username contains only valid characters
+// This function is redundant given the `lowercaseUsernameRegex`.
+// Consider removing it unless there's a specific, separate use case.
 func isValidUsernameChar(s string) bool {
 	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' { // Added r != '-'
 			return false
 		}
 	}
@@ -459,8 +403,17 @@ func (uc *UserController) Register(c *gin.Context) {
 		return
 	}
 
+	// For registration, it's generally good practice to store the OTP against the new user's ID
+	// or the email, and then verify that in a separate endpoint.
+	// Assuming `mail.StoreOTP` is suitable for this purpose.
+	if err := mail.StoreOTP(mail.EMAIL_VERIFICATION_OTP_PREFIX+user.Username, otp); err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to store registration OTP for user %s: %w", user.ID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP for verification"})
+		return
+	}
+
 	go func() {
-		sendErr := mail.SendOTP(req.Email, req.FirstName, req.LastName, otp)
+		sendErr := mail.SendVerificationOTP(req.Email, req.FirstName, req.LastName, otp)
 		if sendErr != nil {
 			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, req.Username, sendErr))
 		} else {
@@ -476,6 +429,7 @@ func (uc *UserController) Register(c *gin.Context) {
 		"email":     user.Email,
 		"firstName": user.FirstName,
 		"lastName":  user.LastName,
+		"message":   "User registered successfully. Please check your email for OTP verification.",
 	})
 }
 
@@ -535,16 +489,20 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	user, err := models.GetUserByUsername(db.DB, req.Username)
+	// We only need the email to send the OTP. We'll verify username/email later.
+	// For security, avoid revealing if the user exists based on email alone.
+	// Just proceed with sending the OTP if the email exists in the system.
+	user, err := models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
 	if err != nil {
-		logger.ErrorLogger.Error("User not found with username: " + req.Username)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	if user.Email != req.Email {
-		logger.ErrorLogger.Error("Email does not match the user's email")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Email does not match the user's email"})
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s", req.Username)
+			// For security, always return a generic success message even if email isn't found
+			// to avoid user enumeration.
+			c.JSON(http.StatusOK, gin.H{"message": "If the email is registered, an OTP has been sent for password reset."})
+			return
+		}
+		logger.ErrorLogger.Error(fmt.Errorf("database error fetching user by email: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
@@ -555,34 +513,115 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	// Using the provided mail.StoreOTP for password reset OTP, with a specific key
-	err = mail.StoreOTP("forgot_password_otp:"+req.Username+"-"+req.Email, otp)
+	// Store the OTP with the user's ID to associate it clearly
+	// This ensures the OTP is tied to a specific user trying to reset their password.
+	// The key should be unique per user for password reset.
+	resetKey := mail.FORGOT_PASSWORD_OTP_PREFIX + user.Username
+	err = mail.StoreOTP(resetKey, otp)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to store OTP: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP"})
+		logger.ErrorLogger.Error(fmt.Errorf("failed to store OTP for password reset for user %s: %w", user.ID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate password reset"})
 		return
 	}
 
-	// Using the provided mail.SendForgotPasswordOTP
-	if err := mail.SendForgotPasswordOTP(req.Email, otp); err != nil {
-		logger.ErrorLogger.Error("Failed to send OTP: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
-		return
-	}
+	// Send the OTP email asynchronously
+	go func() {
+		sendErr := mail.SendForgotPasswordOTP(user.Email, user.FirstName, user.LastName, otp) // Pass user details if email template uses them
+		if sendErr != nil {
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send forgot password OTP to %s for user %s: %w", user.Email, user.Username, sendErr))
+		} else {
+			logger.InfoLogger.Info(fmt.Sprintf("Forgot password OTP sent successfully to: %s for user %s", user.Email, user.Username))
+		}
+	}()
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "OTP sent to email successfully",
+		"message": "If the email is registered, an OTP has been sent for password reset.",
 	})
 }
 
-// ChangePassword handles changing user's password
+// ResetPassword verifies the OTP and sets a new password.
+func (uc *UserController) ResetPassword(c *gin.Context) {
+	logger.InfoLogger.Info("ResetPassword controller called")
+
+	var req struct {
+		Email       string `json:"email" binding:"required,email"`
+		OTP         string `json:"otp" binding:"required,len=6"`
+		NewPassword string `json:"new_password" binding:"required,min=8"`
+		Username    string `json:"username" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorLogger.Error("Invalid reset password payload: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	user, err := models.GetUserByUsername(db.DB, req.Username)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.InfoLogger.Infof("Password reset attempt for non-existent username: %s", req.Email)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email or OTP."})
+			return
+		}
+		logger.ErrorLogger.Error(fmt.Errorf("database error fetching user by email for password reset: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// Retrieve the stored OTP using the user's ID
+	resetKey := fmt.Sprintf("password_reset_otp:%s", user.ID.String())
+	storedOTP, _, err := mail.RetrieveEmailChangeNewOTP(resetKey) // Using RetrieveEmailChangeOTP, but it returns email too.
+	if err != nil {
+		if errors.Is(err, mail.ErrOTPNotFound) {
+			logger.InfoLogger.Info(fmt.Sprintf("Password reset OTP not found or expired for user %s (email: %s)", user.ID, req.Email))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired OTP. Please request a new one."})
+			return
+		}
+		logger.ErrorLogger.Error(fmt.Errorf("error retrieving stored password reset OTP for user %s: %w", user.ID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during OTP verification"})
+		return
+	}
+
+	// Verify the OTP
+	if utils.HashOTP(req.OTP) != storedOTP {
+		logger.InfoLogger.Info(fmt.Sprintf("Invalid password reset OTP for user %s (email: %s)", user.ID, req.Email))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP."})
+		return
+	}
+
+	// Hash the new password
+	hashedPassword, err := models.HashPassword(req.NewPassword)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to hash new password for user %s: %w", user.ID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new password"})
+		return
+	}
+
+	// Update the user's password in the database
+	_, err = db.DB.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedPassword, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.ID, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		return
+	}
+
+	// Clear the OTP from Redis after successful password reset
+	if err := mail.ClearEmailChangeNewOTP(resetKey); err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to clear password reset OTP for user %s: %w", user.ID, err))
+	}
+
+	logger.InfoLogger.Infof("Password reset successfully for user: %s (email: %s)", user.Username, user.Email)
+	c.JSON(http.StatusOK, gin.H{"message": "Password reset successfully!"})
+}
+
+// ChangePassword handles changing user's password when they are logged in.
 func (uc *UserController) ChangePassword(c *gin.Context) {
 	logger.InfoLogger.Info("ChangePassword controller called")
 
 	var req struct {
-		Username    string `json:"username" binding:"required"`
-		Password    string `json:"password" binding:"required"`
-		NewPassword string `json:"new_password" binding:"required,min=8"`
+		CurrentPassword string `json:"currentPassword" binding:"required"`
+		NewPassword     string `json:"newPassword" binding:"required,min=8"`
+		Username        string `json:"username" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -593,34 +632,37 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 
 	user, err := models.GetUserByUsername(db.DB, req.Username)
 	if err != nil {
-		logger.ErrorLogger.Error("User not found: " + err.Error())
+		logger.ErrorLogger.Error(fmt.Sprintf("User not found for Username %s: %v", req.Username, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	valid, err := models.ComparePasswords(db.DB, req.Password, req.Username)
+	// Compare the provided current password with the hashed password in the DB
+	valid, err := models.ComparePasswords(db.DB, req.CurrentPassword, user.Username) // Assuming ComparePasswords uses username to fetch user
 	if err != nil {
-		logger.ErrorLogger.Error("Error comparing passwords: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		logger.ErrorLogger.Error(fmt.Sprintf("Error comparing passwords for user %s: %v", user.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during password verification"})
 		return
 	}
 
 	if !valid {
-		logger.ErrorLogger.Error("Incorrect username or password")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect username or password"})
+		logger.ErrorLogger.Info(fmt.Sprintf("Invalid credential for user %s", user.Username))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credential"})
 		return
 	}
 
-	hashedPassword, err := models.HashPassword(req.NewPassword)
+	// Hash the new password
+	hashedNewPassword, err := models.HashPassword(req.NewPassword)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to hash new password: " + err.Error())
+		logger.ErrorLogger.Error(fmt.Errorf("failed to hash new password for user %s: %w", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new password"})
 		return
 	}
 
-	_, err = db.DB.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedPassword, user.ID)
+	// Update the password in the database
+	_, err = db.DB.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to update password in DB: " + err.Error())
+		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}
@@ -694,55 +736,28 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 func (uc *UserController) Logout(c *gin.Context) {
 	logger.InfoLogger.Info("Logout controller called")
 
-	var req struct {
-		UserID string `json:"user_id" binding:"required,uuid"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Error("error-message", err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format or missing fields"})
-		return
-	}
-
+	// Get user ID from the token in the context, as the request body is not reliable for auth
 	userIDFromToken, exists := c.Get("user_id")
 	if !exists {
-		logger.ErrorLogger.Error("Unauthorized")
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	// This check should ideally be against the actual user_id from the token
-	// `userIDFromToken` is an interface{}, req.UserID is a string. Need to convert userIDFromToken to string or uuid.
-	// For now, assuming direct comparison intent if types were aligned.
-	// A more robust check might involve parsing userIDFromToken to uuid.UUID.
-	// parsedTokenUserID, ok := userIDFromToken.(uuid.UUID)
-	// if !ok || parsedTokenUserID.String() != req.UserID {
-	// 	logger.ErrorLogger.Error("You can only log out your own account")
-	// 	c.JSON(http.StatusForbidden, gin.H{"error": "You can only log out your own account"})
-	// 	return
-	// }
-
-	if userIDFromToken != req.UserID {
-		logger.ErrorLogger.Error("You can only log out your own account")
-
-		c.JSON(http.StatusForbidden, gin.H{"error": "You can only log out your own account"})
-		return
-	}
-
-	userID, err := uuid.Parse(req.UserID)
+	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
-		logger.ErrorLogger.Error("Invalid user ID format")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
 	if err := models.LogoutUser(db.DB, userID); err != nil {
-		logger.ErrorLogger.Error("Failed to logout")
+		logger.ErrorLogger.Error(fmt.Sprintf("Failed to logout user %s: %v", userID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
 		return
 	}
 
-	logger.InfoLogger.Info("Successfully logged out")
+	logger.InfoLogger.Info(fmt.Sprintf("Successfully logged out user: %s", userID))
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 
