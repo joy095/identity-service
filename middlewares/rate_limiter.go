@@ -14,6 +14,20 @@ import (
 	redisstore "github.com/ulule/limiter/v3/drivers/store/redis"
 )
 
+// Example route using NewRateLimiter
+// r.GET("/single-rate-limited", middlewares.NewRateLimiter("10-2m", "singleRateRoute"), func(c *gin.Context) {
+//     c.JSON(200, gin.H{
+//         "message": "This route is rate-limited to 10 requests per 2 minutes.",
+//     })
+// })
+
+// Example route using CombinedRateLimiter
+// r.GET("/combined-rate-limited", middlewares.CombinedRateLimiter("combinedRateRoute", "5-1m", "20-10m"), func(c *gin.Context) {
+//     c.JSON(200, gin.H{
+//         "message": "This route is rate-limited to 5 requests per minute and 20 requests per 10 minutes.",
+//     })
+// })
+
 // createRedisStore creates a Redis-backed rate limiter store with a route-specific prefix
 func createRedisStore(routeID string) (limiter.Store, error) {
 	rdb := db.GetRedisClient()
