@@ -34,6 +34,8 @@ const (
 	FORGOT_PASSWORD_OTP_PREFIX    = "forgot_password_otp:"
 	EMAIL_VERIFICATION_OTP_PREFIX = "email_verification_otp:"
 	EMAIL_CHANGE_NEW_OTP_PREFIX   = "email_change_new_otp:" // For verifying the new email
+
+	CUSTOMER_OTP_PREFIX = "customer_otp:"
 )
 
 // Email template paths
@@ -197,7 +199,7 @@ func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
 
 	// Store OTP using email as key for customer OTPs
 	// Using a generic "otp:" prefix for customer OTPs if no specific prefix is defined for them
-	err = redisclient.GetRedisClient().Set(ctx, "otp:"+emailAddress, utils.HashOTP(otp), time.Minute*OTP_EXPIRATION_MINUTES).Err()
+	err = redisclient.GetRedisClient().Set(ctx, CUSTOMER_OTP_PREFIX+emailAddress, utils.HashOTP(otp), time.Minute*OTP_EXPIRATION_MINUTES).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store customer OTP for %s: %v", emailAddress, err)
 		return fmt.Errorf("failed to store OTP: %w", err)

@@ -144,9 +144,23 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 
 	// 7. Update customer in DB (set is_verified_email to true and store refresh token)
 	// Use a transaction if you need to ensure atomicity with other potential updates
-	_, err = db.Exec(context.Background(),
+	// Use transaction for atomic update
+	tx, err := db.Begin(context.Background())
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+
+	_, err = tx.Exec(context.Background(),
 		`UPDATE customers SET is_verified_email = TRUE, refresh_token = $1 WHERE id = $2`,
-		refreshToken, customer.ID) // Update based on ID after fetching the user
+		refreshToken, customer.ID)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to update customer data after login: %w", err)
+	}
+
+	if err = tx.Commit(context.Background()); err != nil {
+		return nil, "", "", fmt.Errorf("failed to commit transaction: %w", err)
+	} // Update based on ID after fetching the user
 	if err != nil {
 
 		return nil, "", "", fmt.Errorf("failed to update customer data after login: %w", err)

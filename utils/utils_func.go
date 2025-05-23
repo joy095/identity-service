@@ -3,7 +3,6 @@ package utils
 import (
 	"crypto/rand"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/joy095/identity/config"
@@ -45,7 +44,7 @@ func GenerateSecureOTP() (string, error) {
 	bytes := make([]byte, 6)
 	_, err := rand.Read(bytes)
 	if err != nil {
-		log.Println("Error generating secure OTP:", err)
+		logger.ErrorLogger.Errorf("Error generating secure OTP: %v", err)
 		return "", fmt.Errorf("failed to generate secure OTP: %w", err)
 	}
 	for i := range bytes {

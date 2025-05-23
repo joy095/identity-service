@@ -339,18 +339,6 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 	})
 }
 
-// isValidUsernameChar checks if the username contains only valid characters
-// This function is redundant given the `lowercaseUsernameRegex`.
-// Consider removing it unless there's a specific, separate use case.
-func isValidUsernameChar(s string) bool {
-	for _, r := range s {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' { // Added r != '-'
-			return false
-		}
-	}
-	return true
-}
-
 // Register handles user registration
 func (uc *UserController) Register(c *gin.Context) {
 	logger.InfoLogger.Info("Register controller called")
@@ -568,9 +556,9 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	// Retrieve the stored OTP using the user's ID
-	resetKey := fmt.Sprintf("password_reset_otp:%s", user.ID.String())
-	storedOTP, _, err := mail.RetrieveEmailChangeNewOTP(resetKey) // Using RetrieveEmailChangeOTP, but it returns email too.
+	// Retrieve the stored OTP using the same key format as in ForgotPassword
+	resetKey := mail.FORGOT_PASSWORD_OTP_PREFIX + user.Username
+	storedOTP, err := mail.RetrieveOTP(resetKey)
 	if err != nil {
 		if errors.Is(err, mail.ErrOTPNotFound) {
 			logger.InfoLogger.Info(fmt.Sprintf("Password reset OTP not found or expired for user %s (email: %s)", user.ID, req.Email))
@@ -606,7 +594,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 	}
 
 	// Clear the OTP from Redis after successful password reset
-	if err := mail.ClearEmailChangeNewOTP(resetKey); err != nil {
+	if err := mail.ClearOTP(resetKey); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to clear password reset OTP for user %s: %w", user.ID, err))
 	}
 

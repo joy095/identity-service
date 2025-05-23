@@ -369,9 +369,24 @@ func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 }
 
 // UpdateUserFields updates specific fields of a user's profile.
+// Define allowed fields for updates to prevent SQL injection
+var allowedUpdateFields = map[string]bool{
+	"username":   true,
+	"first_name": true,
+	"last_name":  true,
+	"email":      true,
+}
+
 func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {
 	if len(updates) == 0 {
 		return nil // No updates to perform
+	}
+
+	// Validate field names to prevent SQL injection
+	for field := range updates {
+		if !allowedUpdateFields[field] {
+			return fmt.Errorf("field '%s' is not allowed for updates", field)
+		}
 	}
 
 	setClauses := []string{}
