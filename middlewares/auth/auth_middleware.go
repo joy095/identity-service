@@ -74,7 +74,14 @@ func AuthMiddleware() gin.HandlerFunc {
 			}
 		} else {
 			// If neither username param nor user_id in body is provided, try to get user by userIDFromToken directly
-			user, err = models.GetUserByID(db.DB, userIDFromToken.(string)) // Cast userIDFromToken to string
+			userIDStr, ok := userIDFromToken.(string)
+			if !ok {
+				logger.ErrorLogger.Error("Invalid user ID type in token")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+				c.Abort()
+				return
+			}
+			user, err = models.GetUserByID(db.DB, userIDStr)
 			if err != nil {
 				logger.ErrorLogger.Errorf("User not found based on token ID: %v", err)
 				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})

@@ -22,8 +22,8 @@ func RegisterRoutes(router *gin.Engine) {
 
 	router.POST("/change-password", userController.ChangePassword)
 
-	router.POST("/request-otp", mail.RequestOTP) // Assuming mail.RequestOTP is a gin.HandlerFunc
-	router.POST("/verify-otp", mail.VerifyOTP)   // Assuming mail.VerifyOTP is a gin.HandlerFunc
+	router.POST("/resend-otp", mail.ResendOTP) // Assuming mail.ResendOTP is a gin.HandlerFunc
+	router.POST("/verify-otp", mail.VerifyOTP) // Assuming mail.VerifyOTP is a gin.HandlerFunc
 
 	// Protected routes
 	protected := router.Group("/")
@@ -33,9 +33,8 @@ func RegisterRoutes(router *gin.Engine) {
 
 		// Profile Management
 		protected.PATCH("/update-profile", userController.UpdateProfile)
-		protected.POST("/send-profile-update-otp", userController.SendProfileUpdateOTP)
-		protected.POST("/verify-profile-update-otp", userController.VerifyProfileUpdateOTP)
-		protected.GET("/profile", userController.GetUserProfile) // Get profile for authenticated user
+		protected.POST("/update-email", userController.UpdateEmailWithPassword)
+		protected.POST("/verify-email-update-otp", userController.VerifyEmailChangeOTP)
 
 		// User retrieval by username (if authenticated)
 		protected.GET("/user/:username", userController.GetUserByUsername)
