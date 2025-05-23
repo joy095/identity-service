@@ -27,9 +27,9 @@ func NewBusinessController(db *pgxpool.Pool) *BusinessController {
 
 type Location struct {
 	// Latitude should be between -90 and +90
-	Latitude float64 `json:"latitude" binding:"required,min=-90,max=90"`
+	Latitude float64 `json:"latitude" binding:"omitempty,min=-90,max=90"`
 	// Longitude should be between -180 and +180
-	Longitude float64 `json:"longitude" binding:"required,min=-180,max=180"`
+	Longitude float64 `json:"longitude" binding:"omitempty,min=-180,max=180"`
 }
 
 // CreateBusinessRequest represents the expected JSON payload for creating a business.
@@ -149,7 +149,7 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		req.PostalCode,
 		req.TaxID,
 		req.About,
-		req.Location.Longitude,
+		req.Location.Latitude,
 		req.Location.Longitude,
 		userID, // Pass the extracted owner user ID
 	)
@@ -216,19 +216,17 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 		return
 	}
 
-	ownerUserID, exists := c.Get("userID")
-	if !exists {
-		logger.ErrorLogger.Error("OwnerUserID not found in context for UpdateBusiness")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+	// --- Extract and parse OwnerUserID from authenticated context ---
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "authentication required: user ID not found" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
-
-	userID, ok := ownerUserID.(uuid.UUID)
-	if !ok {
-		logger.ErrorLogger.Error("OwnerUserID in context is not of type uuid.UUID")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID format"})
-		return
-	}
+	// --- End of OwnerUserID extraction ---
 
 	// Fetch the existing business to check ownership
 	existingBusiness, err := models.GetBusinessByID(bc.DB, businessID)
@@ -304,19 +302,17 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 		return
 	}
 
-	ownerUserID, exists := c.Get("userID")
-	if !exists {
-		logger.ErrorLogger.Error("OwnerUserID not found in context for DeleteBusiness")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+	// --- Extract and parse OwnerUserID from authenticated context ---
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "authentication required: user ID not found" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
 		return
 	}
-
-	userID, ok := ownerUserID.(uuid.UUID)
-	if !ok {
-		logger.ErrorLogger.Error("OwnerUserID in context is not of type uuid.UUID")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID format"})
-		return
-	}
+	// --- End of OwnerUserID extraction ---
 
 	// Fetch the existing business to check ownership
 	existingBusiness, err := models.GetBusinessByID(bc.DB, businessID)

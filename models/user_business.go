@@ -32,8 +32,8 @@ type Business struct {
 	TaxID      string    `json:"taxId,omitempty"` // Tax identification number (e.g., EIN, GSTIN)
 	About      string    `json:"about,omitempty"` // Short description of the business
 	Location   Location  `json:"location"`        // Embedded Location struct
-	CreatedAt  string    `json:"createdAt"`       // Timestamp of creation
-	UpdatedAt  string    `json:"updatedAt"`       // Timestamp of last update
+	CreatedAt  time.Time `json:"createdAt"`       // Timestamp of creation
+	UpdatedAt  time.Time `json:"updatedAt"`       // Timestamp of last update
 	IsActive   bool      `json:"isActive"`        // Status of the business
 	OwnerID    uuid.UUID `json:"ownerId"`         // ID of the user who owns this business
 }
@@ -48,6 +48,7 @@ func NewBusiness(
 	if err != nil {
 		return nil // In case of error, return nil
 	}
+	now := time.Now()
 	return &Business{
 		ID:         id,
 		Name:       name,
@@ -60,8 +61,8 @@ func NewBusiness(
 		TaxID:      taxID,
 		About:      about,
 		Location:   Location{Latitude: lat, Longitude: long},
-		CreatedAt:  time.Now().Format(time.RFC3339), // Store as string for simplicity, or use time.Time
-		UpdatedAt:  time.Now().Format(time.RFC3339),
+		CreatedAt:  now,
+		UpdatedAt:  now,
 		IsActive:   true, // Default to active
 		OwnerID:    ownerUserID,
 	}
@@ -81,7 +82,8 @@ func CreateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.ID = id
 	}
 	// Set creation and update timestamps
-	now := time.Now().Format(time.RFC3339) // Or just time.Now() if using time.Time type
+	now := time.Now()
+
 	business.CreatedAt = now
 	business.UpdatedAt = now
 	business.IsActive = true // Ensure active status if not explicitly set
@@ -173,7 +175,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 	logger.InfoLogger.Infof("Attempting to update business record with ID: %s", business.ID)
 
-	business.UpdatedAt = time.Now().Format(time.RFC3339) // Update timestamp
+	business.UpdatedAt = time.Now()
 
 	query := `
         UPDATE businesses
