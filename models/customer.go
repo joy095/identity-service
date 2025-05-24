@@ -31,9 +31,6 @@ func CreateCustomer(db *pgxpool.Pool, email string) (*User, string, string, erro
 	logger.InfoLogger.Info("CreateUser called on models")
 
 	userID, err := GenerateUUIDv7()
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to generate UUIDv7: %v", err)
-	}
 
 	query := `INSERT INTO customers (id, email) 
               VALUES ($1, $2) RETURNING id`
@@ -154,17 +151,10 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string) (*Customer, strin
 	_, err = tx.Exec(context.Background(),
 		`UPDATE customers SET is_verified_email = TRUE, refresh_token = $1 WHERE id = $2`,
 		refreshToken, customer.ID)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to update customer data after login: %w", err)
-	}
 
 	if err = tx.Commit(context.Background()); err != nil {
 		return nil, "", "", fmt.Errorf("failed to commit transaction: %w", err)
 	} // Update based on ID after fetching the user
-	if err != nil {
-
-		return nil, "", "", fmt.Errorf("failed to update customer data after login: %w", err)
-	}
 
 	// Update the customer object being returned with the new refresh token and verification status
 	customer.IsVerifiedEmail = true

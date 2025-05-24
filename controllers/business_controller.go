@@ -139,7 +139,7 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	// --- End of OwnerUserID extraction ---
 
 	// Create a models.Business instance from the request data
-	business := models.NewBusiness(
+	business, err := models.NewBusiness(
 		req.Name,
 		req.Category,
 		req.Address,
@@ -153,9 +153,19 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		req.Location.Longitude,
 		userID, // Pass the extracted owner user ID
 	)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create business instance: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// if business == nil {
+	// 	logger.ErrorLogger.Error("Failed to create business instance")
+	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create business"})
+	// 	return
+	// }
 
 	// Call the model layer to create the business in the database
-	createdBusiness, err := models.CreateBusiness(bc.DB, business)
+	createdBusiness, err := models.CreateBusiness(c.Request.Context(), bc.DB, business)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create business in database: %v", err)
 		// Check for specific error types if needed (e.g., duplicate name)
@@ -270,8 +280,11 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	if req.About != nil {
 		existingBusiness.About = *req.About
 	}
-	existingBusiness.Location.Latitude = req.Location.Latitude
-	existingBusiness.Location.Longitude = req.Location.Longitude
+	// Only update location if both coordinates are provided and valid
+	if req.Location.Latitude != 0 || req.Location.Longitude != 0 {
+		existingBusiness.Location.Latitude = req.Location.Latitude
+		existingBusiness.Location.Longitude = req.Location.Longitude
+	}
 	if req.IsActive != nil {
 		existingBusiness.IsActive = *req.IsActive
 	}

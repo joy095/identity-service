@@ -2,16 +2,14 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers"
 	middleware "github.com/joy095/identity/middlewares"
 	"github.com/joy095/identity/middlewares/auth"
 	"github.com/joy095/identity/utils/mail"
 )
 
-func RegisterRoutes(router *gin.Engine) {
+func RegisterUserRoutes(router *gin.Engine) {
 	userController := controllers.NewUserController()
-	businessController := controllers.NewBusinessController(db.DB)
 
 	// Public routes
 	router.POST("/register", middleware.CombinedRateLimiter("register", "10-2m", "30-60m"), userController.Register)
@@ -42,8 +40,5 @@ func RegisterRoutes(router *gin.Engine) {
 		// User retrieval by username (if authenticated)
 		protected.GET("/user/:username", middleware.NewRateLimiter("30-1m", "user/:username"), userController.GetUserByUsername)
 
-		protected.POST("/business", businessController.CreateBusiness)
-		protected.PUT("/business/:id", businessController.UpdateBusiness)
-		protected.DELETE("/business/:id", businessController.DeleteBusiness)
 	}
 }

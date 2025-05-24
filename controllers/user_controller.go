@@ -663,7 +663,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 func (uc *UserController) RefreshToken(c *gin.Context) {
 	logger.InfoLogger.Info("RefreshToken token function called")
 
-	time.Sleep(1 * time.Second)
+	// time.Sleep(1 * time.Second)
 
 	refreshToken := c.GetHeader("Refresh-Token")
 	if refreshToken == "" {

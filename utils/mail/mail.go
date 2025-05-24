@@ -516,7 +516,7 @@ func VerifyCustomerOTP(c *gin.Context) {
 
 	// Retrieve OTP hash from Redis (using generic "otp:" prefix for customer login/verification)
 	// You might want to define a specific prefix for customer OTPs like `CUSTOMER_OTP_PREFIX`
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, "otp:"+request.Email).Result()
+	storedHash, err := redisclient.GetRedisClient().Get(ctx, CUSTOMER_OTP_PREFIX+request.Email).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
 			logger.ErrorLogger.Info(fmt.Sprintf("Customer OTP expired or not found for %s", request.Email))
@@ -560,7 +560,7 @@ func VerifyCustomerOTP(c *gin.Context) {
 	}
 
 	// Delete OTP from Redis after successful verification
-	if err := redisclient.GetRedisClient().Del(ctx, "otp:"+request.Email).Err(); err != nil {
+	if err := redisclient.GetRedisClient().Del(ctx, CUSTOMER_OTP_PREFIX+request.Email).Err(); err != nil {
 		logger.ErrorLogger.Warnf("Failed to delete customer OTP from Redis for %s: %v", request.Email, err)
 	}
 
