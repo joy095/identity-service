@@ -31,9 +31,12 @@ func CreateCustomer(db *pgxpool.Pool, email string) (*User, string, string, erro
 	logger.InfoLogger.Info("CreateUser called on models")
 
 	userID, err := GenerateUUIDv7()
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to generate UUID: %w", err)
+	}
 
 	query := `INSERT INTO customers (id, email) 
-              VALUES ($1, $2) RETURNING id`
+               VALUES ($1, $2) RETURNING id`
 	_, err = db.Exec(context.Background(), query, userID, email)
 	if err != nil {
 		return nil, "", "", err
@@ -80,7 +83,7 @@ func LoginCustomers(db *pgxpool.Pool, email string) (*User, string, string, erro
 	}
 
 	// Update refresh token in DB
-	_, err = db.Exec(context.Background(), `UPDATE users SET refresh_token = $1 WHERE id = $2`, refreshToken, user.ID)
+	_, err = db.Exec(context.Background(), `UPDATE customers SET refresh_token = $1 WHERE id = $2`, refreshToken, user.ID)
 	if err != nil {
 		return nil, "", "", err
 	}

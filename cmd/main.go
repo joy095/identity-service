@@ -58,6 +58,8 @@ func main() {
 	routes.RegisterCustomerRoutes(r)
 	routes.RegisterBusinessRoutes(r)
 	routes.RegisterServicesRoutes(r)
+	routes.RegisterScheduleSlotsRoutes(r, db.DB)
+	routes.RegisterWorkingHoursRoutes(r, db.DB)
 
 	// Health check endpoints
 	r.GET("/health", func(c *gin.Context) {

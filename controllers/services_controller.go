@@ -13,6 +13,7 @@ import (
 	"github.com/joy095/identity/badwords" // Adjust import path
 	"github.com/joy095/identity/logger"   // Adjust import path
 	"github.com/joy095/identity/models"   // Adjust import path
+	"github.com/joy095/identity/utils"
 )
 
 // ServiceController holds dependencies for service-related operations.
@@ -32,8 +33,8 @@ type CreateServiceRequest struct {
 	BusinessID      uuid.UUID `json:"businessId" binding:"required"`
 	Name            string    `json:"name" binding:"required,min=3,max=100"`
 	Description     string    `json:"description,omitempty"`
-	DurationMinutes int       `json:"durationMinutes" binding:"required,min=15"` // Duration must be at least 1 minute
-	Price           float64   `json:"price" binding:"required,min=60"`           // Price cannot be negative
+	DurationMinutes int       `json:"durationMinutes" binding:"required,min=15"` // Duration must be at least 15 minutes
+	Price           float64   `json:"price" binding:"required,min=60"`           // Minimum price is 60
 }
 
 // UpdateServiceRequest represents the expected JSON payload for updating a service.
@@ -67,7 +68,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// Extract user ID from authenticated context (to ensure business ownership)
-	ownerUserID, err := getUserIDFromContext(c)
+	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
@@ -197,7 +198,7 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	}
 
 	// Extract user ID from authenticated context (to ensure business ownership)
-	ownerUserID, err := getUserIDFromContext(c)
+	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
@@ -277,7 +278,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 	}
 
 	// Extract user ID from authenticated context (to ensure business ownership)
-	ownerUserID, err := getUserIDFromContext(c)
+	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})

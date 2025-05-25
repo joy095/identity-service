@@ -72,12 +72,12 @@ func HashOTP(otp string) string {
 	// Argon2id parameters:
 	// - 1 iteration: acceptable for short-lived OTPs
 	// - 64MB memory: reasonable resource usage
-	// - 4 threads: good parallelism without excessive resource usage
+	// - 1 thread: balanced for OTP verification performance
 	// - 32 bytes output: sufficiently secure hash length
 	// OWASP recommends t>=2, m>=19456KiB, p>=1 for production
 	time := uint32(2)           // number of iterations
 	memory := uint32(64 * 1024) // KiB (≥ 19456)
-	threads := uint8(1)         // parallelism
+	threads := uint8(1)         // parallelism (kept low for OTP verification performance)
 	keyLen := uint32(32)
 	hashed := argon2.IDKey([]byte(otp), salt, time, memory, threads, keyLen)
 

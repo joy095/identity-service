@@ -16,7 +16,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/login", middleware.CombinedRateLimiter("login", "10-2m", "30-30m"), userController.Login)
 	router.POST("/refresh-token", middleware.NewRateLimiter("10-60m", "refresh-token"), userController.RefreshToken)
 
-	router.POST("/username-availability", middleware.NewRateLimiter("60-2m", "forgot-password"), userController.UsernameAvailability)
+	router.POST("/username-availability", middleware.NewRateLimiter("60-2m", "username-availability"), userController.UsernameAvailability)
 
 	router.POST("/forgot-password", middleware.NewRateLimiter("10-5m", "forgot-password"), userController.ForgotPassword)
 	router.POST("/forgot-password-otp", middleware.CombinedRateLimiter("forgot-password-otp", "5-1m", "20-10m"), mail.VerifyForgotPasswordOTP)

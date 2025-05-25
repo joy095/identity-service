@@ -11,6 +11,7 @@ import (
 	"github.com/joy095/identity/badwords" // Import your badwords package
 	"github.com/joy095/identity/logger"   // Adjust import path for your logger
 	"github.com/joy095/identity/models"   // Import your models package
+	"github.com/joy095/identity/utils"
 )
 
 // BusinessController holds dependencies for business-related operations.
@@ -64,30 +65,6 @@ type UpdateBusinessRequest struct {
 	IsActive   *bool    `json:"isActive,omitempty"`
 }
 
-// getUserIDFromContext extracts and parses the user ID from the Gin context.
-// It returns the parsed UUID and an error if extraction or parsing fails.
-func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
-	ownerUserID, exists := c.Get("user_id") // Use "user_id" as per your code
-	if !exists {
-		logger.ErrorLogger.Error("User ID not found in context.")
-		return uuid.Nil, fmt.Errorf("authentication required: user ID not found")
-	}
-
-	// Attempt to cast to string first, as it's a common way user IDs are stored
-	userIDStr, ok := ownerUserID.(string)
-	if !ok {
-		logger.ErrorLogger.Errorf("User ID in context is not a string, actual type: %T", ownerUserID)
-		return uuid.Nil, fmt.Errorf("internal server error: invalid user ID format in context")
-	}
-
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse user ID string '%s' to UUID: %v", userIDStr, err)
-		return uuid.Nil, fmt.Errorf("internal server error: invalid user ID format")
-	}
-	return userID, nil
-}
-
 // CreateBusiness handles the HTTP request to create a new business.
 func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("CreateBusiness controller called")
@@ -127,7 +104,7 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	}
 
 	// --- Extract and parse OwnerUserID from authenticated context ---
-	userID, err := getUserIDFromContext(c)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
@@ -227,7 +204,7 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	}
 
 	// --- Extract and parse OwnerUserID from authenticated context ---
-	userID, err := getUserIDFromContext(c)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
@@ -280,8 +257,10 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	if req.About != nil {
 		existingBusiness.About = *req.About
 	}
-	// Only update location if both coordinates are provided and valid
-	if req.Location.Latitude != 0 || req.Location.Longitude != 0 {
+	// Update location if coordinates are within valid ranges
+	// Since the Location struct has validation, any provided values are valid
+	if req.Location.Latitude >= -90 && req.Location.Latitude <= 90 &&
+		req.Location.Longitude >= -180 && req.Location.Longitude <= 180 {
 		existingBusiness.Location.Latitude = req.Location.Latitude
 		existingBusiness.Location.Longitude = req.Location.Longitude
 	}
@@ -316,7 +295,7 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 	}
 
 	// --- Extract and parse OwnerUserID from authenticated context ---
-	userID, err := getUserIDFromContext(c)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "authentication required: user ID not found" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
