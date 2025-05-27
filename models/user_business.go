@@ -42,11 +42,11 @@ type Business struct {
 // This is a helper to prepare the struct before insertion.
 func NewBusiness(
 	name, category, address, city, state, country, postalCode, taxID,
-	about string, lat, long float64, ownerUserID uuid.UUID) *Business {
+	about string, lat, long float64, ownerUserID uuid.UUID) (*Business, error) {
 
 	id, err := uuid.NewV7() // Generate new UUID
 	if err != nil {
-		return nil // In case of error, return nil
+		return nil, fmt.Errorf("failed to generate UUID: %w", err)
 	}
 	now := time.Now()
 	return &Business{
@@ -65,12 +65,12 @@ func NewBusiness(
 		UpdatedAt:  now,
 		IsActive:   true, // Default to active
 		OwnerID:    ownerUserID,
-	}
+	}, nil
 }
 
 // CreateBusiness inserts a new business record into the database.
 // It returns the created Business object with its ID and any error.
-func CreateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
+func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (*Business, error) {
 	logger.InfoLogger.Info("Attempting to create business record in database")
 
 	// Ensure ID is set (if not already set by NewBusiness)
@@ -89,18 +89,18 @@ func CreateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 	business.IsActive = true // Ensure active status if not explicitly set
 
 	query := `
-        INSERT INTO businesses (
-            id, name, category, address, city, state, country,
-            postal_code, tax_id, about,
-            location_latitude, location_longitude,
-            created_at, updated_at, is_active, owner_id
-        )
-        VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-            $14, $15, $16
-        ) RETURNING id`
+         INSERT INTO businesses (
+             id, name, category, address, city, state, country,
+             postal_code, tax_id, about,
+             location_latitude, location_longitude,
+             created_at, updated_at, is_active, owner_id
+         )
+         VALUES (
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+             $14, $15, $16
+        )`
 
-	_, err := db.Exec(context.Background(), query,
+	_, err := db.Exec(ctx, query,
 		business.ID,
 		business.Name,
 		business.Category,

@@ -33,7 +33,7 @@ func GetJWTRefreshSecret() []byte {
 		if os.Getenv("GO_ENV") == "production" {
 			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET_REFRESH")
 		}
-		return []byte("default-insecure--refresh-secret-only-for-development")
+		return []byte("default-insecure-refresh-secret-only-for-development")
 	}
 	return []byte(secret)
 }
@@ -66,14 +66,20 @@ func HashOTP(otp string) string {
 	}
 
 	// Create a salt that's unique to this application but constant for comparison
+
 	salt := []byte(saltBase + "-otp-verification-salt")
 
 	// Argon2id parameters:
 	// - 1 iteration: acceptable for short-lived OTPs
 	// - 64MB memory: reasonable resource usage
-	// - 4 threads: good parallelism without excessive resource usage
+	// - 1 thread: balanced for OTP verification performance
 	// - 32 bytes output: sufficiently secure hash length
-	hashed := argon2.IDKey([]byte(otp), salt, 1, 64*1024, 4, 32)
+	// OWASP recommends t>=2, m>=19456KiB, p>=1 for production
+	time := uint32(2)           // number of iterations
+	memory := uint32(64 * 1024) // KiB (≥ 19456)
+	threads := uint8(1)         // parallelism (kept low for OTP verification performance)
+	keyLen := uint32(32)
+	hashed := argon2.IDKey([]byte(otp), salt, time, memory, threads, keyLen)
 
 	return fmt.Sprintf("%x", hashed)
 }

@@ -239,14 +239,14 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 	// 4. Generate and send OTP to the new email
 	otp, err := utils.GenerateSecureOTP()
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for email change for user %s: %w", userID, err))
+		logger.ErrorLogger.Errorf("failed to generate OTP for email change for user %s: %v", userID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP for email verification"})
 		return
 	}
 
 	// Store the OTP and the new email with the user's ID
 	if err := mail.StoreOTP(mail.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Username, otp); err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to store email change OTP for user %s: %w", userID, err))
+		logger.ErrorLogger.Errorf("failed to store email change OTP for user %s: %v", userID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate email change verification"})
 		return
 	}
@@ -663,7 +663,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 func (uc *UserController) RefreshToken(c *gin.Context) {
 	logger.InfoLogger.Info("RefreshToken token function called")
 
-	time.Sleep(1 * time.Second)
+	// time.Sleep(1 * time.Second)
 
 	refreshToken := c.GetHeader("Refresh-Token")
 	if refreshToken == "" {
