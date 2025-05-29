@@ -503,7 +503,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		}
 		return
 	}
-	logger.InfoLogger.Debugf("Existing working hour %s found for business %s. Current owner: %s", whID, existingWH.BusinessID, existingWH.BusinessID)
+	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
 	business, err := models.GetBusinessByID(whc.DB, existingWH.BusinessID)
@@ -606,7 +606,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 		}
 		return
 	}
-	logger.InfoLogger.Debugf("Existing working hour %s found for business %s. Current owner: %s", whID, existingWH.BusinessID, existingWH.BusinessID)
+	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
 	business, err := models.GetBusinessByID(whc.DB, existingWH.BusinessID)
