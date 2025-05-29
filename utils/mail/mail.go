@@ -236,8 +236,7 @@ func RequestOTP(c *gin.Context) {
 
 	err = SendOTP(request.Email, request.FirstName, request.LastName, otp)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to send OTP")
-
+		logger.ErrorLogger.Errorf("Failed to send OTP in ResendOTP to %s: %v", request.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
 		return
 	}
