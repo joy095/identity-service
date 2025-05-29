@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"html/template"
@@ -61,7 +62,7 @@ func init() {
 // --- Helper function to send email using gomail ---
 func sendEmail(toEmail, subject, templatePath string, data interface{}) error {
 	mailer := gomail.NewMessage()
-	mailer.SetHeader("From", os.Getenv("FROM_EMAIL")) // Use os.Getenv as per your original code
+	mailer.SetHeader("From", os.Getenv("FROM_EMAIL"))
 	mailer.SetHeader("To", toEmail)
 	mailer.SetHeader("Subject", subject)
 
@@ -79,18 +80,33 @@ func sendEmail(toEmail, subject, templatePath string, data interface{}) error {
 
 	mailer.SetBody("text/html", body.String())
 
-	port, err := strconv.Atoi(os.Getenv("SMTP_PORT")) // Use os.Getenv
+	port, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid SMTP port: %v", err)
 		return fmt.Errorf("invalid SMTP port: %w", err)
 	}
 
-	dialer := gomail.NewDialer(os.Getenv("SMTP_HOST"), port, os.Getenv("SMTP_USERNAME"), os.Getenv("SMTP_PASSWORD")) // Use os.Getenv
+	smtpHost := os.Getenv("SMTP_HOST")
+	smtpUsername := os.Getenv("SMTP_USERNAME")
+	smtpPassword := os.Getenv("SMTP_PASSWORD")
+
+	dialer := gomail.NewDialer(smtpHost, port, smtpUsername, smtpPassword)
+
+	dialer.TLSConfig = &tls.Config{
+		InsecureSkipVerify: false,
+		ServerName:         smtpHost,
+	}
+
+	// Log that the SMTP server is about to be connected
+	logger.InfoLogger.Printf("Attempting to connect to SMTP server: %s:%d", smtpHost, port)
 
 	if err := dialer.DialAndSend(mailer); err != nil {
 		logger.ErrorLogger.Errorf("Failed to send email to %s: %v", toEmail, err)
 		return fmt.Errorf("failed to send email: %w", err)
 	}
+
+	// Log successful connection and email sending
+	logger.InfoLogger.Printf("Successfully connected to SMTP server and sent email to %s", toEmail)
 	return nil
 }
 

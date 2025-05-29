@@ -16,7 +16,7 @@ func RegisterWorkingHoursRoutes(r *gin.Engine, db *pgxpool.Pool) {
 	protected := r.Group("/")
 	protected.Use(auth.AuthMiddleware()) // Apply AuthMiddleware here
 
-	businessGroup := protected.Group("/business/:business_id")
+	businessGroup := protected.Group("/working-hour-business/:business_id")
 	{
 		// New endpoint for initializing working hours with defaults and overrides
 		businessGroup.POST("/working-hours/initialize", workingHourController.InitializeWorkingHours)

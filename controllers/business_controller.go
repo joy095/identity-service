@@ -157,6 +157,73 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	})
 }
 
+// GetBusinesses handles fetching all businesses or businesses owned by the authenticated user.
+func (bc *BusinessController) GetBusinesses(c *gin.Context) {
+	logger.InfoLogger.Info("GetBusinesses controller called")
+
+	// Get the authenticated user's ID from the context
+	ownerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get user ID from context: %v", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	businesses, err := models.GetBusinessesByOwnerID(c.Request.Context(), bc.DB, ownerID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to retrieve businesses for user %s: %v", ownerID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
+		return
+	}
+
+	if len(businesses) == 0 {
+		logger.InfoLogger.Infof("No businesses found for user %s", ownerID)
+		c.JSON(http.StatusNotFound, gin.H{"message": "No businesses found for this user."})
+		return
+	}
+
+	logger.InfoLogger.Infof("Successfully retrieved %d businesses for user %s", len(businesses), ownerID)
+	c.JSON(http.StatusOK, gin.H{"businesses": businesses})
+}
+
+// GetBusiness handles fetching a single business by its ID.
+func (bc *BusinessController) GetBusiness(c *gin.Context) {
+	logger.InfoLogger.Info("GetBusiness controller called")
+
+	businessIDStr := c.Param("id")
+	businessID, err := uuid.Parse(businessIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid business ID format: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+		return
+	}
+
+	// Get the authenticated user's ID from the context
+	ownerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get user ID from context: %v", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	business, err := models.GetBusinessByID(bc.DB, businessID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to retrieve business %s: %v", businessID, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		return
+	}
+
+	// Ensure the retrieved business belongs to the authenticated user
+	if business.OwnerID != ownerID {
+		logger.WarnLogger.Warnf("User %s attempted to access business %s not owned by them", ownerID, businessID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to view this business"})
+		return
+	}
+
+	logger.InfoLogger.Infof("Successfully retrieved business %s for user %s", businessID, ownerID)
+	c.JSON(http.StatusOK, gin.H{"business": business})
+}
+
 // UpdateBusiness handles the HTTP request to update an existing business.
 func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("UpdateBusiness controller called")

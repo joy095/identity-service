@@ -53,17 +53,17 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 
 	openTime, err := time.Parse("15:04:05", openTimeStr)
 	if err != nil {
-		logger.InfoLogger.Warnf("Invalid open time format '%s': %v", openTimeStr, err)
+		logger.WarnLogger.Warnf("Invalid open time format '%s': %v", openTimeStr, err)
 		return fmt.Errorf("invalid open time format: %w", err)
 	}
 	closeTime, err := time.Parse("15:04:05", closeTimeStr)
 	if err != nil {
-		logger.InfoLogger.Warnf("Invalid close time format '%s': %v", closeTimeStr, err)
+		logger.WarnLogger.Warnf("Invalid close time format '%s': %v", closeTimeStr, err)
 		return fmt.Errorf("invalid close time format: %w", err)
 	}
 
 	if closeTime.Before(openTime) || closeTime.Equal(openTime) {
-		logger.InfoLogger.Warnf("Close time '%s' is not after open time '%s'", closeTimeStr, openTimeStr)
+		logger.WarnLogger.Warnf("Close time '%s' is not after open time '%s'", closeTimeStr, openTimeStr)
 		return fmt.Errorf("close time must be after open time")
 	}
 	logger.InfoLogger.Debugf("Working hours time validation passed for open: %s, close: %s", openTimeStr, closeTimeStr)
@@ -119,7 +119,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Debugf("Business '%s' found for initialization, owner is '%s'", business.ID, business.OwnerID)
 
 	if business.OwnerID != ownerUserID {
-		logger.InfoLogger.Warnf("User %s attempted to initialize working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
+		logger.WarnLogger.Warnf("User %s attempted to initialize working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to set working hours for this business"})
 		return
 	}
@@ -246,7 +246,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Debugf("Business '%s' found for bulk update, owner is '%s'", business.ID, business.OwnerID)
 
 	if business.OwnerID != ownerUserID {
-		logger.InfoLogger.Warnf("User %s attempted to bulk update working hours for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
+		logger.WarnLogger.Warnf("User %s attempted to bulk update working hours for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update working hours for this business"})
 		return
 	}
@@ -368,7 +368,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Business '%s' found for working hour creation, owner is '%s'", business.ID, business.OwnerID)
 
 	if business.OwnerID != ownerUserID {
-		logger.InfoLogger.Warnf("User %s attempted to create working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
+		logger.WarnLogger.Warnf("User %s attempted to create working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to set working hours for this business"})
 		return
 	}
@@ -392,7 +392,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 			logger.InfoLogger.Infof("Attempted to create duplicate working hour for business %s, day %s.", req.BusinessID, req.DayOfWeek)
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("Working hours for %s already exist for this business. Use PUT to update.", req.DayOfWeek)})
 		} else if strings.Contains(err.Error(), "foreign key constraint") {
-			logger.InfoLogger.Warnf("Foreign key constraint violation when creating working hour for business %s: %v", req.BusinessID, err)
+			logger.WarnLogger.Warnf("Foreign key constraint violation when creating working hour for business %s: %v", req.BusinessID, err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID provided"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create working hour"})
@@ -514,7 +514,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.InfoLogger.Warnf("User %s attempted to update working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
+		logger.WarnLogger.Warnf("User %s attempted to update working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this working hour"})
 		return
 	}
@@ -617,7 +617,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.InfoLogger.Warnf("User %s attempted to delete working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
+		logger.WarnLogger.Warnf("User %s attempted to delete working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this working hour"})
 		return
 	}

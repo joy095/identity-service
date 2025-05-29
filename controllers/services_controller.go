@@ -146,27 +146,6 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"service": service})
 }
 
-// GetServicesByBusinessID handles fetching all services for a specific business.
-func (sc *ServiceController) GetServicesByBusinessID(c *gin.Context) {
-	logger.InfoLogger.Info("GetServicesByBusinessID controller called")
-
-	businessIDStr := c.Param("business_id") // Assuming /business/:business_id/services
-	businessID, err := uuid.Parse(businessIDStr)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
-		return
-	}
-
-	services, err := models.GetServicesByBusinessID(sc.DB, businessID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch services for business %s: %v", businessID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch services"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"services": services})
-}
 
 // UpdateService handles the HTTP request to update an existing service.
 func (sc *ServiceController) UpdateService(c *gin.Context) {

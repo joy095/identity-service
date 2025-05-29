@@ -17,10 +17,6 @@ func RegisterServicesRoutes(router *gin.Engine) {
 	protected.Use(auth.AuthMiddleware())
 	{
 
-		businessGroup := protected.Group("/business/:business_id")
-		{
-			businessGroup.GET("/services", serviceController.GetServicesByBusinessID) // Get all services for a specific business
-		}
 		// Standalone service routes for creation, update, delete on a specific service ID
 		// Note: CreateService requires business_id in payload, update/delete check ownership via business_id lookup
 		serviceGroup := protected.Group("/service")

@@ -14,7 +14,8 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
-
+		protected.GET("/business", businessController.GetBusinesses)
+		protected.GET("/business/:id", businessController.GetBusiness)
 		protected.POST("/business", businessController.CreateBusiness)
 		protected.PUT("/business/:id", businessController.UpdateBusiness)
 		protected.DELETE("/business/:id", businessController.DeleteBusiness)
