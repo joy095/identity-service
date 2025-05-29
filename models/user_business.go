@@ -7,10 +7,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/logger" // Assuming this logger package is available
 )
 
-// User Model
+// User Model (Commented out as it's not directly used in Business model logic here, but good to keep for context)
+// type User struct {
+// 	// ... user fields
+// }
+
 // Location represents geographical coordinates
 type Location struct {
 	// Latitude should be between -90 and +90
@@ -89,16 +93,16 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 	business.IsActive = true // Ensure active status if not explicitly set
 
 	query := `
-         INSERT INTO businesses (
-             id, name, category, address, city, state, country,
-             postal_code, tax_id, about,
-             location_latitude, location_longitude,
-             created_at, updated_at, is_active, owner_id
-         )
-         VALUES (
-             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-             $14, $15, $16
-        )`
+		INSERT INTO businesses (
+			id, name, category, address, city, state, country,
+			postal_code, tax_id, about,
+			location_latitude, location_longitude,
+			created_at, updated_at, is_active, owner_id
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			$14, $15, $16
+		)`
 
 	_, err := db.Exec(ctx, query,
 		business.ID,
@@ -134,13 +138,13 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 
 	business := &Business{}
 	query := `
-		SELECT 
-			id, name, category, address, city, state, country, 
-			postal_code, tax_id, about, location_latitude, location_longitude, 
+		SELECT
+			id, name, category, address, city, state, country,
+			postal_code, tax_id, about, location_latitude, location_longitude,
 			created_at, updated_at, is_active, owner_id
-		FROM 
+		FROM
 			businesses
-		WHERE 
+		WHERE
 			id = $1`
 
 	err := db.QueryRow(context.Background(), query, id).Scan(
@@ -178,24 +182,24 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 	business.UpdatedAt = time.Now()
 
 	query := `
-        UPDATE businesses
-        SET
-            name = $2,
-            category = $3,
-            address = $4,
-            city = $5,
-            state = $6,
-            country = $7,
-            postal_code = $8,
-            tax_id = $9,
-            about = $10,
-            location_latitude = $11,  -- <<< Update these columns
-            location_longitude = $12, -- <<< Update these columns
-            updated_at = $13,
-            is_active = $14
-        WHERE
-            id = $1
-        RETURNING id`
+		UPDATE businesses
+		SET
+			name = $2,
+			category = $3,
+			address = $4,
+			city = $5,
+			state = $6,
+			country = $7,
+			postal_code = $8,
+			tax_id = $9,
+			about = $10,
+			location_latitude = $11,
+			location_longitude = $12,
+			updated_at = $13,
+			is_active = $14
+		WHERE
+			id = $1
+		RETURNING id`
 
 	res, err := db.Exec(context.Background(), query,
 		business.ID,
@@ -208,8 +212,8 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.PostalCode,
 		business.TaxID,
 		business.About,
-		business.Location.Latitude,  // Value for location_latitude
-		business.Location.Longitude, // Value for location_longitude
+		business.Location.Latitude,
+		business.Location.Longitude,
 		business.UpdatedAt,
 		business.IsActive,
 	)
@@ -245,4 +249,131 @@ func DeleteBusiness(db *pgxpool.Pool, id uuid.UUID) error {
 
 	logger.InfoLogger.Infof("Business with ID %s deleted successfully", id)
 	return nil
+}
+
+// GetAllBusinesses fetches all business records from the database, with optional pagination.
+// If limit is 0, no limit is applied. If offset is 0, no offset is applied.
+func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) ([]*Business, error) {
+	logger.InfoLogger.Info("Attempting to fetch all businesses from database")
+
+	businesses := []*Business{}
+	query := `
+		SELECT
+			id, name, category, address, city, state, country,
+			postal_code, tax_id, about, location_latitude, location_longitude,
+			created_at, updated_at, is_active, owner_id
+		FROM
+			businesses
+		ORDER BY
+			created_at DESC` // Order by creation time, newest first
+
+	// Add LIMIT and OFFSET if provided
+	if limit > 0 {
+		query = fmt.Sprintf("%s LIMIT %d", query, limit)
+	}
+	if offset > 0 {
+		query = fmt.Sprintf("%s OFFSET %d", query, offset)
+	}
+
+	rows, err := db.Query(ctx, query)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to query all businesses: %v", err)
+		return nil, fmt.Errorf("failed to retrieve all businesses: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		business := &Business{}
+		err := rows.Scan(
+			&business.ID,
+			&business.Name,
+			&business.Category,
+			&business.Address,
+			&business.City,
+			&business.State,
+			&business.Country,
+			&business.PostalCode,
+			&business.TaxID,
+			&business.About,
+			&business.Location.Latitude,
+			&business.Location.Longitude,
+			&business.CreatedAt,
+			&business.UpdatedAt,
+			&business.IsActive,
+			&business.OwnerID,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
+			return nil, fmt.Errorf("failed to scan business data: %w", err)
+		}
+		businesses = append(businesses, business)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error after iterating rows for all businesses: %v", err)
+		return nil, fmt.Errorf("error during business row iteration: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Fetched %d businesses successfully", len(businesses))
+	return businesses, nil
+}
+
+// GetBusinessesByOwnerID fetches all business records owned by a specific user ID.
+func GetBusinessesByOwnerID(ctx context.Context, db *pgxpool.Pool, ownerID uuid.UUID) ([]*Business, error) {
+	logger.InfoLogger.Infof("Attempting to fetch businesses for owner ID: %s", ownerID)
+
+	businesses := []*Business{}
+	query := `
+		SELECT
+			id, name, category, address, city, state, country,
+			postal_code, tax_id, about, location_latitude, location_longitude,
+			created_at, updated_at, is_active, owner_id
+		FROM
+			businesses
+		WHERE
+			owner_id = $1
+		ORDER BY
+			created_at DESC` // Order by creation time, newest first
+
+	rows, err := db.Query(ctx, query, ownerID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to query businesses for owner %s: %v", ownerID, err)
+		return nil, fmt.Errorf("failed to retrieve businesses by owner ID: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		business := &Business{}
+		err := rows.Scan(
+			&business.ID,
+			&business.Name,
+			&business.Category,
+			&business.Address,
+			&business.City,
+			&business.State,
+			&business.Country,
+			&business.PostalCode,
+			&business.TaxID,
+			&business.About,
+			&business.Location.Latitude,
+			&business.Location.Longitude,
+			&business.CreatedAt,
+			&business.UpdatedAt,
+			&business.IsActive,
+			&business.OwnerID,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan business row for owner %s: %v", ownerID, err)
+			return nil, fmt.Errorf("failed to scan business data for owner: %w", err)
+		}
+		businesses = append(businesses, business)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error after iterating rows for businesses by owner %s: %v", ownerID, err)
+		return nil, fmt.Errorf("error during business row iteration by owner: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Fetched %d businesses for owner ID %s successfully", len(businesses), ownerID)
+	return businesses, nil
 }
