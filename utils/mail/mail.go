@@ -337,7 +337,10 @@ func ResendOTP(c *gin.Context) {
 	err = SendVerificationOTP(request.Email, request.FirstName, request.LastName, otp)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to send OTP in ResendOTP to %s: %v", request.Email, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to send OTP %s: %v", request.Email, err)})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to send OTP",
+			"debug": err.Error(),
+		})
 		return
 	}
 
