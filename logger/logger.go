@@ -50,9 +50,10 @@ func NewLogger(config LoggerConfig) *logrus.Logger {
 var (
 	InfoLogger  *logrus.Entry
 	ErrorLogger *logrus.Entry
+	WarnLogger  *logrus.Entry // Declare WarningLogger
 )
 
-// InitLoggers initializes both info and error loggers
+// InitLoggers initializes info, error, and warning loggers
 func InitLoggers() {
 	// Ensure logs directory exists
 	if _, err := os.Stat("logs"); os.IsNotExist(err) {
@@ -80,7 +81,18 @@ func InitLoggers() {
 		ServiceName: serviceName,
 	})
 
+	// New Warning Logger
+	warningBaseLogger := NewLogger(LoggerConfig{
+		Filename:    "logs/warning.log", // Separate file for warnings
+		MaxSize:     10,
+		MaxBackups:  5,
+		MaxAge:      30,
+		Level:       logrus.WarnLevel, // Set level to WarnLevel
+		ServiceName: serviceName,
+	})
+
 	// Attach service name field
-	InfoLogger = infoBaseLogger.WithField("identity-service", serviceName)
-	ErrorLogger = errorBaseLogger.WithField("identity-service", serviceName)
+	InfoLogger = infoBaseLogger.WithField("service", serviceName)
+	ErrorLogger = errorBaseLogger.WithField("service", serviceName)
+	WarnLogger = warningBaseLogger.WithField("service", serviceName) // Attach service name to WarningLogger
 }

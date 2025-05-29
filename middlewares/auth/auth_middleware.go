@@ -31,7 +31,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		usernameParam := c.Param("username")
 		rawBody, _ := c.GetRawData()
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+		c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody)) // Restore body for subsequent handlers
 
 		var body struct {
 			UserID string `json:"user_id"`
@@ -50,6 +50,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				c.Abort()
 				return
 			}
+			// Important: Compare the UUID string from the token with the UUID string from the fetched user.
 			if user.ID.String() != userIDFromToken {
 				logger.ErrorLogger.Errorf("User ID mismatch: token(%s) vs db(%s)", userIDFromToken, user.ID)
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized access"})
@@ -57,6 +58,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				return
 			}
 		} else if body.UserID != "" {
+			// Important: Compare the UUID string from the token with the UUID string from the request body.
 			if body.UserID != userIDFromToken {
 				logger.ErrorLogger.Errorf("User ID mismatch: token(%s) vs body(%s)", userIDFromToken, body.UserID)
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized access"})
@@ -71,13 +73,24 @@ func AuthMiddleware() gin.HandlerFunc {
 				return
 			}
 		} else {
-			logger.ErrorLogger.Error("Either 'username' param or 'user_id' in body is required")
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Either 'username' param or 'user_id' in body is required"})
-			c.Abort()
-			return
+			// If neither username param nor user_id in body is provided, try to get user by userIDFromToken directly
+			userIDStr, ok := userIDFromToken.(string)
+			if !ok {
+				logger.ErrorLogger.Error("Invalid user ID type in token")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+				c.Abort()
+				return
+			}
+			user, err = models.GetUserByID(db.DB, userIDStr)
+			if err != nil {
+				logger.ErrorLogger.Errorf("User not found based on token ID: %v", err)
+				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+				c.Abort()
+				return
+			}
 		}
 
-		// Check is email verified
+		// Check if email is verified
 		isVerified, err := models.IsEmailVerified(db.DB, user.ID)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Error checking email verification: %v", err)
