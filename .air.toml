@@ -5,7 +5,8 @@ tmp_dir = "tmp"
 [build]
   # Modify the build command to generate a .exe file
   bin = "./tmp/main.exe"
-  cmd = "go build -o ./tmp/main.exe cmd/main.go"
+  # cmd = "go build -o ./tmp/main.exe cmd/main.go"
+  cmd = "go build -o ./tmp/main.exe main.go"
   delay = 1000
   exclude_dir = ["assets", "tmp", "vendor", "testdata"]
   exclude_file = []

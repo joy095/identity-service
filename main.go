@@ -2,6 +2,7 @@ package main
 
 import (
 	"context" // Add for graceful shutdown
+	"embed"
 	"fmt"
 	"log"
 	"net/http" // Add for graceful shutdown
@@ -17,9 +18,13 @@ import (
 	"github.com/joy095/identity/middlewares/cors"
 	logger_middleware "github.com/joy095/identity/middlewares/logger"
 	"github.com/joy095/identity/routes" // Your routes package
+	"github.com/joy095/identity/utils/mail"
 
 	"github.com/gin-gonic/gin"
 )
+
+//go:embed templates/email/*
+var embeddedEmailTemplates embed.FS
 
 func init() {
 	// Initialize loggers before using
@@ -39,6 +44,9 @@ func main() {
 	if port == "" {
 		port = "8081"
 	}
+
+	mail.InitTemplates(embeddedEmailTemplates)
+	log.Println("Application: Email templates initialized.")
 
 	// Step 1: Load bad words from a text file
 	badwords.LoadBadWords("badwords/en.txt")
