@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"embed"
 	"errors"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -41,13 +43,38 @@ const (
 
 // Email template paths
 const (
-	forgotPasswordTemplate    = "templates/email/forgot_password_otp.html"
-	emailVerificationTemplate = "templates/email/email_verification_otp.html"
+	forgotPasswordTemplate    = "forgot_password_otp.html"
+	emailVerificationTemplate = "email_verification_otp.html"
 
-	verifyNewEmailOTPTemplate = "templates/email/verify_new_email_otp.html" // New template
-	customerLoginTemplate     = "templates/email/customer_otp_login.html"   // Customer login template
-	userRegistrationTemplate  = "templates/email/otp_template.html"         // User registration template
+	verifyNewEmailOTPTemplate = "verify_new_email_otp.html" // New template
+	customerLoginTemplate     = "customer_otp_login.html"   // Customer login template
 )
+
+// The `parsedTemplates` variable will be populated by an external call.
+var parsedTemplates *template.Template
+
+// InitTemplates initializes the email templates using the provided embedded file system.
+// This function should be called ONCE during application startup (from main.go).
+func InitTemplates(fs embed.FS) {
+	var err error
+	// Explicitly pass all the template paths that you want to parse.
+	// These paths are relative to the *root of the embedded FS* (which is 'templates/').
+	// Go will then name the templates internally with these exact paths.
+	pathsToParse := []string{
+		"templates/email/" + forgotPasswordTemplate,
+		"templates/email/" + emailVerificationTemplate,
+		"templates/email/" + verifyNewEmailOTPTemplate,
+		"templates/email/" + customerLoginTemplate,
+	}
+
+	// Parse all specified template files. The 'parsedTemplates' object
+	// will contain all of them, and they will be named by these full paths.
+	parsedTemplates, err = template.ParseFS(fs, pathsToParse...)
+	if err != nil {
+		log.Fatalf("Mail Package: failed to parse email templates: %v", err)
+	}
+	log.Println("Mail Package: Templates loaded successfully.")
+}
 
 var ctx = context.Background()
 var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
