@@ -1,4 +1,4 @@
-package controllers
+package slot_booking_controller
 
 import (
 	"context"
@@ -13,7 +13,11 @@ import (
 
 	"github.com/joy095/identity/clients" // Import the new clients package
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models" // Import the new models package
+	"github.com/joy095/identity/models/booking_models"
+	"github.com/joy095/identity/models/payment_transaction_models"
+	"github.com/joy095/identity/models/schedule_slot_models" // Import the new models package
+	"github.com/joy095/identity/models/service_models"
+	"github.com/joy095/identity/models/shared_models"
 )
 
 // SlotBookingRequest represents the data required to book a slot.
@@ -86,7 +90,7 @@ func (s *SlotBookingService) CheckAndReserveSlot(ctx context.Context, req *SlotB
 	logger.InfoLogger.Infof("Attempting to reserve slot %s for customer %s", req.SlotID, req.CustomerID)
 
 	// 1. Check if the slot exists and is available in the database
-	slot, err := models.GetScheduleSlotByID(ctx, s.DB, req.SlotID)
+	slot, err := schedule_slot_models.GetScheduleSlotByID(ctx, s.DB, req.SlotID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch slot %s: %v", req.SlotID, err)
 		return fmt.Errorf("slot not found or database error: %w", err)
@@ -140,7 +144,7 @@ func (s *SlotBookingService) ReleaseSlotReservation(ctx context.Context, slotID,
 
 // BookSlot handles the entire slot booking workflow.
 // It returns the created Booking object and the Razorpay Order ID for the frontend.
-func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingRequest) (*models.Booking, string, error) {
+func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingRequest) (*booking_models.Booking, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -156,7 +160,7 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	defer s.ReleaseSlotReservation(ctx, req.SlotID, req.CustomerID) // Release upon function exit
 
 	// 2. Get Service Details to determine price
-	service, err := models.GetServiceByID(s.DB, req.ServiceID)
+	service, err := service_models.GetServiceByID(s.DB, req.ServiceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", req.ServiceID, err)
 		return nil, "", fmt.Errorf("invalid service selected: %w", err)
@@ -167,13 +171,13 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	}
 
 	// 3. Create a Pending Booking in DB
-	newBooking, err := models.NewBooking(req.BusinessID, req.ServiceID, req.SlotID, req.CustomerID, models.BookingStatusPending)
+	newBooking, err := booking_models.NewBooking(req.BusinessID, req.ServiceID, req.SlotID, req.CustomerID, shared_models.BookingStatusPending)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create new booking object: %v", err)
 		return nil, "", fmt.Errorf("internal error creating booking: %w", err)
 	}
 
-	createdBooking, err := models.CreateBooking(ctx, s.DB, newBooking)
+	createdBooking, err := booking_models.CreateBooking(ctx, s.DB, newBooking)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save pending booking to DB: %v", err)
 		return nil, "", fmt.Errorf("failed to create pending booking: %w", err)
@@ -199,31 +203,31 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	rzpOrder, err := s.RazorpayClient.CreateOrder(orderData)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create Razorpay order for booking %s: %v", createdBooking.ID, err)
-		_ = models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, models.BookingStatusFailed)
+		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
 		return nil, "", fmt.Errorf("failed to initiate payment: %w", err)
 	}
 
 	razorpayOrderID, ok := rzpOrder["id"].(string)
 	if !ok || razorpayOrderID == "" {
 		logger.ErrorLogger.Errorf("Razorpay order ID not found in response for booking %s", createdBooking.ID)
-		_ = models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, models.BookingStatusFailed)
+		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
 		return nil, "", fmt.Errorf("invalid Razorpay order response")
 	}
 
 	logger.InfoLogger.Infof("Razorpay order %s created for booking %s", razorpayOrderID, createdBooking.ID)
 
 	// 5. Save Payment Transaction details (initial status)
-	paymentTx, err := models.NewPaymentTransaction(createdBooking.ID, razorpayOrderID, service.Price, currency)
+	paymentTx, err := payment_transaction_models.NewPaymentTransaction(createdBooking.ID, razorpayOrderID, service.Price, currency)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create payment transaction object for booking %s: %v", createdBooking.ID, err)
-		_ = models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, models.BookingStatusFailed)
+		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
 		return nil, "", fmt.Errorf("internal error setting up payment record: %w", err)
 	}
 
-	_, err = models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
+	_, err = payment_transaction_models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save initial payment transaction for booking %s: %v", createdBooking.ID, err)
-		_ = models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, models.BookingStatusFailed)
+		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
 		return nil, "", fmt.Errorf("failed to record payment attempt: %w", err)
 	}
 
@@ -257,7 +261,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 	}
 
 	// Fetch existing transaction by Razorpay Order ID
-	paymentTx, err := models.GetPaymentTransactionByRazorpayOrderID(ctx, s.DB, paymentEntity.OrderID)
+	paymentTx, err := payment_transaction_models.GetPaymentTransactionByRazorpayOrderID(ctx, s.DB, paymentEntity.OrderID)
 	if err != nil {
 		// If transaction not found, it might be a race condition or direct webhook without initial booking.
 		// Re-create transaction and handle.
@@ -274,12 +278,12 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 				return fmt.Errorf("invalid booking ID format in notes")
 			}
 
-			paymentTx, err = models.NewPaymentTransaction(bookingID, paymentEntity.OrderID, float64(paymentEntity.Amount)/100, paymentEntity.Currency)
+			paymentTx, err = payment_transaction_models.NewPaymentTransaction(bookingID, paymentEntity.OrderID, float64(paymentEntity.Amount)/100, paymentEntity.Currency)
 			if err != nil {
 				logger.ErrorLogger.Errorf("Failed to create new payment transaction object for webhook: %v", err)
 				return fmt.Errorf("internal error handling payment: %w", err)
 			}
-			_, err = models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
+			_, err = payment_transaction_models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
 			if err != nil {
 				logger.ErrorLogger.Errorf("Failed to save new payment transaction from webhook: %v", err)
 				return fmt.Errorf("failed to record payment transaction: %w", err)
@@ -309,7 +313,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 		paymentTx.Status = "captured"
 	}
 
-	err = models.UpdatePaymentTransaction(ctx, s.DB, paymentTx)
+	err = payment_transaction_models.UpdatePaymentTransaction(ctx, s.DB, paymentTx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update payment transaction %s in webhook: %v", paymentTx.ID, err)
 		return fmt.Errorf("failed to update payment record: %w", err)
@@ -338,7 +342,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 		logger.InfoLogger.Infof("Payment captured for booking %s (Razorpay Order: %s)", bookingID, paymentEntity.OrderID)
 
 		// 1. Update Booking Status to Confirmed
-		err = models.UpdateBookingStatus(ctx, s.DB, bookingID, models.BookingStatusConfirmed)
+		err = booking_models.UpdateBookingStatus(ctx, s.DB, bookingID, shared_models.BookingStatusConfirmed)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to update booking %s to confirmed: %v", bookingID, err)
 			return fmt.Errorf("failed to confirm booking: %w", err)
@@ -346,7 +350,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 
 		// 2. Mark the Schedule Slot as Unavailable
 		if slotID != uuid.Nil {
-			err = models.UpdateScheduleSlotAvailability(ctx, s.DB, slotID, false)
+			err = schedule_slot_models.UpdateScheduleSlotAvailability(ctx, s.DB, slotID, false)
 			if err != nil {
 				logger.ErrorLogger.Errorf("Failed to mark slot %s as unavailable after booking %s: %v", slotID, bookingID, err)
 				return fmt.Errorf("failed to mark slot unavailable, manual intervention may be required: %w", err)
@@ -363,7 +367,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 			bookingID, paymentEntity.OrderID, *paymentEntity.ErrorDescription)
 
 		// Update Booking Status to Failed
-		err = models.UpdateBookingStatus(ctx, s.DB, bookingID, models.BookingStatusFailed)
+		err = booking_models.UpdateBookingStatus(ctx, s.DB, bookingID, shared_models.BookingStatusFailed)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to update booking %s to failed: %v", bookingID, err)
 			return fmt.Errorf("failed to mark booking as failed: %w", err)

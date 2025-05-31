@@ -1,4 +1,4 @@
-package models
+package schedule_slot_models
 
 import (
 	"context"

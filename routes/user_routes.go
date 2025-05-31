@@ -2,14 +2,14 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/joy095/identity/controllers"
+	"github.com/joy095/identity/controllers/user_controllers"
 	middleware "github.com/joy095/identity/middlewares"
 	"github.com/joy095/identity/middlewares/auth"
 	"github.com/joy095/identity/utils/mail"
 )
 
 func RegisterUserRoutes(router *gin.Engine) {
-	userController := controllers.NewUserController()
+	userController := user_controllers.NewUserController()
 
 	// Public routes
 	router.POST("/register", middleware.CombinedRateLimiter("register", "10-2m", "30-60m"), userController.Register)

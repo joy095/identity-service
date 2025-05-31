@@ -1,4 +1,4 @@
-package models
+package business_models
 
 import (
 	"context"

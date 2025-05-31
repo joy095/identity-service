@@ -1,4 +1,4 @@
-package controllers
+package user_controllers
 
 import (
 	"context"
@@ -12,7 +12,8 @@ import (
 	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/models/shared_models"
+	"github.com/joy095/identity/models/user_models"
 	"github.com/joy095/identity/utils"
 	"github.com/joy095/identity/utils/mail" // Ensure this import is present
 
@@ -72,7 +73,7 @@ func (uc *UserController) UsernameAvailability(c *gin.Context) {
 		return
 	}
 
-	isAvailable, err := models.IsUsernameAvailable(db.DB, req.Username)
+	isAvailable, err := user_models.IsUsernameAvailable(db.DB, req.Username)
 	if err != nil {
 		logger.ErrorLogger.Error("Database error checking username availability: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -118,7 +119,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := models.GetUserByID(db.DB, userID.String())
+	currentUser, err := user_models.GetUserByID(db.DB, userID.String())
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -136,7 +137,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 			return
 		}
 
-		isAvailable, err := models.IsUsernameAvailable(db.DB, lowerCaseUsername)
+		isAvailable, err := user_models.IsUsernameAvailable(db.DB, lowerCaseUsername)
 		if err != nil {
 			logger.ErrorLogger.Error("Database error checking new username availability: " + err.Error())
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -164,7 +165,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 	}
 
 	// Apply immediate updates (username, first_name, last_name)
-	err = models.UpdateUserFields(db.DB, userID, updates)
+	err = user_models.UpdateUserFields(db.DB, userID, updates)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Failed to update user fields for ID %s: %v", userID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
@@ -205,7 +206,7 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := models.GetUserByID(db.DB, userID.String())
+	currentUser, err := user_models.GetUserByID(db.DB, userID.String())
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -213,12 +214,12 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 	}
 
 	// 1. Verify current password
-	// Assume models.ComparePasswords can take user.ID or user.Username and the plain password
-	// Assuming `models.ComparePasswords` takes the plain password and the stored hashed password,
+	// Assume user_models.ComparePasswords can take user.ID or user.Username and the plain password
+	// Assuming `user_models.ComparePasswords` takes the plain password and the stored hashed password,
 	// or it fetches the user by username/ID and compares. Let's assume it fetches by username
 	// as is common in your models, but it should ideally use user.ID here for directness.
-	// If `models.ComparePasswords` requires a username, you'd use `currentUser.Username`.
-	validPassword, err := models.ComparePasswords(db.DB, req.Password, currentUser.Username)
+	// If `user_models.ComparePasswords` requires a username, you'd use `currentUser.Username`.
+	validPassword, err := user_models.ComparePasswords(db.DB, req.Password, currentUser.Username)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Error comparing passwords for user %s: %v", currentUser.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during password verification"})
@@ -286,7 +287,7 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 
 	req.Email = strings.ToLower(strings.Trim(req.Email, " "))
 
-	user, err := models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
+	user, err := user_models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s", req.Username)
@@ -365,7 +366,7 @@ func (uc *UserController) Register(c *gin.Context) {
 		return
 	}
 
-	isAvailable, err := models.IsUsernameAvailable(db.DB, req.Username)
+	isAvailable, err := user_models.IsUsernameAvailable(db.DB, req.Username)
 	if err != nil {
 		logger.ErrorLogger.Error("Database error checking username availability during registration: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -377,7 +378,7 @@ func (uc *UserController) Register(c *gin.Context) {
 		return
 	}
 
-	user, _, _, err := models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName)
+	user, _, _, err := user_models.CreateUser(db.DB, req.Username, req.Email, req.Password, req.FirstName, req.LastName)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database for '%s': %w", req.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
@@ -438,7 +439,7 @@ func (uc *UserController) Login(c *gin.Context) {
 
 	req.Username = strings.ToLower(req.Username)
 
-	user, accessToken, refreshToken, err := models.LoginUser(db.DB, req.Username, req.Password)
+	user, accessToken, refreshToken, err := user_models.LoginUser(db.DB, req.Username, req.Password)
 	if err != nil {
 		logger.ErrorLogger.Error("Invalid credentials: " + err.Error())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
@@ -480,7 +481,7 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	// We only need the email to send the OTP. We'll verify username/email later.
 	// For security, avoid revealing if the user exists based on email alone.
 	// Just proceed with sending the OTP if the email exists in the system.
-	user, err := models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
+	user, err := user_models.GetUserByUsername(db.DB, req.Username) // Assume GetUserByEmail exists
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s", req.Username)
@@ -544,7 +545,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	user, err := models.GetUserByUsername(db.DB, req.Username)
+	user, err := user_models.GetUserByUsername(db.DB, req.Username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.InfoLogger.Infof("Password reset attempt for non-existent username: %s", req.Username)
@@ -578,7 +579,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 	}
 
 	// Hash the new password
-	hashedPassword, err := models.HashPassword(req.NewPassword)
+	hashedPassword, err := user_models.HashPassword(req.NewPassword)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to hash new password for user %s: %w", user.ID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new password"})
@@ -618,7 +619,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	user, err := models.GetUserByUsername(db.DB, req.Username)
+	user, err := user_models.GetUserByUsername(db.DB, req.Username)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for Username %s: %v", req.Username, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -626,7 +627,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	}
 
 	// Compare the provided current password with the hashed password in the DB
-	valid, err := models.ComparePasswords(db.DB, req.CurrentPassword, user.Username) // Assuming ComparePasswords uses username to fetch user
+	valid, err := user_models.ComparePasswords(db.DB, req.CurrentPassword, user.Username) // Assuming ComparePasswords uses username to fetch user
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Error comparing passwords for user %s: %v", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during password verification"})
@@ -640,7 +641,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	}
 
 	// Hash the new password
-	hashedNewPassword, err := models.HashPassword(req.NewPassword)
+	hashedNewPassword, err := user_models.HashPassword(req.NewPassword)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to hash new password for user %s: %w", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new password"})
@@ -674,7 +675,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 
 	refreshToken = strings.TrimPrefix(refreshToken, "Bearer ")
 
-	var user models.User
+	var user user_models.User
 	query := `SELECT id, username, email, refresh_token FROM users WHERE refresh_token = $1`
 	err := db.DB.QueryRow(context.Background(), query, refreshToken).Scan(
 		&user.ID, &user.Username, &user.Email, &user.RefreshToken,
@@ -691,14 +692,14 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	accessToken, err := models.GenerateAccessToken(user.ID, time.Minute*60)
+	accessToken, err := user_models.GenerateAccessToken(user.ID, time.Minute*60)
 	if err != nil {
 		logger.ErrorLogger.Error("error", "Failed to generate access token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
 		return
 	}
 
-	newRefreshToken, err := models.GenerateRefreshToken(user.ID, time.Hour*24*30)
+	newRefreshToken, err := shared_models.GenerateRefreshToken(user.ID, time.Hour*24*30)
 	if err != nil {
 		logger.ErrorLogger.Error("error", "Failed to generate refresh token")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
@@ -739,7 +740,7 @@ func (uc *UserController) Logout(c *gin.Context) {
 		return
 	}
 
-	if err := models.LogoutUser(db.DB, userID); err != nil {
+	if err := user_models.LogoutUser(db.DB, userID); err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Failed to logout user %s: %v", userID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
 		return
@@ -755,7 +756,7 @@ func (uc *UserController) GetUserByUsername(c *gin.Context) {
 
 	username := c.Param("username")
 
-	user, err := models.GetUserByUsername(db.DB, username)
+	user, err := user_models.GetUserByUsername(db.DB, username)
 	if err != nil {
 		logger.ErrorLogger.Error("User not found")
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -781,7 +782,7 @@ func (uc *UserController) GetUserByID(c *gin.Context) {
 
 	id := c.Param("id")
 
-	user, err := models.GetUserByID(db.DB, id)
+	user, err := user_models.GetUserByID(db.DB, id)
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})

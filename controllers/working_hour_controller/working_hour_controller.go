@@ -1,4 +1,4 @@
-package controllers
+package working_hour_controller
 
 import (
 	"fmt"
@@ -11,7 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/models/business_models"
+	"github.com/joy095/identity/models/working_hour_models"
 	"github.com/joy095/identity/utils"
 )
 
@@ -110,7 +111,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
 
-	business, err := models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour initialization: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -125,7 +126,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	}
 
 	// Check if working hours already exist for this business
-	existingHours, err := models.GetWorkingHoursByBusinessID(whc.DB, req.BusinessID)
+	existingHours, err := working_hour_models.GetWorkingHoursByBusinessID(whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to check existing working hours for business %s: %v", req.BusinessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing working hours"})
@@ -154,7 +155,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 		daysOfWeek = append(daysOfWeek, "Saturday", "Sunday")
 	}
 
-	hoursToCreate := make(map[string]models.WorkingHour)
+	hoursToCreate := make(map[string]working_hour_models.WorkingHour)
 
 	// Create default entries
 	for _, day := range daysOfWeek {
@@ -162,7 +163,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 		if day == "Saturday" || day == "Sunday" {
 			isClosedDefault = true // Weekends closed by default if initialized
 		}
-		hoursToCreate[day] = *models.NewWorkingHour(req.BusinessID, day, defaultOpenTime, defaultCloseTime, isClosedDefault)
+		hoursToCreate[day] = *working_hour_models.NewWorkingHour(req.BusinessID, day, defaultOpenTime, defaultCloseTime, isClosedDefault)
 		logger.InfoLogger.Debugf("Prepared default entry for %s: Open=%s, Close=%s, IsClosed=%t", day, defaultOpenTime, defaultCloseTime, isClosedDefault)
 	}
 
@@ -173,7 +174,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Validation failed for override %s: %s", override.DayOfWeek, err.Error())})
 			return
 		}
-		hoursToCreate[override.DayOfWeek] = *models.NewWorkingHour(req.BusinessID, override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
+		hoursToCreate[override.DayOfWeek] = *working_hour_models.NewWorkingHour(req.BusinessID, override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
 		logger.InfoLogger.Debugf("Applied override for %s: Open=%s, Close=%s, IsClosed=%t", override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
 	}
 
@@ -186,9 +187,9 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	defer tx.Rollback(c.Request.Context()) // Rollback on error
 	logger.InfoLogger.Debug("Database transaction started for working hour initialization.")
 
-	var createdHours []models.WorkingHour
+	var createdHours []working_hour_models.WorkingHour
 	for _, wh := range hoursToCreate {
-		createdWH, err := models.CreateWorkingHourTx(c.Request.Context(), tx, &wh) // Use CreateWorkingHourTx
+		createdWH, err := working_hour_models.CreateWorkingHourTx(c.Request.Context(), tx, &wh) // Use CreateWorkingHourTx
 		if err != nil {
 			tx.Rollback(c.Request.Context())
 			logger.ErrorLogger.Errorf("Failed to create default working hour for %s (BusinessID: %s) in transaction: %v", wh.DayOfWeek, wh.BusinessID, err)
@@ -237,7 +238,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
 
-	business, err := models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour bulk update: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -261,19 +262,19 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Debug("Database transaction started for bulk working hour update.")
 
 	// Use a map to track existing days to choose between INSERT and UPDATE
-	existingHours, err := models.GetWorkingHoursByBusinessID(whc.DB, req.BusinessID) // Still use pool for read before transaction
+	existingHours, err := working_hour_models.GetWorkingHoursByBusinessID(whc.DB, req.BusinessID) // Still use pool for read before transaction
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch existing working hours for business %s during bulk update: %v", req.BusinessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve existing working hours"})
 		return
 	}
-	existingMap := make(map[string]models.WorkingHour)
+	existingMap := make(map[string]working_hour_models.WorkingHour)
 	for _, eh := range existingHours {
 		existingMap[eh.DayOfWeek] = eh
 	}
 	logger.InfoLogger.Debugf("Found %d existing working hour entries for business %s.", len(existingHours), req.BusinessID)
 
-	var results []models.WorkingHour
+	var results []working_hour_models.WorkingHour
 	for _, dayReq := range req.Days {
 		if err := validateWorkingHoursTimes(dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed); err != nil {
 			tx.Rollback(c.Request.Context())
@@ -290,7 +291,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 			existing.CloseTime = dayReq.CloseTime
 			existing.IsClosed = dayReq.IsClosed
 			// Update in transaction context
-			updatedHour, err := models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing) // Use UpdateWorkingHourTx
+			updatedHour, err := working_hour_models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing) // Use UpdateWorkingHourTx
 			if err != nil {
 				tx.Rollback(c.Request.Context())
 				logger.ErrorLogger.Errorf("Failed to update working hour for %s (ID: %s) in bulk update transaction: %v", dayReq.DayOfWeek, existing.ID, err)
@@ -302,9 +303,9 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 		} else {
 			// Day does not exist, perform INSERT
 			logger.InfoLogger.Debugf("Creating new working hour for %s for business %s.", dayReq.DayOfWeek, req.BusinessID)
-			newHour := models.NewWorkingHour(req.BusinessID, dayReq.DayOfWeek, dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed)
+			newHour := working_hour_models.NewWorkingHour(req.BusinessID, dayReq.DayOfWeek, dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed)
 			// Create in transaction context
-			createdHour, err := models.CreateWorkingHourTx(c.Request.Context(), tx, newHour) // Use CreateWorkingHourTx
+			createdHour, err := working_hour_models.CreateWorkingHourTx(c.Request.Context(), tx, newHour) // Use CreateWorkingHourTx
 			if err != nil {
 				tx.Rollback(c.Request.Context())
 				logger.ErrorLogger.Errorf("Failed to create working hour for %s in bulk update transaction: %v", dayReq.DayOfWeek, err)
@@ -359,7 +360,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted for creating working hour for business %s", ownerUserID, req.BusinessID)
 
 	// Verify that the business exists and belongs to the authenticated user
-	business, err := models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour creation: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -374,7 +375,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	}
 
 	// Create a models.WorkingHour instance
-	wh := models.NewWorkingHour(
+	wh := working_hour_models.NewWorkingHour(
 		req.BusinessID,
 		req.DayOfWeek,
 		req.OpenTime,
@@ -384,7 +385,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("New WorkingHour model created for BusinessID: %s, Day: %s", wh.BusinessID, wh.DayOfWeek)
 
 	// Use the non-transactional CreateWorkingHour
-	createdWH, err := models.CreateWorkingHour(whc.DB, wh)
+	createdWH, err := working_hour_models.CreateWorkingHour(whc.DB, wh)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create working hour in database for business %s, day %s: %v", req.BusinessID, req.DayOfWeek, err)
 		// Check for specific errors, e.g., unique constraint violation
@@ -420,7 +421,7 @@ func (whc *WorkingHourController) GetWorkingHourByID(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Attempting to fetch working hour with ID: %s", whID)
 
-	wh, err := models.GetWorkingHourByID(whc.DB, whID)
+	wh, err := working_hour_models.GetWorkingHourByID(whc.DB, whID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch working hour %s: %v", whID, err)
 		if strings.Contains(err.Error(), "working hour not found") {
@@ -448,7 +449,7 @@ func (whc *WorkingHourController) GetWorkingHoursByBusinessID(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Attempting to fetch working hours for Business ID: %s", businessID)
 
-	whs, err := models.GetWorkingHoursByBusinessID(whc.DB, businessID)
+	whs, err := working_hour_models.GetWorkingHoursByBusinessID(whc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch working hours for business %s: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch working hours"})
@@ -493,7 +494,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted for updating working hour %s", ownerUserID, whID)
 
 	// Fetch the existing working hour to get its business_id and check ownership
-	existingWH, err := models.GetWorkingHourByID(whc.DB, whID)
+	existingWH, err := working_hour_models.GetWorkingHourByID(whc.DB, whID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch working hour %s for update: %v", whID, err)
 		if strings.Contains(err.Error(), "working hour not found") {
@@ -506,7 +507,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
-	business, err := models.GetBusinessByID(whc.DB, existingWH.BusinessID)
+	business, err := business_models.GetBusinessByID(whc.DB, existingWH.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour %s ownership check: %v", existingWH.BusinessID, whID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
@@ -555,7 +556,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	existingWH.IsClosed = updatedIsClosed
 
 	// Use the non-transactional UpdateWorkingHour
-	updatedWH, err := models.UpdateWorkingHour(whc.DB, existingWH)
+	updatedWH, err := working_hour_models.UpdateWorkingHour(whc.DB, existingWH)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update working hour %s in database: %v", whID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update working hour"})
@@ -596,7 +597,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted for deleting working hour %s", ownerUserID, whID)
 
 	// Fetch the existing working hour to get its business_id and check ownership
-	existingWH, err := models.GetWorkingHourByID(whc.DB, whID)
+	existingWH, err := working_hour_models.GetWorkingHourByID(whc.DB, whID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch working hour %s for deletion: %v", whID, err)
 		if strings.Contains(err.Error(), "working hour not found") {
@@ -609,7 +610,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
-	business, err := models.GetBusinessByID(whc.DB, existingWH.BusinessID)
+	business, err := business_models.GetBusinessByID(whc.DB, existingWH.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour %s ownership check: %v", existingWH.BusinessID, whID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
@@ -622,7 +623,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 		return
 	}
 
-	if err := models.DeleteWorkingHour(whc.DB, whID, existingWH.BusinessID); err != nil {
+	if err := working_hour_models.DeleteWorkingHour(whc.DB, whID, existingWH.BusinessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete working hour %s for business %s from database: %v", whID, existingWH.BusinessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete working hour"})
 		return

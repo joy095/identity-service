@@ -1,5 +1,5 @@
 // models/service.go
-package models
+package service_models
 
 import (
 	"context"

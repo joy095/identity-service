@@ -3,12 +3,12 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
-	"github.com/joy095/identity/controllers"
+	"github.com/joy095/identity/controllers/business_controller"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
 func RegisterBusinessRoutes(router *gin.Engine) {
-	businessController := controllers.NewBusinessController(db.DB)
+	businessController := business_controller.NewBusinessController(db.DB)
 
 	// Protected routes
 	protected := router.Group("/")

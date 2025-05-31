@@ -1,5 +1,5 @@
 // controllers/service_controller.go
-package controllers
+package services_controller
 
 import (
 	"fmt"
@@ -12,7 +12,8 @@ import (
 
 	"github.com/joy095/identity/badwords" // Adjust import path
 	"github.com/joy095/identity/logger"   // Adjust import path
-	"github.com/joy095/identity/models"   // Adjust import path
+	"github.com/joy095/identity/models/business_models"
+	"github.com/joy095/identity/models/service_models" // Adjust import path
 	"github.com/joy095/identity/utils"
 )
 
@@ -79,7 +80,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// Verify that the business exists and belongs to the authenticated user
-	business, err := models.GetBusinessByID(sc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(sc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for service creation: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -92,8 +93,8 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 		return
 	}
 
-	// Create a models.Service instance
-	service := models.NewService(
+	// Create a service_models.Service instance
+	service := service_models.NewService(
 		req.BusinessID,
 		req.Name,
 		req.Description,
@@ -101,7 +102,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 		req.Price,
 	)
 
-	createdService, err := models.CreateService(sc.DB, service)
+	createdService, err := service_models.CreateService(sc.DB, service)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create service in database: %v", err)
 		// Check for specific errors, e.g., if business_id doesn't exist
@@ -132,7 +133,7 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 		return
 	}
 
-	service, err := models.GetServiceByID(sc.DB, serviceID)
+	service, err := service_models.GetServiceByID(sc.DB, serviceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", serviceID, err)
 		if strings.Contains(err.Error(), "service not found") {
@@ -145,7 +146,6 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"service": service})
 }
-
 
 // UpdateService handles the HTTP request to update an existing service.
 func (sc *ServiceController) UpdateService(c *gin.Context) {
@@ -188,7 +188,7 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	}
 
 	// Fetch the existing service to get its business_id and check ownership
-	existingService, err := models.GetServiceByID(sc.DB, serviceID)
+	existingService, err := service_models.GetServiceByID(sc.DB, serviceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s for update: %v", serviceID, err)
 		if strings.Contains(err.Error(), "service not found") {
@@ -200,7 +200,7 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	}
 
 	// Verify that the business associated with this service belongs to the authenticated user
-	business, err := models.GetBusinessByID(sc.DB, existingService.BusinessID)
+	business, err := business_models.GetBusinessByID(sc.DB, existingService.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for service %s ownership check: %v", existingService.BusinessID, serviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
@@ -230,7 +230,7 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 		existingService.IsActive = *req.IsActive
 	}
 
-	updatedService, err := models.UpdateService(sc.DB, existingService)
+	updatedService, err := service_models.UpdateService(sc.DB, existingService)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update service %s in database: %v", serviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update service"})
@@ -268,7 +268,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 	}
 
 	// Fetch the existing service to get its business_id and check ownership
-	existingService, err := models.GetServiceByID(sc.DB, serviceID)
+	existingService, err := service_models.GetServiceByID(sc.DB, serviceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s for deletion: %v", serviceID, err)
 		if strings.Contains(err.Error(), "service not found") {
@@ -280,7 +280,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 	}
 
 	// Verify that the business associated with this service belongs to the authenticated user
-	business, err := models.GetBusinessByID(sc.DB, existingService.BusinessID)
+	business, err := business_models.GetBusinessByID(sc.DB, existingService.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for service %s ownership check: %v", existingService.BusinessID, serviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
@@ -293,7 +293,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 		return
 	}
 
-	if err := models.DeleteService(sc.DB, serviceID, existingService.BusinessID); err != nil {
+	if err := service_models.DeleteService(sc.DB, serviceID, existingService.BusinessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete service %s from database: %v", serviceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete service"})
 		return
