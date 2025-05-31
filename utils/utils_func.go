@@ -41,16 +41,23 @@ func GetJWTRefreshSecret() []byte {
 // Generate a secure OTP using crypto/rand
 func GenerateSecureOTP() (string, error) {
 	const otpChars = "0123456789"
-	bytes := make([]byte, 6)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Error generating secure OTP: %v", err)
-		return "", fmt.Errorf("failed to generate secure OTP: %w", err)
+	otp := make([]byte, 6)
+	for i := 0; i < 6; i++ {
+		for {
+			b := make([]byte, 1)
+			_, err := rand.Read(b)
+			if err != nil {
+				logger.ErrorLogger.Errorf("Error generating secure OTP: %v", err)
+				return "", fmt.Errorf("failed to generate secure OTP: %w", err)
+			}
+			// Reject values that would cause modulo bias
+			if b[0] < 250 { // 250 = 25 * 10, largest multiple of 10 less than 256
+				otp[i] = otpChars[b[0]%10]
+				break
+			}
+		}
 	}
-	for i := range bytes {
-		bytes[i] = otpChars[bytes[i]%byte(len(otpChars))]
-	}
-	return string(bytes), nil
+	return string(otp), nil
 }
 
 // HashOTP hashes an OTP using Argon2id with a secure salt

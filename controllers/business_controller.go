@@ -39,7 +39,7 @@ type Location struct {
 type CreateBusinessRequest struct {
 	Name       string   `json:"name" binding:"required,min=3,max=100"`
 	Category   string   `json:"category" binding:"required,min=2,max=50"`
-	Address    string   `json:"address,omitempty,min=5,max=255"`
+	Address    string   `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
 	City       string   `json:"city" binding:"required,min=2,max=50"`
 	State      string   `json:"state" binding:"required,min=2,max=50"`
 	Country    string   `json:"country" binding:"required,min=2,max=50"`
