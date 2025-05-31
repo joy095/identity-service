@@ -41,13 +41,11 @@ const (
 	CUSTOMER_OTP_PREFIX = "customer_otp:"
 )
 
-// Email template paths
 const (
-	forgotPasswordTemplate    = "forgot_password_otp.html"
-	emailVerificationTemplate = "email_verification_otp.html"
-
-	verifyNewEmailOTPTemplate = "verify_new_email_otp.html" // New template
-	customerLoginTemplate     = "customer_otp_login.html"   // Customer login template
+	ForgotPasswordTemplate    = "templates/email/forgot_password_otp.html"
+	EmailVerificationTemplate = "templates/email/email_verification_otp.html"
+	VerifyNewEmailOTPTemplate = "templates/email/verify_new_email_otp.html"
+	CustomerLoginTemplate     = "templates/email/customer_otp_login.html"
 )
 
 // The `parsedTemplates` variable will be populated by an external call.
@@ -57,22 +55,25 @@ var parsedTemplates *template.Template
 // This function should be called ONCE during application startup (from main.go).
 func InitTemplates(fs embed.FS) {
 	var err error
-	// Explicitly pass all the template paths that you want to parse.
-	// These paths are relative to the *root of the embedded FS* (which is 'templates/').
-	// Go will then name the templates internally with these exact paths.
 	pathsToParse := []string{
-		"templates/email/" + forgotPasswordTemplate,
-		"templates/email/" + emailVerificationTemplate,
-		"templates/email/" + verifyNewEmailOTPTemplate,
-		"templates/email/" + customerLoginTemplate,
+		ForgotPasswordTemplate,
+		EmailVerificationTemplate,
+		VerifyNewEmailOTPTemplate,
+		CustomerLoginTemplate,
 	}
 
-	// Parse all specified template files. The 'parsedTemplates' object
-	// will contain all of them, and they will be named by these full paths.
 	parsedTemplates, err = template.ParseFS(fs, pathsToParse...)
 	if err != nil {
 		log.Fatalf("Mail Package: failed to parse email templates: %v", err)
 	}
+
+	// --- TEMPORARY DEBUGGING CODE START ---
+	log.Println("Mail Package: Listing parsed template names:")
+	for _, t := range parsedTemplates.Templates() {
+		log.Printf("  - %s\n", t.Name())
+	}
+	// --- TEMPORARY DEBUGGING CODE END ---
+
 	log.Println("Mail Package: Templates loaded successfully.")
 }
 
@@ -87,26 +88,35 @@ func init() {
 }
 
 // --- Helper function to send email using gomail ---
-func sendEmail(toEmail, subject, templatePath string, data interface{}) error {
+func sendEmail(toEmail, subject, templateFullPath string, data interface{}) error {
 	mailer := gomail.NewMessage()
 	mailer.SetHeader("From", os.Getenv("FROM_EMAIL"))
 	mailer.SetHeader("To", toEmail)
 	mailer.SetHeader("Subject", subject)
 
-	t, err := template.ParseFiles(templatePath)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse email template %s: %v", templatePath, err)
-		return fmt.Errorf("failed to parse email template: %w", err)
+	// Extract just the base name from the full path constant
+	// This is the common fix when ParseFS names templates by their file name.
+	templateName := templateFullPath[strings.LastIndex(templateFullPath, "/")+1:]
+	if templateName == "" { // Handle case where path is just a filename or root
+		templateName = templateFullPath
+	}
+
+	// Use the pre-parsed templates.
+	t := parsedTemplates.Lookup(templateName)
+	if t == nil {
+		logger.ErrorLogger.Errorf("Mail Package: template '%s' (looked up as '%s') not found in parsedTemplates", templateFullPath, templateName)
+		return fmt.Errorf("mail package: email template %s not found", templateFullPath)
 	}
 
 	var body bytes.Buffer
 	if err := t.Execute(&body, data); err != nil {
-		logger.ErrorLogger.Errorf("Failed to execute email template %s: %v", templatePath, err)
+		logger.ErrorLogger.Errorf("Failed to execute email template %s: %v", templateFullPath, err)
 		return fmt.Errorf("failed to execute email template: %w", err)
 	}
 
 	mailer.SetBody("text/html", body.String())
 
+	// ... (rest of your sendEmail function remains the same)
 	port, err := strconv.Atoi(os.Getenv("SMTP_PORT"))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid SMTP port: %v", err)
@@ -124,7 +134,6 @@ func sendEmail(toEmail, subject, templatePath string, data interface{}) error {
 		ServerName:         smtpHost,
 	}
 
-	// Log that the SMTP server is about to be connected
 	logger.InfoLogger.Printf("Attempting to connect to SMTP server: %s:%d", smtpHost, port)
 
 	if err := dialer.DialAndSend(mailer); err != nil {
@@ -132,7 +141,6 @@ func sendEmail(toEmail, subject, templatePath string, data interface{}) error {
 		return fmt.Errorf("failed to send email: %w", err)
 	}
 
-	// Log successful connection and email sending
 	logger.InfoLogger.Printf("Successfully connected to SMTP server and sent email to %s", toEmail)
 	return nil
 }
@@ -189,7 +197,7 @@ func SendForgotPasswordOTP(email, firstName, lastName, otp string) error {
 		OTP:       otp,
 		Year:      time.Now().Year(),
 	}
-	return sendEmail(email, "Password Reset OTP", forgotPasswordTemplate, data)
+	return sendEmail(email, "Password Reset OTP", ForgotPasswordTemplate, data)
 }
 
 // SendVerificationOTP sends an OTP for email verification (initial registration)
@@ -206,7 +214,7 @@ func SendVerificationOTP(email, firstName, lastName, otp string) error {
 		OTP:       otp,
 		Year:      time.Now().Year(),
 	}
-	return sendEmail(email, "Verify Your Email Address", emailVerificationTemplate, data)
+	return sendEmail(email, "Verify Your Email Address", EmailVerificationTemplate, data)
 }
 
 // SendEmailChangeNewOTP sends an OTP to the new email for verification.
@@ -225,7 +233,7 @@ func SendEmailChangeNewOTP(newEmail, firstName, lastName, otp string) error {
 		OTP:       otp,
 		Year:      time.Now().Year(),
 	}
-	return sendEmail(newEmail, "Verify Your New Email Address", verifyNewEmailOTPTemplate, data)
+	return sendEmail(newEmail, "Verify Your New Email Address", VerifyNewEmailOTPTemplate, data)
 }
 
 // SendCustomerOTP sends an OTP to a customer.
@@ -364,10 +372,11 @@ func ResendOTP(c *gin.Context) {
 	err = SendVerificationOTP(request.Email, request.FirstName, request.LastName, otp)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to send OTP in ResendOTP to %s: %v", request.Email, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to send OTP",
-			"debug": err.Error(),
-		})
+		response := gin.H{"error": "Failed to send OTP"}
+		if os.Getenv("DEBUG_MODE") == "true" {
+			response["debug"] = err.Error()
+		}
+		c.JSON(http.StatusInternalServerError, response)
 		return
 	}
 
@@ -664,7 +673,7 @@ func SendCustomerLoginOTP(c *gin.Context) {
 		return
 	}
 
-	err = SendCustomerOTP(request.Email, otp, customerLoginTemplate) // Use the constant
+	err = SendCustomerOTP(request.Email, otp, CustomerLoginTemplate) // Use the constant
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to send customer login OTP to %s: %v", request.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})

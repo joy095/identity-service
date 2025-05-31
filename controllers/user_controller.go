@@ -547,7 +547,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 	user, err := models.GetUserByUsername(db.DB, req.Username)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.InfoLogger.Infof("Password reset attempt for non-existent username: %s", req.Email)
+			logger.InfoLogger.Infof("Password reset attempt for non-existent username: %s", req.Username)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid email or OTP."})
 			return
 		}

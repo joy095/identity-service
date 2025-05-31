@@ -30,13 +30,11 @@ func init() {
 	// Initialize loggers before using
 	logger.InitLoggers()
 	config.LoadEnv()
-	// db.Connect() is here, but db.Close() should NOT be here.
 }
 
 func main() {
 	// Connect to database
 	db.Connect()
-	// --- IMPORTANT: Defer the closing of the database connection pool ---
 	// This ensures db.Close() is called when main() function exits.
 	defer db.Close()
 
