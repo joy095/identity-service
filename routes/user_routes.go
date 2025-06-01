@@ -2,14 +2,14 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/joy095/identity/controllers"
+	"github.com/joy095/identity/controllers/user_controllers"
 	middleware "github.com/joy095/identity/middlewares"
 	"github.com/joy095/identity/middlewares/auth"
 	"github.com/joy095/identity/utils/mail"
 )
 
 func RegisterUserRoutes(router *gin.Engine) {
-	userController := controllers.NewUserController()
+	userController := user_controllers.NewUserController()
 
 	// Public routes
 	router.POST("/register", middleware.CombinedRateLimiter("register", "10-2m", "30-60m"), userController.Register)
@@ -24,7 +24,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/change-password", middleware.CombinedRateLimiter("change-password", "5-1m", "20-10m"), userController.ChangePassword)
 
 	router.POST("/resend-otp", middleware.CombinedRateLimiter("resend-otp", "5-1m", "20-10m"), mail.ResendOTP)
-	router.POST("/verify-otp", middleware.CombinedRateLimiter("verify-otp", "5-1m", "20-10m"), mail.VerifyOTP)
+	router.POST("/verify-email", middleware.CombinedRateLimiter("verify-email", "5-1m", "20-10m"), mail.VerifyEmail)
 
 	// Protected routes
 	protected := router.Group("/")

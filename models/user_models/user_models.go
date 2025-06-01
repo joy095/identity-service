@@ -1,4 +1,4 @@
-package models
+package user_models
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/shared_models"
 	"github.com/joy095/identity/utils"
 
 	"golang.org/x/crypto/argon2"
@@ -42,11 +43,6 @@ type User struct {
 	IsVerifiedEmail bool
 }
 
-// GenerateUUIDv7 generates a new UUIDv7
-func GenerateUUIDv7() (uuid.UUID, error) {
-	return uuid.NewV7()
-}
-
 // generateSalt generates a secure random salt
 func generateSalt(size int) ([]byte, error) {
 	salt := make([]byte, size)
@@ -55,40 +51,6 @@ func generateSalt(size int) ([]byte, error) {
 		return nil, err
 	}
 	return salt, nil
-}
-
-// generateSecureToken creates a long secure token (for refresh tokens)
-func GenerateRefreshToken(userID uuid.UUID, duration time.Duration) (string, error) {
-	logger.InfoLogger.Info("GenerateRefreshToken called on models")
-
-	now := time.Now()
-
-	// Use MapClaims for maximum compatibility
-	claims := jwt.MapClaims{
-		"sub":     userID.String(),
-		"user_id": userID.String(),
-		"iat":     now.Unix(),
-		"exp":     now.Add(duration).Unix(),
-		"nbf":     now.Unix(),
-		"jti":     uuid.NewString(),
-		"iss":     "identity_service",
-		"type":    "refresh",
-	}
-
-	// Create the token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	jwtRefreshSecret := utils.GetJWTRefreshSecret()
-
-	// Sign the token with the secret key
-	tokenString, err := token.SignedString(jwtRefreshSecret)
-	if err != nil {
-
-		logger.ErrorLogger.Errorf("failed to sign token: %v", err)
-		return "", fmt.Errorf("failed to sign token: %v", err)
-	}
-
-	return tokenString, nil
 }
 
 // HashPassword hashes a password using Argon2id
@@ -154,37 +116,6 @@ func ComparePasswords(db *pgxpool.Pool, password, username string) (bool, error)
 	}
 
 	return valid, nil
-}
-
-// GenerateAccessToken creates a JWT token with base64-encoded secret compatibility
-func GenerateAccessToken(userID uuid.UUID, duration time.Duration) (string, error) {
-	now := time.Now()
-
-	// Use MapClaims for maximum compatibility
-	claims := jwt.MapClaims{
-		"sub":     userID.String(),
-		"user_id": userID.String(),
-		"iat":     now.Unix(),
-		"exp":     now.Add(duration).Unix(),
-		"nbf":     now.Unix(),
-		"jti":     uuid.NewString(),
-		"iss":     "identity-service",
-	}
-
-	// Create the token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	jwtSecret := utils.GetJWTSecret()
-
-	// Sign the token with the secret key
-	tokenString, err := token.SignedString(jwtSecret)
-	if err != nil {
-		logger.ErrorLogger.Errorf("failed to sign token: %v", err)
-
-		return "", fmt.Errorf("failed to sign token: %v", err)
-	}
-
-	return tokenString, nil
 }
 
 // ValidateAccessToken with detailed error reporting for debugging
@@ -259,7 +190,7 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 		return nil, "", "", err
 	}
 
-	userID, err := GenerateUUIDv7()
+	userID, err := shared_models.GenerateUUIDv7()
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
@@ -298,12 +229,12 @@ func LoginUser(db *pgxpool.Pool, username, password string) (*User, string, stri
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
-	accessToken, err := GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		return nil, "", "", err
 	}
 
-	refreshToken, err := GenerateRefreshToken(user.ID, time.Hour*24*30) // Stronger Refresh Token for 30 days
+	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, time.Hour*24*30) // Stronger Refresh Token for 30 days
 	if err != nil {
 		return nil, "", "", err
 	}

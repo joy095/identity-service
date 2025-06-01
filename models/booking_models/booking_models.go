@@ -1,4 +1,4 @@
-package models
+package booking_models
 
 import (
 	"context"

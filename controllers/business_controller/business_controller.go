@@ -1,4 +1,4 @@
-package controllers
+package business_controller
 
 import (
 	"fmt"
@@ -10,7 +10,7 @@ import (
 
 	"github.com/joy095/identity/badwords" // Import your badwords package
 	"github.com/joy095/identity/logger"   // Adjust import path for your logger
-	"github.com/joy095/identity/models"   // Import your models package
+	"github.com/joy095/identity/models/business_models"   // Import your models package
 	"github.com/joy095/identity/utils"
 )
 
@@ -34,7 +34,7 @@ type Location struct {
 }
 
 // CreateBusinessRequest represents the expected JSON payload for creating a business.
-// This is separate from the models.Business struct to allow for input validation rules
+// This is separate from the business_models.Business struct to allow for input validation rules
 // and to exclude fields like ID, CreatedAt, UpdatedAt that are set by the server.
 type CreateBusinessRequest struct {
 	Name       string   `json:"name" binding:"required,min=3,max=100"`
@@ -115,8 +115,8 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	}
 	// --- End of OwnerUserID extraction ---
 
-	// Create a models.Business instance from the request data
-	business, err := models.NewBusiness(
+	// Create a business_models.Business instance from the request data
+	business, err := business_models.NewBusiness(
 		req.Name,
 		req.Category,
 		req.Address,
@@ -142,7 +142,7 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	// }
 
 	// Call the model layer to create the business in the database
-	createdBusiness, err := models.CreateBusiness(c.Request.Context(), bc.DB, business)
+	createdBusiness, err := business_models.CreateBusiness(c.Request.Context(), bc.DB, business)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create business in database: %v", err)
 		// Check for specific error types if needed (e.g., duplicate name)
@@ -169,7 +169,7 @@ func (bc *BusinessController) GetBusinesses(c *gin.Context) {
 		return
 	}
 
-	businesses, err := models.GetBusinessesByOwnerID(c.Request.Context(), bc.DB, ownerID)
+	businesses, err := business_models.GetBusinessesByOwnerID(c.Request.Context(), bc.DB, ownerID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to retrieve businesses for user %s: %v", ownerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
@@ -206,7 +206,7 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 		return
 	}
 
-	business, err := models.GetBusinessByID(bc.DB, businessID)
+	business, err := business_models.GetBusinessByID(bc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to retrieve business %s: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
@@ -283,7 +283,7 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	// --- End of OwnerUserID extraction ---
 
 	// Fetch the existing business to check ownership
-	existingBusiness, err := models.GetBusinessByID(bc.DB, businessID)
+	existingBusiness, err := business_models.GetBusinessByID(bc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
@@ -335,7 +335,7 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 		existingBusiness.IsActive = *req.IsActive
 	}
 
-	updatedBusiness, err := models.UpdateBusiness(bc.DB, existingBusiness)
+	updatedBusiness, err := business_models.UpdateBusiness(bc.DB, existingBusiness)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update business %s in database: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update business"})
@@ -374,7 +374,7 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 	// --- End of OwnerUserID extraction ---
 
 	// Fetch the existing business to check ownership
-	existingBusiness, err := models.GetBusinessByID(bc.DB, businessID)
+	existingBusiness, err := business_models.GetBusinessByID(bc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for deletion: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
@@ -387,7 +387,7 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 		return
 	}
 
-	if err := models.DeleteBusiness(bc.DB, businessID); err != nil {
+	if err := business_models.DeleteBusiness(bc.DB, businessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})
 		return

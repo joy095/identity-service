@@ -8,7 +8,7 @@ import (
 
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models"
+	"github.com/joy095/identity/models/user_models"
 	"github.com/joy095/identity/utils/jwt_parse"
 
 	"github.com/gin-gonic/gin"
@@ -38,12 +38,12 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 		json.Unmarshal(rawBody, &body)
 
-		var user *models.User
+		var user *user_models.User
 		var err error
 
 		// Fetch user based on provided param or body
 		if usernameParam != "" {
-			user, err = models.GetUserByUsername(db.DB, usernameParam)
+			user, err = user_models.GetUserByUsername(db.DB, usernameParam)
 			if err != nil {
 				logger.ErrorLogger.Errorf("User not found: %v", err)
 				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -65,7 +65,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				c.Abort()
 				return
 			}
-			user, err = models.GetUserByID(db.DB, body.UserID)
+			user, err = user_models.GetUserByID(db.DB, body.UserID)
 			if err != nil {
 				logger.ErrorLogger.Errorf("User not found: %v", err)
 				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -81,7 +81,7 @@ func AuthMiddleware() gin.HandlerFunc {
 				c.Abort()
 				return
 			}
-			user, err = models.GetUserByID(db.DB, userIDStr)
+			user, err = user_models.GetUserByID(db.DB, userIDStr)
 			if err != nil {
 				logger.ErrorLogger.Errorf("User not found based on token ID: %v", err)
 				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -91,7 +91,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Check if email is verified
-		isVerified, err := models.IsEmailVerified(db.DB, user.ID)
+		isVerified, err := user_models.IsEmailVerified(db.DB, user.ID)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Error checking email verification: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})

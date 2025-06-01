@@ -1,4 +1,4 @@
-package models
+package payment_transaction_models
 
 import (
 	"context"

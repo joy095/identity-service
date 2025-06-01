@@ -4,13 +4,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/joy095/identity/controllers"
+	"github.com/joy095/identity/controllers/working_hour_controller"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
 func RegisterWorkingHoursRoutes(r *gin.Engine, db *pgxpool.Pool) {
 
-	workingHourController := controllers.NewWorkingHourController(db)
+	workingHourController := working_hour_controller.NewWorkingHourController(db)
 
 	// Apply authentication middleware to all working hour routes
 	protected := r.Group("/")

@@ -1,4 +1,4 @@
-package models
+package working_hour_models
 
 import (
 	"context"
