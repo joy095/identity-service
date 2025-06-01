@@ -15,6 +15,7 @@ import (
 	"github.com/joy095/identity/models/shared_models"
 	"github.com/joy095/identity/utils"
 	"github.com/joy095/identity/utils/shared_utils"
+	"github.com/redis/go-redis/v9"
 )
 
 // Customer Model
@@ -109,7 +110,7 @@ func storeRefreshTokenInRedis(userID uuid.UUID, refreshToken string, device stri
 
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
 	var tokenEntries []RefreshTokenEntry
-	if err != nil && err.Error() != "redis: nil" {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("failed to get existing refresh tokens from Redis: %w", err)
 	}
 

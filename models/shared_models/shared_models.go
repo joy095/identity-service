@@ -44,7 +44,7 @@ func GenerateRefreshToken(userID uuid.UUID, duration time.Duration) (string, err
 		"exp":     now.Add(duration).Unix(),
 		"nbf":     now.Unix(),
 		"jti":     uuid.NewString(),
-		"iss":     "identity_service",
+		"iss":     "identity-service",
 		"type":    "refresh", // Mark this as a refresh token
 	}
 

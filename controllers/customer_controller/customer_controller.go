@@ -72,7 +72,7 @@ func (uc *CustomerController) CustomerRegister(c *gin.Context) {
 	}
 
 	// Store OTP in Redis
-	otpKey := shared_utils.CUSTOMER_OTP_PREFIX + req.Email
+	otpKey := shared_utils.CUSTOMER_OTP_PREFIX + strings.ToLower(strings.TrimSpace(req.Email))
 	// OTP valid for 5 minutes
 	if err := redisclient.GetRedisClient().Set(c.Request.Context(), otpKey, utils.HashOTP(otp), 5*time.Minute).Err(); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store OTP in Redis: %w", err))

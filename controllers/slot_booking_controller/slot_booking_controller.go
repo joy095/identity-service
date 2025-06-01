@@ -157,8 +157,6 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 		return nil, "", fmt.Errorf("slot reservation failed: %w", err)
 	}
 
-	defer s.ReleaseSlotReservation(ctx, req.SlotID, req.CustomerID) // Release upon function exit
-
 	// 2. Get Service Details to determine price
 	service, err := service_models.GetServiceByID(s.DB, req.ServiceID)
 	if err != nil {
@@ -363,8 +361,12 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 		}
 
 	} else if payload.Event == "payment.failed" {
+		errorDesc := "unknown error"
+		if paymentEntity.ErrorDescription != nil {
+			errorDesc = *paymentEntity.ErrorDescription
+		}
 		logger.WarnLogger.Warnf("Payment failed for booking %s (Razorpay Order: %s), error: %s",
-			bookingID, paymentEntity.OrderID, *paymentEntity.ErrorDescription)
+			bookingID, paymentEntity.OrderID, errorDesc)
 
 		// Update Booking Status to Failed
 		err = booking_models.UpdateBookingStatus(ctx, s.DB, bookingID, shared_models.BookingStatusFailed)
