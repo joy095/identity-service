@@ -118,37 +118,6 @@ func ComparePasswords(db *pgxpool.Pool, password, username string) (bool, error)
 	return valid, nil
 }
 
-// GenerateAccessToken creates a JWT token with base64-encoded secret compatibility
-func GenerateAccessToken(userID uuid.UUID, duration time.Duration) (string, error) {
-	now := time.Now()
-
-	// Use MapClaims for maximum compatibility
-	claims := jwt.MapClaims{
-		"sub":     userID.String(),
-		"user_id": userID.String(),
-		"iat":     now.Unix(),
-		"exp":     now.Add(duration).Unix(),
-		"nbf":     now.Unix(),
-		"jti":     uuid.NewString(),
-		"iss":     "identity-service",
-	}
-
-	// Create the token
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	jwtSecret := utils.GetJWTSecret()
-
-	// Sign the token with the secret key
-	tokenString, err := token.SignedString(jwtSecret)
-	if err != nil {
-		logger.ErrorLogger.Errorf("failed to sign token: %v", err)
-
-		return "", fmt.Errorf("failed to sign token: %v", err)
-	}
-
-	return tokenString, nil
-}
-
 // ValidateAccessToken with detailed error reporting for debugging
 func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) {
 	logger.InfoLogger.Info("ValidateAccessToken called on models")
@@ -260,7 +229,7 @@ func LoginUser(db *pgxpool.Pool, username, password string) (*User, string, stri
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
-	accessToken, err := GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
 		return nil, "", "", err
 	}

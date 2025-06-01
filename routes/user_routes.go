@@ -24,7 +24,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/change-password", middleware.CombinedRateLimiter("change-password", "5-1m", "20-10m"), userController.ChangePassword)
 
 	router.POST("/resend-otp", middleware.CombinedRateLimiter("resend-otp", "5-1m", "20-10m"), mail.ResendOTP)
-	router.POST("/verify-otp", middleware.CombinedRateLimiter("verify-otp", "5-1m", "20-10m"), mail.VerifyOTP)
+	router.POST("/verify-email", middleware.CombinedRateLimiter("verify-email", "5-1m", "20-10m"), mail.VerifyEmail)
 
 	// Protected routes
 	protected := router.Group("/")

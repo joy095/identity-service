@@ -1,4 +1,3 @@
-// models/customer.go
 package customer_models
 
 import (
@@ -14,9 +13,8 @@ import (
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/shared_models"
-	"github.com/joy095/identity/models/user_models"
 	"github.com/joy095/identity/utils"
-	// "github.com/joy095/identity/utils/mail"
+	"github.com/joy095/identity/utils/shared_utils"
 )
 
 // Customer Model
@@ -219,8 +217,7 @@ func ValidateRefreshTokenInRedis(userID uuid.UUID, refreshToken string) (bool, e
 func LoginCustomer(db *pgxpool.Pool, email string, otp string, device string) (*Customer, string, string, error) {
 	logger.InfoLogger.Info("LoginCustomer (OTP verification) called on models")
 
-	redisKeyOTP := "otp:" + strings.ToLower(strings.TrimSpace(email))
-	// redisKeyOTP := mail.CUSTOMER_OTP_PREFIX + strings.ToLower(strings.TrimSpace(email))
+	redisKeyOTP := shared_utils.CUSTOMER_OTP_PREFIX + strings.ToLower(strings.TrimSpace(email))
 	storedHash, err := redisclient.GetRedisClient().Get(ctx, redisKeyOTP).Result()
 	if err != nil {
 		return nil, "", "", errors.New("OTP expired or not found")
@@ -240,7 +237,7 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string, device string) (*
 		logger.ErrorLogger.Errorf("Failed to delete OTP from Redis for email %s: %w", email, err)
 	}
 
-	accessToken, err := user_models.GenerateAccessToken(customer.ID, time.Minute*60)
+	accessToken, err := shared_models.GenerateAccessToken(customer.ID, time.Minute*60)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to generate access token: %w", err)
 	}
