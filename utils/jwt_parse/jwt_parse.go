@@ -45,7 +45,7 @@ func ParseJWTToken() gin.HandlerFunc {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
-			return utils.GetJWTSecret(), nil
+			return []byte(utils.GetJWTSecret()), nil
 		})
 
 		if err != nil {

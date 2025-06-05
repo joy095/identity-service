@@ -331,29 +331,6 @@ func IncrementUserTokenVersion(db *pgxpool.Pool, userID uuid.UUID) error {
 	return err
 }
 
-func UpdatePasswordAndIncrementVersion(db *pgxpool.Pool, userID uuid.UUID, newPassword string) error {
-
-	tx, err := db.Begin(context.Background())
-
-	if err != nil {
-		return err
-	}
-
-	defer tx.Rollback(context.Background())
-
-	query := `UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2`
-
-	_, err = tx.
-		Exec(context.Background(), query, newPassword, userID)
-
-	if err != nil {
-		return err
-	}
-
-	return tx.Commit(context.Background())
-
-}
-
 // UpdateUserFields updates specific fields of a user's profile.
 // Define allowed fields for updates to prevent SQL injection
 func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {

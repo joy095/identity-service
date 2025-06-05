@@ -57,7 +57,8 @@ func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 			$1, $2, $3, $4, $5, $6, $7, $8
 		) RETURNING id`
 
-	err := db.QueryRow(context.Background(), query,
+	var returnedID uuid.UUID
+	if err := db.QueryRow(context.Background(), query,
 		wh.ID,
 		wh.BusinessID,
 		wh.DayOfWeek,
@@ -66,9 +67,7 @@ func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 		wh.IsClosed,
 		wh.CreatedAt,
 		wh.UpdatedAt,
-	)
-
-	if err != nil {
+	).Scan(&returnedID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert working hour for BusinessID: %s, Day: %s into database: %v", wh.BusinessID, wh.DayOfWeek, err)
 		return nil, fmt.Errorf("failed to create working hour: %w", err)
 	}
@@ -90,7 +89,8 @@ func CreateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*Work
 			$1, $2, $3, $4, $5, $6, $7, $8
 		) RETURNING id`
 
-	_, err := tx.Exec(ctx, query,
+	var returnedID uuid.UUID
+	err := tx.QueryRow(ctx, query,
 		wh.ID,
 		wh.BusinessID,
 		wh.DayOfWeek,
@@ -99,7 +99,7 @@ func CreateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*Work
 		wh.IsClosed,
 		wh.CreatedAt,
 		wh.UpdatedAt,
-	)
+	).Scan(&returnedID)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert working hour for BusinessID: %s, Day: %s into database (tx): %v", wh.BusinessID, wh.DayOfWeek, err)

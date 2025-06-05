@@ -8,12 +8,12 @@ import (
 	"github.com/joy095/identity/middlewares/auth"
 )
 
-func RegisterWorkingHoursRoutes(r *gin.Engine, db *pgxpool.Pool) {
+func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
 
 	workingHourController := working_hour_controller.NewWorkingHourController(db)
 
 	// Apply authentication middleware to all working hour routes
-	protected := r.Group("/")
+	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware()) // Apply AuthMiddleware here
 
 	businessGroup := protected.Group("/working-hour-business/:business_id")

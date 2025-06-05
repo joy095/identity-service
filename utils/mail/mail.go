@@ -427,7 +427,7 @@ func VerifyEmail(c *gin.Context) {
 
 	// USER_REFRESH_TOKEN_PREFIX
 	// err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, 10*time.Minute).Err()
-	err = redisclient.GetRedisClient().Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+request.Username, refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
+	err = redisclient.GetRedisClient().Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+user.ID.String(), refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for user %s: %v", user.ID, err)

@@ -3,10 +3,8 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/controllers/user_controllers"
-	"github.com/joy095/identity/logger"
 	middleware "github.com/joy095/identity/middlewares"
 	"github.com/joy095/identity/middlewares/auth"
-	"github.com/joy095/identity/utils/jwt_parse"
 	"github.com/joy095/identity/utils/mail"
 )
 
@@ -29,17 +27,16 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/verify-email", middleware.CombinedRateLimiter("verify-email", "5-1m", "20-10m"), mail.VerifyEmail)
 
 	// Protected routes
-	router.Use(jwt_parse.ParseJWTToken())
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
-		protected.GET("/hi", func(c *gin.Context) {
-			logger.ErrorLogger.Error("!!!!!!!!!! /hi PROTECTED ROUTE HANDLER EXECUTED !!!!!!!!!!") // Use a very distinct log
-			// ... your existing handler logic ...
-			c.JSON(200, gin.H{
-				"message": "protected route",
-			})
-		})
+		// protected.GET("/hi", func(c *gin.Context) {
+		// 	logger.ErrorLogger.Error("!!!!!!!!!! /hi PROTECTED ROUTE HANDLER EXECUTED !!!!!!!!!!") // Use a very distinct log
+		// 	// ... your existing handler logic ...
+		// 	c.JSON(200, gin.H{
+		// 		"message": "protected route",
+		// 	})
+		// })
 		protected.POST("/logout", middleware.CombinedRateLimiter("logout", "5-1m", "20-10m"), userController.Logout)
 
 		// Profile Management - Only access your own profile
