@@ -232,12 +232,12 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 }
 
 // DeleteBusiness deletes a business record from the database by its ID.
-func DeleteBusiness(db *pgxpool.Pool, id uuid.UUID) error {
+func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) error {
 	logger.InfoLogger.Infof("Attempting to delete business record with ID: %s", id)
 
 	query := `DELETE FROM businesses WHERE id = $1`
 
-	res, err := db.Exec(context.Background(), query, id)
+	res, err := db.Exec(ctx, query, id)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", id, err)
 		return fmt.Errorf("failed to delete business: %w", err)
@@ -257,7 +257,9 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 	logger.InfoLogger.Info("Attempting to fetch all businesses from database")
 
 	businesses := []*Business{}
-	query := `
+
+	// Build query with placeholders
+	queryBuilder := `
 		SELECT
 			id, name, category, address, city, state, country,
 			postal_code, tax_id, about, location_latitude, location_longitude,
@@ -265,17 +267,23 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 		FROM
 			businesses
 		ORDER BY
-			created_at DESC` // Order by creation time, newest first
+			created_at DESC`
 
-	// Add LIMIT and OFFSET if provided
-	if limit > 0 {
-		query = fmt.Sprintf("%s LIMIT %d", query, limit)
-	}
-	if offset > 0 {
-		query = fmt.Sprintf("%s OFFSET %d", query, offset)
+	args := []interface{}{}
+	argCount := 0
+
+	if limit > 0 && offset > 0 {
+		queryBuilder += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argCount+1, argCount+2)
+		args = append(args, limit, offset)
+	} else if limit > 0 {
+		queryBuilder += fmt.Sprintf(" LIMIT $%d", argCount+1)
+		args = append(args, limit)
+	} else if offset > 0 {
+		queryBuilder += fmt.Sprintf(" OFFSET $%d", argCount+1)
+		args = append(args, offset)
 	}
 
-	rows, err := db.Query(ctx, query)
+	rows, err := db.Query(ctx, queryBuilder, args...)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to query all businesses: %v", err)
 		return nil, fmt.Errorf("failed to retrieve all businesses: %w", err)

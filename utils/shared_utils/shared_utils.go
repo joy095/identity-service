@@ -25,9 +25,12 @@ const (
 	FORGOT_PASSWORD_OTP_PREFIX    = "forgot_password_otp:"
 	EMAIL_VERIFICATION_OTP_PREFIX = "email_verification_otp:"
 	EMAIL_CHANGE_NEW_OTP_PREFIX   = "email_change_new_otp:" // For verifying the new email
+	PASSWORD_RESET_OTP_PREFIX     = "password_reset_otp:"
 
-	CUSTOMER_OTP_PREFIX    = "customer_otp:"
-	CUSTOMER_REFRESH_TOKEN = "customer_refresh_token:"
+	CUSTOMER_OTP_PREFIX           = "customer_otp:"
+	CUSTOMER_REFRESH_TOKEN_PREFIX = "customer_refresh_token:"
+
+	USER_REFRESH_TOKEN_PREFIX = "user_refresh_token:"
 )
 
 // ErrOTPNotFound is returned when an OTP is not found or expired.

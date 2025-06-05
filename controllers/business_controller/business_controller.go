@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/joy095/identity/badwords" // Import your badwords package
-	"github.com/joy095/identity/logger"   // Adjust import path for your logger
-	"github.com/joy095/identity/models/business_models"   // Import your models package
+	"github.com/joy095/identity/badwords"               
+	"github.com/joy095/identity/logger"                 
+	"github.com/joy095/identity/models/business_models" 
 	"github.com/joy095/identity/utils"
 )
 
@@ -387,7 +387,7 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 		return
 	}
 
-	if err := business_models.DeleteBusiness(bc.DB, businessID); err != nil {
+	if err := business_models.DeleteBusiness(c.Request.Context(), bc.DB, businessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})
 		return

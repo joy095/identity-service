@@ -352,12 +352,13 @@ func VerifyEmail(c *gin.Context) {
 	}
 
 	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
+	request.Username = strings.ToLower(strings.TrimSpace(request.Username))
 
 	// Retrieve OTP hash from Redis using the specific prefix for initial verification
 	storedHash, err := redisclient.GetRedisClient().Get(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Username).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
-			logger.ErrorLogger.Info(fmt.Sprintf("OTP expired or not found for %s (initial verification)", request.Email))
+			logger.ErrorLogger.Errorf("OTP expired or not found for %s (initial verification)", request.Email)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
 			return
 		}
@@ -368,12 +369,12 @@ func VerifyEmail(c *gin.Context) {
 
 	// Verify OTP
 	if utils.HashOTP(request.OTP) != storedHash {
-		logger.ErrorLogger.Info(fmt.Sprintf("Incorrect OTP for %s (initial verification)", request.Email))
+		logger.ErrorLogger.Errorf("Incorrect OTP for %s (initial verification)", request.Email)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
 		return
 	}
 
-	// Get user by email to retrieve userID
+	// Get user by email to retrieve userID and token_version
 	user, err := user_models.GetUserByUsername(db.DB, request.Username) // Assuming username is provided and used to fetch user
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found for username %s: %v", request.Username, err)
@@ -388,41 +389,51 @@ func VerifyEmail(c *gin.Context) {
 		return
 	}
 
-	// Generate access token (60 minutes)
-	accessToken, err := shared_models.GenerateAccessToken(user.ID, 60*time.Minute)
+	// --- INTEGRATE TOKEN_VERSION HERE ---
+
+	currentTokenVersion := user.TokenVersion // Get the current token_version from the user object
+
+	// Generate access token (60 minutes) including token_version
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, 60*time.Minute)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate access token in VerifyEmail")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
 		return
 	}
 
-	// Generate refresh token (7 days)
-	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, 30*24*time.Hour) // Refresh Token expires in 30 days
+	// Generate refresh token (30 days) including token_version
+	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, currentTokenVersion, 30*24*time.Hour) // Refresh Token expires in 30 days
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate refresh token in VerifyEmail")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
 		return
 	}
+	// --- END TOKEN_VERSION INTEGRATION ---
 
 	// Delete OTP from Redis after successful verification
 	if err := redisclient.GetRedisClient().Del(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Username).Err(); err != nil {
 		logger.ErrorLogger.Warnf("Failed to delete initial verification OTP from Redis for %s: %v", request.Username, err)
 	}
 
-	// Update user's email verification and refresh token in DB
 	_, err = db.DB.Exec(ctx,
-		"UPDATE users SET is_verified_email = true",
-	) // Update by ID, as username might not be unique if email changes later
+		"UPDATE users SET is_verified_email = true WHERE id = $1",
+		user.ID,
+	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update user data (is_verified_email) for user %s: %v", user.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user data"})
 		return
 	}
 
-	// CUSTOMER_REFRESH_TOKEN
+	// USER_REFRESH_TOKEN_PREFIX
 	// err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, 10*time.Minute).Err()
-	err = redisclient.GetRedisClient().Set(ctx, shared_utils.CUSTOMER_REFRESH_TOKEN+request.Email+refreshToken, user.ID, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
+	err = redisclient.GetRedisClient().Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+request.Username, refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
 
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for user %s: %v", user.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
+		return
+	}
 	logger.InfoLogger.Infof("Email verified and tokens generated successfully for user %s", user.ID)
 
 	c.JSON(http.StatusOK, gin.H{

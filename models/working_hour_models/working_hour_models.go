@@ -40,7 +40,7 @@ func NewWorkingHour(
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	logger.InfoLogger.Debugf("Created new WorkingHour model for BusinessID: %s, Day: %s", businessID, dayOfWeek)
+	logger.DebugLogger.Debugf("Created new WorkingHour model for BusinessID: %s, Day: %s", businessID, dayOfWeek)
 	return wh
 }
 
@@ -57,7 +57,7 @@ func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 			$1, $2, $3, $4, $5, $6, $7, $8
 		) RETURNING id`
 
-	_, err := db.Exec(context.Background(), query,
+	err := db.QueryRow(context.Background(), query,
 		wh.ID,
 		wh.BusinessID,
 		wh.DayOfWeek,
@@ -240,7 +240,7 @@ func UpdateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 			logger.InfoLogger.Warnf("No row found to update for working hour ID %s for business %s.", wh.ID, wh.BusinessID)
 			return nil, fmt.Errorf("working hour not found or not associated with business")
 		}
-		logger.InfoLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database: %v", wh.ID, wh.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database: %v", wh.ID, wh.BusinessID, err)
 		return nil, fmt.Errorf("failed to update working hour: %w", err)
 	}
 
@@ -282,7 +282,7 @@ func UpdateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*Work
 			logger.InfoLogger.Warnf("No row found to update for working hour ID %s for business %s in transaction.", wh.ID, wh.BusinessID)
 			return nil, fmt.Errorf("working hour not found or not associated with business (tx)")
 		}
-		logger.InfoLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database (tx): %v", wh.ID, wh.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database (tx): %v", wh.ID, wh.BusinessID, err)
 		return nil, fmt.Errorf("failed to update working hour (tx): %w", err)
 	}
 

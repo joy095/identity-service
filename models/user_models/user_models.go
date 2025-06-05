@@ -3,6 +3,7 @@ package user_models
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,6 +14,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	redisclient "github.com/joy095/identity/config/redis"
+	"github.com/joy095/identity/utils/shared_utils"
 
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/shared_models"
@@ -21,19 +24,22 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+var ctx = context.Background()
+
 // Argon2 Parameters (Strong Security)
 const (
-	Memory      = 256 * 1024 // 256MB
-	Iterations  = 6          // Number of iterations
-	Parallelism = 4          // Number of threads
-	SaltLength  = 16         // Salt size (bytes)
-	KeyLength   = 64         // Derived key size (bytes)
+	Memory      = 64 * 1024 // 64MB – still strong, far safer for API servers
+	Iterations  = 3         // Keep ≈1s hash on commodity hardware          // Number of iterations
+	Parallelism = 4         // Number of threads
+	SaltLength  = 16        // Salt size (bytes)
+	KeyLength   = 64        // Derived key size (bytes)
 )
 
 // User Model
 type User struct {
 	ID              uuid.UUID
 	Username        string
+	TokenVersion    int
 	Email           string
 	PasswordHash    string
 	RefreshToken    *string
@@ -41,6 +47,8 @@ type User struct {
 	FirstName       string
 	LastName        string
 	IsVerifiedEmail bool
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // generateSalt generates a secure random salt
@@ -94,8 +102,10 @@ func VerifyPassword(password, storedHash string) (bool, error) {
 	}
 
 	computedHash := argon2.IDKey([]byte(password), salt, Iterations, Memory, uint8(Parallelism), KeyLength)
-
-	return string(computedHash) == string(expectedHash), nil
+	if subtle.ConstantTimeCompare(computedHash, expectedHash) == 1 {
+		return true, nil
+	}
+	return false, nil
 }
 
 func ComparePasswords(db *pgxpool.Pool, password, username string) (bool, error) {
@@ -219,33 +229,47 @@ func CreateUser(db *pgxpool.Pool, username, email, password, firstName, lastName
 func LoginUser(db *pgxpool.Pool, username, password string) (*User, string, string, error) {
 	logger.InfoLogger.Info("LoginUser called on models")
 
-	user, err := GetUserByUsername(db, username)
+	user, err := GetUserByUsername(db, username) // This function should retrieve the User struct, including TokenVersion
 	if err != nil {
-		return nil, "", "", err
+		// It's good practice to log the specific error for debugging but return a generic one for security
+		logger.ErrorLogger.Errorf("Login failed for username %s: %v", username, err)
+		return nil, "", "", errors.New("invalid credentials") // Avoid "user not found" for security
 	}
 
-	valid, err := VerifyPassword(password, user.PasswordHash)
+	valid, err := VerifyPassword(password, user.PasswordHash) // Assuming PasswordHash is the correct field
 	if err != nil || !valid {
+		logger.ErrorLogger.Errorf("Invalid password attempt for user %s", user.ID)
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
-	accessToken, err := shared_models.GenerateAccessToken(user.ID, time.Minute*60) // Access Token for 1 hour
+	// --- Pass the user's current TokenVersion to token generation ---
+	// user.TokenVersion should be populated by GetUserByUsername
+	currentTokenVersion := user.TokenVersion
+
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, time.Minute*60) // Access Token for 1 hour
 	if err != nil {
-		return nil, "", "", err
+		logger.ErrorLogger.Errorf("Failed to generate access token for user %s: %v", user.ID, err)
+		return nil, "", "", errors.New("failed to generate access token")
 	}
 
-	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, time.Hour*24*30) // Stronger Refresh Token for 30 days
+	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, currentTokenVersion, time.Hour*24*30) // Stronger Refresh Token for 30 days
 	if err != nil {
-		return nil, "", "", err
+		logger.ErrorLogger.Errorf("Failed to generate refresh token for user %s: %v", user.ID, err)
+		return nil, "", "", errors.New("failed to generate refresh token")
 	}
 
-	// Update refresh token in DB
-	_, err = db.Exec(context.Background(), `UPDATE users SET refresh_token = $1 WHERE id = $2`, refreshToken, user.ID)
+	// --- Important: Re-evaluate refresh token storage in DB ---
+
+	err = redisclient.GetRedisClient().Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+user.Username, refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
 	if err != nil {
-		return nil, "", "", err
+		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for user %s: %v", user.ID, err)
+		return nil, "", "", fmt.Errorf("failed to store refresh token in Redis: %v", err)
 	}
 
-	user.RefreshToken = &refreshToken
+	logger.InfoLogger.Infof("Email verified and tokens generated successfully for user %s", user.ID)
+
+	// Set the generated refresh token on the user object before returning
+	user.RefreshToken = &refreshToken // Ensure User struct can hold a pointer to string if that's its type
 	return user, accessToken, refreshToken, nil
 }
 
@@ -259,7 +283,7 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 	var user User
 
-	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email FROM users WHERE username = $1`
+	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email, token_version FROM users WHERE username = $1`
 
 	err := db.QueryRow(context.Background(), query, username).Scan(
 		&user.ID,
@@ -270,6 +294,7 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 		&user.PasswordHash,
 		&user.RefreshToken,
 		&user.IsVerifiedEmail,
+		&user.TokenVersion,
 	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("failed to get user by username: %v", err)
@@ -282,7 +307,7 @@ func GetUserByUsername(db *pgxpool.Pool, username string) (*User, error) {
 // GetUserByID retrieves a user by id
 func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 	var user User
-	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email FROM users WHERE id = $1`
+	query := `SELECT id, username, email, first_name, last_name, password_hash, refresh_token, is_verified_email, token_version FROM users WHERE id = $1`
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&user.ID,
 		&user.Username,
@@ -292,6 +317,7 @@ func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 		&user.PasswordHash,
 		&user.RefreshToken,
 		&user.IsVerifiedEmail,
+		&user.TokenVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -299,18 +325,47 @@ func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 	return &user, nil
 }
 
-// UpdateUserFields updates specific fields of a user's profile.
-// Define allowed fields for updates to prevent SQL injection
-var allowedUpdateFields = map[string]bool{
-	"username":   true,
-	"first_name": true,
-	"last_name":  true,
-	"email":      true,
+func IncrementUserTokenVersion(db *pgxpool.Pool, userID uuid.UUID) error {
+	query := `UPDATE users SET token_version = token_version + 1 WHERE id = $1`
+	_, err := db.Exec(context.Background(), query, userID)
+	return err
 }
 
+func UpdatePasswordAndIncrementVersion(db *pgxpool.Pool, userID uuid.UUID, newPassword string) error {
+
+	tx, err := db.Begin(context.Background())
+
+	if err != nil {
+		return err
+	}
+
+	defer tx.Rollback(context.Background())
+
+	query := `UPDATE users SET password_hash = $1, token_version = token_version + 1 WHERE id = $2`
+
+	_, err = tx.
+		Exec(context.Background(), query, newPassword, userID)
+
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(context.Background())
+
+}
+
+// UpdateUserFields updates specific fields of a user's profile.
+// Define allowed fields for updates to prevent SQL injection
 func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {
 	if len(updates) == 0 {
 		return nil // No updates to perform
+	}
+
+	var allowedUpdateFields = map[string]bool{
+		"username":   true,
+		"first_name": true,
+		"last_name":  true,
+		"email":      true,
 	}
 
 	// Validate field names to prevent SQL injection
@@ -353,4 +408,10 @@ func IsEmailVerified(db *pgxpool.Pool, userID uuid.UUID) (bool, error) {
 	}
 
 	return isVerified, nil
+}
+
+func DeleteUser(db *pgxpool.Pool, userID uuid.UUID) error {
+	query := `DELETE FROM users WHERE id = $1`
+	_, err := db.Exec(context.Background(), query, userID)
+	return err
 }
