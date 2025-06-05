@@ -5,12 +5,14 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/business_controller"
 	"github.com/joy095/identity/middlewares/auth"
+	"github.com/joy095/identity/utils/jwt_parse"
 )
 
 func RegisterBusinessRoutes(router *gin.Engine) {
 	businessController := business_controller.NewBusinessController(db.DB)
 
 	// Protected routes
+	router.Use(jwt_parse.ParseJWTToken())
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
