@@ -161,9 +161,9 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 		return nil, fmt.Errorf("token validation failed: cannot retrieve user token version")
 	}
 
-	if claims.TokenVersion < currentUserTokenVersion {
+	if claims.TokenVersion != currentUserTokenVersion {
 		logger.WarnLogger.Warnf("Token for user %s with version %d is older than current version %d. Token revoked.", claims.UserID, claims.TokenVersion, currentUserTokenVersion)
-		return nil, fmt.Errorf("token has been revoked (password changed)")
+		return nil, fmt.Errorf("token version mismatch: token has been revoked")
 	}
 	// --- END TOKEN VERSION CHECK ---
 

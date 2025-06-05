@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/joy095/identity/badwords"               
-	"github.com/joy095/identity/logger"                 
-	"github.com/joy095/identity/models/business_models" 
+	"github.com/joy095/identity/badwords"
+	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/utils"
 )
 
@@ -37,16 +37,16 @@ type Location struct {
 // This is separate from the business_models.Business struct to allow for input validation rules
 // and to exclude fields like ID, CreatedAt, UpdatedAt that are set by the server.
 type CreateBusinessRequest struct {
-	Name       string   `json:"name" binding:"required,min=3,max=100"`
-	Category   string   `json:"category" binding:"required,min=2,max=50"`
-	Address    string   `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
-	City       string   `json:"city" binding:"required,min=2,max=50"`
-	State      string   `json:"state" binding:"required,min=2,max=50"`
-	Country    string   `json:"country" binding:"required,min=2,max=50"`
-	PostalCode string   `json:"postalCode" binding:"required,min=3,max=20"`
-	TaxID      string   `json:"taxId,omitempty"`
-	About      string   `json:"about,omitempty"`
-	Location   Location `json:"location"`
+	Name       string    `json:"name" binding:"required,min=3,max=100"`
+	Category   string    `json:"category" binding:"required,min=2,max=50"`
+	Address    string    `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
+	City       string    `json:"city" binding:"required,min=2,max=50"`
+	State      string    `json:"state" binding:"required,min=2,max=50"`
+	Country    string    `json:"country" binding:"required,min=2,max=50"`
+	PostalCode string    `json:"postalCode" binding:"required,min=3,max=20"`
+	TaxID      string    `json:"taxId,omitempty"`
+	About      string    `json:"about,omitempty"`
+	Location   *Location `json:"location,omitempty"`
 	// OwnerUserID will be extracted from the authenticated user's context, not from the request body.
 }
 

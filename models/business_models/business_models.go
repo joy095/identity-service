@@ -201,7 +201,8 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 			id = $1
 		RETURNING id`
 
-	res, err := db.Exec(context.Background(), query,
+	var id uuid.UUID
+	err := db.QueryRow(context.Background(), query,
 		business.ID,
 		business.Name,
 		business.Category,
@@ -216,15 +217,10 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.Location.Longitude,
 		business.UpdatedAt,
 		business.IsActive,
-	)
-
+	).Scan(&id)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update business %s in database: %v", business.ID, err)
 		return nil, fmt.Errorf("failed to update business: %w", err)
-	}
-
-	if res.RowsAffected() == 0 {
-		return nil, fmt.Errorf("business with ID %s not found for update", business.ID)
 	}
 
 	logger.InfoLogger.Infof("Business with ID %s updated successfully", business.ID)

@@ -282,7 +282,21 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	existingMap := make(map[string]working_hour_models.WorkingHour)
 	for rows.Next() {
 		var wh working_hour_models.WorkingHour
-		// ... scan logic ...
+		if err := rows.Scan(
+			&wh.ID,
+			&wh.BusinessID,
+			&wh.DayOfWeek,
+			&wh.OpenTime,
+			&wh.CloseTime,
+			&wh.IsClosed,
+			&wh.CreatedAt,
+			&wh.UpdatedAt,
+		); err != nil {
+			tx.Rollback(c.Request.Context())
+			logger.ErrorLogger.Errorf("Failed to scan working hour row: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read existing working hours"})
+			return
+		}
 		existingMap[wh.DayOfWeek] = wh
 	}
 

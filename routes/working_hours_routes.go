@@ -6,7 +6,6 @@ import (
 
 	"github.com/joy095/identity/controllers/working_hour_controller"
 	"github.com/joy095/identity/middlewares/auth"
-	"github.com/joy095/identity/utils/jwt_parse"
 )
 
 func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
@@ -14,8 +13,6 @@ func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
 	workingHourController := working_hour_controller.NewWorkingHourController(db)
 
 	// Apply authentication middleware to all working hour routes
-	router.Use(jwt_parse.ParseJWTToken())
-
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware()) // Apply AuthMiddleware here
 

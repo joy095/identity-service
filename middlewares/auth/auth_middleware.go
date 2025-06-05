@@ -25,7 +25,7 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Parse JWT token and extract claims by calling the JWT parser.
 		logger.InfoLogger.Info("Calling JWT parser helper...")
-		jwt_parse.ParseJWTToken() // This invokes the handler returned by ParseJWTToken
+		jwt_parse.ParseJWTToken()(c) // This invokes the handler returned by ParseJWTToken
 
 		// CRITICAL: Check if the request was aborted by the JWT parser helper
 		if c.IsAborted() {
