@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/joy095/identity/logger"
 	"golang.org/x/crypto/argon2"
@@ -82,8 +83,13 @@ func GenerateSecureOTP() (string, error) {
 func HashOTP(otp string) string {
 	saltBase := os.Getenv("OTP_SALT_SECRET")
 	if saltBase == "" {
-		logger.ErrorLogger.Warn("OTP_SALT_SECRET not set, using fallback")
-		saltBase = "change_this_in_production"
+		errMsg := "SECURITY RISK: OTP_SALT_SECRET not set"
+		logger.ErrorLogger.Error(errMsg)
+		if os.Getenv("GO_ENV") == "production" {
+			logger.ErrorLogger.Fatal("Cannot run in production without OTP_SALT_SECRET")
+		}
+		// Insecure fallback for development only
+		saltBase = "change_this_in_production_" + time.Now().Format("20060102")
 	}
 
 	salt := []byte(saltBase + "-otp-verification-salt")

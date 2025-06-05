@@ -1,4 +1,4 @@
-// controllers/service_controller.go
+// controllers/services_controller/services_controller.go
 package services_controller
 
 import (
@@ -88,7 +88,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.ErrorLogger.Warnf("User %s attempted to create service for unowned business %s", ownerUserID, req.BusinessID)
+		logger.ErrorLogger.Errorf("User %s attempted to create service for unowned business %s", ownerUserID, req.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to add services to this business"})
 		return
 	}
@@ -208,7 +208,7 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.ErrorLogger.Warnf("User %s attempted to update service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
+		logger.ErrorLogger.Errorf("User %s attempted to update service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this service"})
 		return
 	}
@@ -288,7 +288,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.ErrorLogger.Warnf("User %s attempted to delete service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
+		logger.ErrorLogger.Errorf("User %s attempted to delete service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this service"})
 		return
 	}

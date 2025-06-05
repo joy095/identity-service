@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config/db"
@@ -628,7 +627,9 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	}
 
 	// Compare the provided current password with the hashed password in the DB
-	valid, err := user_models.ComparePasswords(db.DB, req.CurrentPassword, user.Username) // Assuming ComparePasswords uses username to fetch user
+	// Assuming ComparePasswords correctly fetches/uses the hashed password for the user.
+	// Ideally, ComparePasswords would take the 'user' object directly to avoid re-fetching.
+	valid, err := user_models.ComparePasswords(db.DB, req.CurrentPassword, user.Username)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Error comparing passwords for user %s: %v", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during password verification"})
@@ -649,24 +650,56 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 		return
 	}
 
-	// Update the password in the database
-	_, err = db.DB.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
+	// --- Start Transaction for Atomicity ---
+	tx, err := db.DB.Begin(context.Background())
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to begin transaction for password change", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	defer tx.Rollback(context.Background()) // Rollback on error
+
+	// 1. Update the password in the database
+	_, err = tx.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Password changed successfully for user: %s", user.Username)
-	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully"})
+	// 2. Increment the token_version
+	_, err = tx.Exec(context.Background(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke old tokens"})
+		return
+	}
+
+	// 3. Optionally, clear the refresh_token field in the database
+	// This immediately invalidates the stored refresh token as well.
+	_, err = tx.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, user.ID)
+	if err != nil {
+		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Username, err))
+		// This is a warning because even if clearing fails, incrementing token_version still revokes.
+		// But it's good practice to clear the old token too.
+	}
+
+	// --- Commit Transaction ---
+	if err := tx.Commit(context.Background()); err != nil {
+		logger.ErrorLogger.Error("Failed to commit password change transaction", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	logger.InfoLogger.Infof("Password changed successfully for user: %s. All old tokens revoked.", user.Username)
+	c.JSON(http.StatusOK, gin.H{"message": "Password changed successfully. Please log in again."})
 }
 
 // RefreshToken handles refreshing access tokens
 func (uc *UserController) RefreshToken(c *gin.Context) {
-	logger.InfoLogger.Info("RefreshToken token function called")
+	logger.InfoLogger.Info("RefreshToken function called")
 
-	// time.Sleep(1 * time.Second)
-
+	// Extract refresh token from header
 	refreshToken := c.GetHeader("Refresh-Token")
 	if refreshToken == "" {
 		logger.ErrorLogger.Error("No refresh token provided in header")
@@ -674,52 +707,117 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 		return
 	}
 
+	// Remove Bearer prefix if present
 	refreshToken = strings.TrimPrefix(refreshToken, "Bearer ")
 
+	// Parse and validate the refresh token first
+	claims, err := shared_models.ParseToken(refreshToken, func(userID uuid.UUID) (int, error) {
+		var version int
+		err := db.DB.QueryRow(context.Background(),
+			`SELECT token_version FROM users WHERE id = $1`, userID).Scan(&version)
+		return version, err
+	})
+	if err != nil {
+		logger.ErrorLogger.Error("Invalid refresh token", "error", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+		return
+	}
+
+	// Verify token type is refresh
+	if claims.Type != "refresh" {
+		logger.ErrorLogger.Error("Provided token is not a refresh token")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token type"})
+		return
+	}
+
+	// Get user details and verify token matches
 	var user user_models.User
-	query := `SELECT id, username, email, refresh_token FROM users WHERE refresh_token = $1`
-	err := db.DB.QueryRow(context.Background(), query, refreshToken).Scan(
-		&user.ID, &user.Username, &user.Email, &user.RefreshToken,
+	query := `SELECT id, username, email, refresh_token, token_version FROM users WHERE id = $1`
+	err = db.DB.QueryRow(context.Background(), query, claims.UserID).Scan(
+		&user.ID, &user.Username, &user.Email, &user.RefreshToken, &user.TokenVersion,
 	)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.ErrorLogger.Error("error", "Invalid or expired refresh token")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
+			logger.ErrorLogger.Error("User not found", "user_id", claims.UserID)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user"})
 		} else {
-			logger.ErrorLogger.Error("error", "Database error")
+			logger.ErrorLogger.Error("Database error", "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		}
 		return
 	}
 
-	accessToken, err := shared_models.GenerateAccessToken(user.ID, time.Minute*60)
+	// Verify refresh token matches and version is current
+	if user.RefreshToken == nil || *user.RefreshToken != refreshToken {
+		logger.ErrorLogger.Error("Refresh token mismatch", "user_id", user.ID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		return
+	}
+
+	if user.TokenVersion != claims.TokenVersion {
+		logger.ErrorLogger.Error("Token version mismatch",
+			"stored_version", user.TokenVersion,
+			"token_version", claims.TokenVersion)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Token revoked - please login again"})
+		return
+	}
+
+	// Generate new tokens
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, user.TokenVersion, shared_models.ACCESS_TOKEN_EXPIRY)
 	if err != nil {
-		logger.ErrorLogger.Error("error", "Failed to generate access token")
+		logger.ErrorLogger.Error("Failed to generate access token", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
 		return
 	}
 
-	newRefreshToken, err := shared_models.GenerateRefreshToken(user.ID, time.Hour*24*30)
+	newRefreshToken, err := shared_models.GenerateRefreshToken(user.ID, user.TokenVersion, shared_models.REFRESH_TOKEN_EXPIRY)
 	if err != nil {
-		logger.ErrorLogger.Error("error", "Failed to generate refresh token")
+		logger.ErrorLogger.Error("Failed to generate refresh token", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
 		return
 	}
 
-	_, err = db.DB.Exec(context.Background(), `UPDATE users SET refresh_token = $1 WHERE id = $2`, newRefreshToken, user.ID)
+	// Update refresh token in database within a transaction
+	tx, err := db.DB.Begin(context.Background())
 	if err != nil {
-		logger.ErrorLogger.Error("error", "Failed to update refresh token")
+		logger.ErrorLogger.Error("Failed to begin transaction", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	defer tx.Rollback(context.Background())
+
+	_, err = tx.Exec(context.Background(),
+		`UPDATE users SET refresh_token = $1 WHERE id = $2`,
+		newRefreshToken, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to update refresh token", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update refresh token"})
 		return
 	}
 
+	// Optionally store old refresh token in blacklist table
+	_, err = tx.Exec(context.Background(),
+		`INSERT INTO revoked_tokens (token, user_id, expires_at) VALUES ($1, $2, $3)`,
+		refreshToken, user.ID, claims.ExpiresAt.Time)
+	if err != nil {
+		logger.WarnLogger.Warn("Failed to revoke old token", "error", err)
+		// Continue despite this error as the main operation succeeded
+	}
+
+	if err := tx.Commit(context.Background()); err != nil {
+		logger.ErrorLogger.Error("Failed to commit transaction", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	// Set secure cookie flags if using cookies
 	c.JSON(http.StatusOK, gin.H{
 		"accessToken":  accessToken,
 		"refreshToken": newRefreshToken,
 	})
 
-	logger.InfoLogger.Info("RefreshToken is created successfully")
+	logger.InfoLogger.Info("Tokens refreshed successfully", "user_id", user.ID)
 }
 
 // Logout handles user logout
@@ -752,30 +850,30 @@ func (uc *UserController) Logout(c *gin.Context) {
 }
 
 // GetUserByUsername retrieves a user by username
-func (uc *UserController) GetUserByUsername(c *gin.Context) {
-	logger.InfoLogger.Info("GetUserByUsername function called")
+// func (uc *UserController) GetUserByUsername(c *gin.Context) {
+// 	logger.InfoLogger.Info("GetUserByUsername function called")
 
-	username := c.Param("username")
+// 	username := c.Param("username")
 
-	user, err := user_models.GetUserByUsername(db.DB, username)
-	if err != nil {
-		logger.ErrorLogger.Error("User not found")
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
+// 	user, err := user_models.GetUserByUsername(db.DB, username)
+// 	if err != nil {
+// 		logger.ErrorLogger.Error("User not found")
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+// 		return
+// 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"user": gin.H{
-			"id":        user.ID,
-			"username":  user.Username,
-			"email":     user.Email,
-			"firstName": user.FirstName,
-			"lastName":  user.LastName,
-		},
-	})
+// 	c.JSON(http.StatusOK, gin.H{
+// 		"user": gin.H{
+// 			"id":        user.ID,
+// 			"username":  user.Username,
+// 			"email":     user.Email,
+// 			"firstName": user.FirstName,
+// 			"lastName":  user.LastName,
+// 		},
+// 	})
 
-	logger.InfoLogger.Info("User retrieved successfully")
-}
+// 	logger.InfoLogger.Info("User retrieved successfully")
+// }
 
 // GetUserByID retrieves a user by ID
 func (uc *UserController) GetUserByID(c *gin.Context) {
@@ -799,4 +897,124 @@ func (uc *UserController) GetUserByID(c *gin.Context) {
 	})
 
 	logger.InfoLogger.Info("User retrieved successfully by ID")
+}
+
+// GetMyProfile returns the authenticated user's own profile
+func (uc *UserController) GetMyProfile(c *gin.Context) {
+	logger.InfoLogger.Info("GetMyProfile called")
+
+	// Get user ID from JWT token (set by AuthMiddleware)
+	userIDFromToken, exists := c.Get("user_id")
+	if !exists {
+		logger.ErrorLogger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userIDStr, ok := userIDFromToken.(string)
+	if !ok {
+		logger.ErrorLogger.Error("Invalid user ID type in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Get user from database
+	user, err := user_models.GetUserByID(db.DB, userIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("User not found: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Return user's own profile (can include sensitive info)
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":        user.ID,
+			"username":  user.Username,
+			"email":     user.Email,
+			"firstName": user.FirstName,
+			"lastName":  user.LastName,
+			"createdAt": user.CreatedAt,
+			"updatedAt": user.UpdatedAt,
+		},
+	})
+}
+
+// GetPublicUserProfile returns only public information about a user
+// This is for cases where users need to see basic info about other users
+func (uc *UserController) GetPublicUserProfile(c *gin.Context) {
+	logger.InfoLogger.Info("GetPublicUserProfile called")
+
+	username := c.Param("username")
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
+		return
+	}
+
+	// Get user from database
+	user, err := user_models.GetUserByUsername(db.DB, username)
+	if err != nil {
+		logger.ErrorLogger.Errorf("User not found: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// Return ONLY public information - NO sensitive data
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":        user.ID,
+			"username":  user.Username,
+			"firstName": user.FirstName,
+			"lastName":  user.LastName,
+			// DO NOT include: email, phone, addresses, etc.
+		},
+	})
+}
+
+// REMOVE or SECURE the existing GetUserByUsername method
+// If you need to keep it, it should have proper authorization logic
+func (uc *UserController) GetUserByUsername(c *gin.Context) {
+	logger.InfoLogger.Info("GetUserByUsername called")
+
+	// Get authenticated user's ID from token
+	userIDFromToken, exists := c.Get("user_id")
+	if !exists {
+		logger.ErrorLogger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	username := c.Param("username")
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
+		return
+	}
+
+	// Get the requested user
+	requestedUser, err := user_models.GetUserByUsername(db.DB, username)
+	if err != nil {
+		logger.ErrorLogger.Errorf("User not found: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	// CRITICAL: Only allow users to access their own profile
+	if requestedUser.ID.String() != userIDFromToken {
+		logger.ErrorLogger.Errorf("Unauthorized access attempt: user %s trying to access %s", userIDFromToken, requestedUser.ID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: You can only access your own profile"})
+		return
+	}
+
+	// If it's their own profile, return full information
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":        requestedUser.ID,
+			"username":  requestedUser.Username,
+			"email":     requestedUser.Email,
+			"firstName": requestedUser.FirstName,
+			"lastName":  requestedUser.LastName,
+			"createdAt": requestedUser.CreatedAt,
+			"updatedAt": requestedUser.UpdatedAt,
+		},
+	})
 }

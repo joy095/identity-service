@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/joy095/identity/config/db"
 	redisclient "github.com/joy095/identity/config/redis" // Assuming this is your Redis client package
@@ -161,7 +162,8 @@ func (uc *CustomerController) RequestCustomerLogin(c *gin.Context) {
 	}
 
 	// Store OTP in Redis
-	otpKey := shared_utils.CUSTOMER_OTP_PREFIX + req.Email
+	cleanEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	otpKey := shared_utils.CUSTOMER_OTP_PREFIX + cleanEmail
 	// OTP valid for 5 minutes
 	if err := redisclient.GetRedisClient().Set(c.Request.Context(), otpKey, utils.HashOTP(otp), 5*time.Minute).Err(); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store OTP in Redis: %w", err))
@@ -190,10 +192,12 @@ func (uc *CustomerController) processCustomerEmailVerification(c *gin.Context, e
 		device = "unknown" // Default device if not provided
 	}
 
+	ctx := c.Request.Context() // Use context from gin.Context for consistency
+
 	// --- OTP Verification ---
-	storedHash, err := redisclient.GetRedisClient().Get(c.Request.Context(), shared_utils.CUSTOMER_OTP_PREFIX+email).Result()
+	storedHash, err := redisclient.GetRedisClient().Get(ctx, shared_utils.CUSTOMER_OTP_PREFIX+email).Result()
 	if err != nil {
-		if err == redis.Nil { // Use redis.Nil for "redis: nil" error check
+		if err == redis.Nil { // Correct way to check for "redis: nil"
 			logger.ErrorLogger.Info(fmt.Sprintf("Customer OTP expired or not found for %s", email))
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
 			return
@@ -210,6 +214,7 @@ func (uc *CustomerController) processCustomerEmailVerification(c *gin.Context, e
 	}
 
 	// --- Customer Retrieval ---
+	// Ensure GetCustomerByEmail correctly retrieves the TokenVersion field
 	customer, err := customer_models.GetCustomerByEmail(db.DB, email)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Customer not found for email %s: %v", email, err)
@@ -217,12 +222,60 @@ func (uc *CustomerController) processCustomerEmailVerification(c *gin.Context, e
 		return
 	}
 
-	// --- Multi-Device Refresh Token Management ---
-	refreshTokenKey := fmt.Sprintf("customer:%s:refresh_tokens", customer.ID.String())
-	ctx := c.Request.Context()
+	// --- Delete OTP from Redis after successful verification ---
+	if err := redisclient.GetRedisClient().Del(ctx, shared_utils.CUSTOMER_OTP_PREFIX+email).Err(); err != nil {
+		logger.ErrorLogger.Warnf("Failed to delete customer OTP from Redis for %s: %v", email, err)
+		// Do not return error here, as OTP verification already succeeded
+	}
+
+	// --- TOKEN GENERATION with TokenVersion ---
+	// Get the customer's current token_version from the fetched customer object.
+	// When a customer is first verified, this will typically be 1 (the default).
+	currentTokenVersion := customer.TokenVersion
+
+	// Generate new access token
+	accessToken, err := shared_models.GenerateAccessToken(customer.ID, currentTokenVersion, 60*time.Minute)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to generate access token for customer %s: %v", customer.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
+		return
+	}
+
+	// Generate new refresh token (this must be the pure JWT)
+	refreshToken, err := shared_models.GenerateRefreshToken(customer.ID, currentTokenVersion, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to generate refresh token for customer %s: %v", customer.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+		return
+	}
+
+	// --- Multi-Device Refresh Token Management (using ZSET) ---
+	// This approach implies you are managing multiple active refresh tokens per customer.
+	// The ZSET key should ideally be `customer:{customer_id}:refresh_tokens`.
+	// The member should uniquely identify the refresh token, e.g., its JTI (JWT ID) or a composite of JTI and device.
+	refreshTokenZSetKey := fmt.Sprintf(shared_utils.CUSTOMER_REFRESH_TOKEN_PREFIX, customer.ID.String())
+
+	// If you want to store the full JWT refresh token along with device for traceability:
+	// IMPORTANT: You need to parse the `refreshToken` to get its JTI for robust management.
+	// Let's assume you have a way to extract JTI.
+	// For now, we'll store a combination of JTI and device in the ZSET member.
+	// A new `jti` field has been added to `shared_models.Claims` in a previous update.
+	refreshClaims, err := shared_models.ParseToken(refreshToken, func(userID uuid.UUID) (int, error) {
+		customer, err := customer_models.GetCustomerByID(db.DB, userID)
+		if err != nil {
+			return 0, err
+		}
+		return customer.TokenVersion, nil
+	})
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse newly generated refresh token for JTI: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process token"})
+		return
+	}
+	jti := refreshClaims.RegisteredClaims.ID // Access the JTI from RegisteredClaims
 
 	// Get current number of active sessions
-	currentSessions, err := redisclient.GetRedisClient().ZCard(ctx, refreshTokenKey).Result()
+	currentSessions, err := redisclient.GetRedisClient().ZCard(ctx, refreshTokenZSetKey).Result()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get session count for customer %s: %v", customer.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to manage sessions"})
@@ -231,11 +284,12 @@ func (uc *CustomerController) processCustomerEmailVerification(c *gin.Context, e
 
 	if currentSessions >= MAX_ACTIVE_DEVICES {
 		// Remove the oldest session if limit is reached
-		oldestMembers, err := redisclient.GetRedisClient().ZRange(ctx, refreshTokenKey, 0, 0).Result()
+		oldestMembers, err := redisclient.GetRedisClient().ZRange(ctx, refreshTokenZSetKey, 0, 0).Result()
 		if err != nil || len(oldestMembers) == 0 {
 			logger.ErrorLogger.Errorf("Failed to retrieve oldest refresh token for customer %s: %v", customer.ID, err)
+			// Proceed, but log the error
 		} else {
-			if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenKey, oldestMembers[0]).Result(); err != nil {
+			if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenZSetKey, oldestMembers[0]).Result(); err != nil {
 				logger.ErrorLogger.Errorf("Failed to remove oldest refresh token %s for customer %s: %v", oldestMembers[0], customer.ID, err)
 			} else {
 				logger.InfoLogger.Infof("Removed oldest refresh token %s for customer %s due to device limit", oldestMembers[0], customer.ID)
@@ -243,53 +297,39 @@ func (uc *CustomerController) processCustomerEmailVerification(c *gin.Context, e
 		}
 	}
 
-	// Generate new access token
-	accessToken, err := shared_models.GenerateAccessToken(customer.ID, 60*time.Minute)
-	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate access token for customer")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
-		return
-	}
+	// Store refresh token's JTI and device info in Redis Sorted Set
+	// The score will be the timestamp (for ordering by oldest)
+	now := float64(time.Now().Unix())                  // Use Unix seconds for score
+	memberToStore := fmt.Sprintf("%s:%s", jti, device) // Store JTI:device in the ZSET member
 
-	// Generate new refresh token (this must be the pure JWT)
-	refreshToken, err := shared_models.GenerateRefreshToken(customer.ID, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour)
-	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate refresh token for customer")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
-		return
-	}
-
-	// Store refresh token in Redis Sorted Set as "pure_jwt_token:device_id"
-	now := float64(time.Now().UnixNano())
-	memberToStore := fmt.Sprintf("%s:%s", refreshToken, device) // CORRECTED: Use device here
-	if err := redisclient.GetRedisClient().ZAdd(ctx, refreshTokenKey, redis.Z{
+	if err := redisclient.GetRedisClient().ZAdd(ctx, refreshTokenZSetKey, redis.Z{
 		Score:  now,
 		Member: memberToStore, // Store the composite string here
 	}).Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to store refresh token for customer %s in Redis: %v", customer.ID, err)
+		logger.ErrorLogger.Errorf("Failed to store refresh token JTI/device for customer %s in Redis: %v", customer.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
 		return
 	}
 
-	// Set expiration for the ZSET key itself
-	if err := redisclient.GetRedisClient().Expire(ctx, refreshTokenKey, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour).Err(); err != nil {
-		logger.ErrorLogger.Warnf("Failed to set expiry for refresh token key %s: %v", refreshTokenKey, err)
+	// Set expiration for the ZSET key itself, based on the refresh token's maximum life.
+	// This ensures the entire set for a customer eventually cleans up if inactive.
+	if err := redisclient.GetRedisClient().Expire(ctx, refreshTokenZSetKey, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour).Err(); err != nil {
+		logger.ErrorLogger.Warnf("Failed to set expiry for refresh token ZSET key %s: %v", refreshTokenZSetKey, err)
 	}
 
-	logger.InfoLogger.Debugf("Refresh token stored in Redis for customer %s with key %s, member %s", customer.ID, refreshTokenKey, memberToStore)
-
-	// --- Clean up OTP from Redis ---
-	if err := redisclient.GetRedisClient().Del(ctx, shared_utils.CUSTOMER_OTP_PREFIX+email).Err(); err != nil {
-		logger.ErrorLogger.Warnf("Failed to delete customer OTP from Redis for %s: %v", email, err)
-	}
+	logger.InfoLogger.Debugf("Refresh token JTI %s stored in Redis for customer %s with ZSET key %s, member %s", jti, customer.ID, refreshTokenZSetKey, memberToStore)
 
 	// --- Update email verification status if not already true ---
+	// You might want to wrap this in a transaction if other DB operations are involved.
 	if !customer.IsVerifiedEmail {
 		_, err = db.DB.Exec(ctx,
 			"UPDATE customers SET is_verified_email = true WHERE id = $1 AND is_verified_email = false",
 			customer.ID)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to update customer email verification status for %s: %v", customer.ID, err)
+			// Log the error but continue, as tokens are already generated
+		} else {
+			customer.IsVerifiedEmail = true // Update in-memory struct
 		}
 	}
 
@@ -356,49 +396,79 @@ func (uc *CustomerController) CustomerLogout(c *gin.Context) {
 		return
 	}
 
-	// Parse the refresh token to get the customer ID
-	claims, err := shared_models.ParseToken(req.RefreshToken)
+	ctx := c.Request.Context()
+
+	// Parse the refresh token to get the claims, especially UserID and JTI.
+	claims, err := shared_models.ParseToken(req.RefreshToken, func(userID uuid.UUID) (int, error) {
+		customer, err := customer_models.GetCustomerByID(db.DB, userID)
+		if err != nil {
+			return 0, err
+		}
+		return customer.TokenVersion, nil
+	})
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to parse refresh token during logout: %v", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or malformed refresh token"})
+		return
+	}
+
+	// Ensure it's a refresh token.
+	if claims.Type != "refresh" {
+		logger.WarnLogger.Warnf("Attempt to use non-refresh token (%s) for logout endpoint for customer %s", claims.Type, claims.UserID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only refresh tokens are allowed for this endpoint"})
 		return
 	}
 
 	customerID := claims.UserID
-	refreshTokenKey := fmt.Sprintf("customer:%s:refresh_tokens", customerID.String())
-	ctx := c.Request.Context()
+	jti := claims.RegisteredClaims.ID // Get the JTI (JWT ID) from the claims
 
-	// To reliably remove, we iterate over the ZSET to find the specific member
-	// that starts with the given pure refresh token.
+	refreshTokenZSetKey := fmt.Sprintf("customer:%s:refresh_tokens", customerID.String())
+
+	// Use ZScan with the JTI as a prefix to find the specific refresh token(s) to remove.
+	// Since your stored members are `jti:device`, matching `jti:*` will find the correct entry.
 	membersToRemove := []interface{}{}
-	iter := redisclient.GetRedisClient().ZScan(ctx, refreshTokenKey, 0, req.RefreshToken+"*", 0).Iterator()
-	for iter.Next(ctx) {
-		memberStr := iter.Val()
-		// Ensure it's an exact match for the JWT part
-		parts := strings.SplitN(memberStr, ":", 2)
-		if parts[0] == req.RefreshToken {
-			membersToRemove = append(membersToRemove, memberStr)
+	cursor := uint64(0)
+	matchPattern := jti + ":*" // Search for any member starting with this JTI
+
+	// Iterate through the ZSET to find and collect all matching members.
+	// It's possible (though unlikely if single-use is enforced) that multiple entries
+	// exist for the same JTI if there were prior logic issues. This ensures all are cleaned.
+	for {
+		var keys []string
+		var scanErr error
+		keys, cursor, scanErr = redisclient.GetRedisClient().ZScan(ctx, refreshTokenZSetKey, cursor, matchPattern, 100).Result() // Scan in batches
+		if scanErr != nil {
+			logger.ErrorLogger.Errorf("Failed to scan for refresh token to remove for customer %s (JTI: %s): %v", customerID, jti, scanErr)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
+			return
 		}
-	}
-	if err := iter.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to scan for refresh token to remove for customer %s: %v", customerID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
-		return
+
+		if len(keys) > 0 {
+			// Convert the slice of strings to a slice of interfaces for ZRem.
+			for _, key := range keys {
+				membersToRemove = append(membersToRemove, key)
+			}
+		}
+
+		if cursor == 0 { // No more elements to scan
+			break
+		}
 	}
 
 	if len(membersToRemove) == 0 {
-		logger.InfoLogger.Infof("Refresh token %s not found for customer %s, already logged out or invalid.", req.RefreshToken, customerID)
+		logger.InfoLogger.Infof("Refresh token (JTI: %s) not found in Redis for customer %s, already logged out or invalid.", jti, customerID)
 		c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully (token not found or already invalid)"})
 		return
 	}
 
-	if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenKey, membersToRemove...).Result(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to remove refresh token %s for customer %s from Redis: %v", req.RefreshToken, customerID, err)
+	// Perform the removal of all collected matching members.
+	if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenZSetKey, membersToRemove...).Result(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to remove refresh token(s) (JTI: %s) for customer %s from Redis: %v", jti, customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Customer %s logged out successfully. Refresh token %s invalidated.", customerID, req.RefreshToken)
+	logger.InfoLogger.Infof("Customer %s logged out successfully. %d refresh token(s) (JTI: %s) invalidated.", customerID, len(membersToRemove), jti)
 	c.JSON(http.StatusOK, gin.H{"message": "Logged out successfully"})
 }
 
@@ -407,132 +477,184 @@ func (uc *CustomerController) CustomerLogout(c *gin.Context) {
 func (uc *CustomerController) CustomerRefreshToken(c *gin.Context) {
 	logger.InfoLogger.Info("CustomerRefreshToken controller called")
 
-	// Get the Refresh-Token header
+	// 1. Get and validate the Refresh-Token header
 	refreshHeader := c.GetHeader("Refresh-Token")
 	if refreshHeader == "" {
-		logger.ErrorLogger.Error("Refresh-Token header missing")
+		logger.ErrorLogger.Error("Refresh-Token header missing.")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Refresh-Token header missing"})
 		return
 	}
 
-	// Check if it starts with "Bearer " and extract the token
 	if !strings.HasPrefix(refreshHeader, "Bearer ") {
-		logger.ErrorLogger.Error("Invalid Refresh-Token header format")
+		logger.ErrorLogger.Error("Invalid Refresh-Token header format.")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Refresh-Token header format (expected 'Bearer ' prefix)"})
 		return
 	}
-	// Extract the pure JWT refresh token (this should be the string from the client)
 	refreshTokenFromHeader := strings.TrimPrefix(refreshHeader, "Bearer ")
 
 	if refreshTokenFromHeader == "" {
-		logger.ErrorLogger.Error("Refresh token is empty after stripping Bearer prefix")
+		logger.ErrorLogger.Error("Refresh token is empty after stripping Bearer prefix.")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Refresh token is empty"})
 		return
 	}
 
-	// DEBUG: Verify the token received from the client header
-	logger.DebugLogger.Debugf("DEBUG_CONTROLLER: Refresh Token from Header (should be pure JWT): %s", refreshTokenFromHeader)
-
 	ctx := c.Request.Context()
 
-	// Parse and validate the incoming refresh token (which should be just the pure JWT)
-	claims, err := shared_models.ParseToken(refreshTokenFromHeader) // Use the token from the header
+	// 2. Parse and validate the incoming refresh token.
+	// This step verifies the signature, expiry, and extracts the claims (UserID, JTI, TokenVersion, Type).
+	claims, err := shared_models.ParseToken(refreshTokenFromHeader, func(userID uuid.UUID) (int, error) {
+		customer, err := customer_models.GetCustomerByID(db.DB, userID)
+		if err != nil {
+			return 0, err
+		}
+		return customer.TokenVersion, nil
+	})
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to parse or validate refresh token: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 		return
 	}
 
+	// 3. Ensure the token is actually a refresh token.
+	if claims.Type != "refresh" {
+		logger.WarnLogger.Warnf("Attempt to use non-refresh token (%s) for refresh endpoint for customer %s.", claims.Type, claims.UserID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only refresh tokens are allowed for this endpoint"})
+		return
+	}
+
 	customerID := claims.UserID
-	refreshTokenKey := fmt.Sprintf("customer:%s:refresh_tokens", customerID.String())
+	jti := claims.RegisteredClaims.ID // Get the JTI from the incoming token's claims
 
+	// 4. Retrieve the customer from the database to get their *current* token_version.
+	customer, err := customer_models.GetCustomerByID(db.DB, customerID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.ErrorLogger.Errorf("Customer %s not found for refresh token: %v.", customerID, err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "User associated with token not found or already deleted"})
+		} else {
+			logger.ErrorLogger.Errorf("Database error fetching customer %s for refresh token: %v.", customerID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error during token refresh"})
+		}
+		return
+	}
+	if customer == nil { // A sanity check, though pgx.ErrNoRows should handle this
+		logger.ErrorLogger.Errorf("Customer %s unexpectedly nil for refresh token.", customerID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User associated with token not found"})
+		return
+	}
+
+	// 5. CRITICAL: Token Version Check for Revocation.
+	// If the token's version is less than the current version in the database, it's revoked.
+	if claims.TokenVersion < customer.TokenVersion {
+		logger.WarnLogger.Warnf("Refresh token for customer %s (v%d) is outdated. Current DB version: v%d. Token revoked.", customerID, claims.TokenVersion, customer.TokenVersion)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Your session has been revoked. Please log in again."})
+		return
+	}
+
+	refreshTokenZSetKey := fmt.Sprintf("customer:%s:refresh_tokens", customerID.String())
+
+	// 6. Verify Refresh Token's Presence and Uniqueness in Redis (using JTI).
+	// We search for a member in the ZSET that starts with the incoming token's JTI.
+	var actualMemberInRedis string // This will store the full "jti:device" string found in Redis
 	found := false
-	var actualMemberInRedis string // This will store the full "token:device" string from Redis
 
-	// Use ZScan to find the member that starts with the *pure* refresh token.
-	// This ensures we find the composite key in Redis (e.g., "jwt_token:device_name").
-	// We search for "pure_jwt_token*" to match any device suffix.
-	iter := redisclient.GetRedisClient().ZScan(ctx, refreshTokenKey, 0, refreshTokenFromHeader+"*", 0).Iterator()
+	// Use ZScan to iterate and find the member that matches the JTI (e.g., "jti:device_name").
+	// Using a pattern like `jti+":"` ensures we target the correct format.
+	iter := redisclient.GetRedisClient().ZScan(ctx, refreshTokenZSetKey, 0, jti+":*", 0).Iterator()
 	for iter.Next(ctx) {
 		memberStr := iter.Val()
-		// Double check to ensure it's an exact match for the JWT part
 		parts := strings.SplitN(memberStr, ":", 2)
-		if parts[0] == refreshTokenFromHeader { // Found a match for the pure JWT
+		if len(parts) > 0 && parts[0] == jti { // Check if the JTI part matches exactly
+			actualMemberInRedis = memberStr
 			found = true
-			actualMemberInRedis = memberStr // Store the complete "token:device" from Redis
-			break
+			break // Found the specific token's entry, no need to scan further
 		}
 	}
 	if err := iter.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to scan for refresh token during refresh for customer %s: %v", customerID, err)
+		logger.ErrorLogger.Errorf("Failed to scan for refresh token during refresh for customer %s (JTI: %s): %v.", customerID, jti, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to refresh token"})
 		return
 	}
 
 	if !found {
-		logger.ErrorLogger.Infof("Refresh token %s not found in Redis for customer %s or already used", refreshTokenFromHeader, customerID)
+		logger.ErrorLogger.Infof("Refresh token (JTI: %s) not found in Redis for customer %s or already revoked/used.", jti, customerID)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or revoked refresh token"})
 		return
 	}
 
-	// Invalidate the old refresh token (single-use refresh token strategy)
-	// Remove the *full composite member* from Redis using actualMemberInRedis.
-	if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenKey, actualMemberInRedis).Result(); err != nil {
-		logger.ErrorLogger.Warnf("Failed to remove used refresh token %s for customer %s: %v", actualMemberInRedis, customerID, err)
+	// 7. Invalidate the old refresh token (single-use refresh token rotation).
+	// Remove the *exact composite member* found in Redis using `actualMemberInRedis`.
+	if _, err := redisclient.GetRedisClient().ZRem(ctx, refreshTokenZSetKey, actualMemberInRedis).Result(); err != nil {
+		logger.ErrorLogger.Warnf("Failed to remove used refresh token %s for customer %s (JTI: %s): %v.", actualMemberInRedis, customerID, jti, err)
 		// Don't fail the request, but log the warning as it's a cleanup task.
 	}
 
-	// Generate new access token
-	newAccessToken, err := shared_models.GenerateAccessToken(customerID, 60*time.Minute)
+	// 8. Generate new Access Token.
+	// Use the *customer's current TokenVersion* from the database to issue new tokens.
+	newAccessToken, err := shared_models.GenerateAccessToken(customerID, customer.TokenVersion, 60*time.Minute)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate new access token during refresh")
+		logger.ErrorLogger.Errorf("Failed to generate new access token during refresh for customer %s: %v.", customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate new access token"})
 		return
 	}
 
-	// Generate new refresh token (this is a pure JWT)
-	newRefreshToken, err := shared_models.GenerateRefreshToken(customerID, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour)
+	// 9. Generate new Refresh Token.
+	newRefreshToken, err := shared_models.GenerateRefreshToken(customerID, customer.TokenVersion, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate new refresh token during refresh")
+		logger.ErrorLogger.Errorf("Failed to generate new refresh token during refresh for customer %s: %v.", customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate new refresh token"})
 		return
 	}
 
-	// Extract device from the *actualMemberInRedis* string.
+	// 10. Extract device from the *actualMemberInRedis* string.
 	// This ensures the new token is associated with the same device as the old one.
-	device := "unknown_device"                           // Default fallback if no device found
-	parts := strings.SplitN(actualMemberInRedis, ":", 2) // Split only on the first colon
+	device := "unknown_device"
+	var parts []string
+	parts = strings.SplitN(actualMemberInRedis, ":", 2) // Reuse parts from previous split, or re-split if needed
 	if len(parts) == 2 {
 		device = parts[1] // The second part should be the device name
 	} else {
 		logger.WarnLogger.Warnf("Could not extract device from Redis member: %s. Defaulting to '%s'. This indicates a previous storage issue.", actualMemberInRedis, device)
 	}
 
-	// Add new refresh token to Redis Sorted Set as a composite key: "pure_jwt_token:device_id"
-	var now = float64(time.Now().UnixNano())
-	newMember := fmt.Sprintf("%s:%s", newRefreshToken, device) // CORRECTED: Use the 'device' variable here
+	// 11. Store the new refresh token's JTI and device info in Redis Sorted Set.
+	newRefreshClaims, err := shared_models.ParseToken(newRefreshToken, func(userID uuid.UUID) (int, error) {
+		customer, err := customer_models.GetCustomerByID(db.DB, userID)
+		if err != nil {
+			return 0, err
+		}
+		return customer.TokenVersion, nil
+	})
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse newly generated refresh token for JTI (post-refresh): %v.", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process new token"})
+		return
+	}
+	newJTI := newRefreshClaims.RegisteredClaims.ID
 
-	// DEBUG: Log the final Redis member string before ZAdd
-	logger.DebugLogger.Debugf("DEBUG_CONTROLLER: Storing new Redis member: %s for customer %s", newMember, customerID)
+	now := float64(time.Now().Unix())                 // Use Unix seconds for score
+	newMember := fmt.Sprintf("%s:%s", newJTI, device) // Use the new JTI and derived device
 
-	if err := redisclient.GetRedisClient().ZAdd(ctx, refreshTokenKey, redis.Z{
+	logger.DebugLogger.Debugf("DEBUG_CONTROLLER: Storing new Redis member: %s for customer %s (New JTI: %s).", newMember, customerID, newJTI)
+
+	if err := redisclient.GetRedisClient().ZAdd(ctx, refreshTokenZSetKey, redis.Z{
 		Score:  now,
-		Member: newMember, // Store the composite string here
+		Member: newMember,
 	}).Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to store new refresh token for customer %s in Redis: %v", customerID, err)
+		logger.ErrorLogger.Errorf("Failed to store new refresh token JTI/device for customer %s in Redis: %v.", customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store new refresh token"})
 		return
 	}
 
-	// Update expiry for the ZSET key (ensures the entire set of refresh tokens expires if idle)
-	if err := redisclient.GetRedisClient().Expire(ctx, refreshTokenKey, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour).Err(); err != nil {
-		logger.ErrorLogger.Warnf("Failed to update expiry for refresh token key %s after refresh: %v", refreshTokenKey, err)
+	// 12. Update expiry for the ZSET key (ensures the entire set of refresh tokens expires if idle).
+	if err := redisclient.GetRedisClient().Expire(ctx, refreshTokenZSetKey, shared_utils.REFRESH_TOKEN_EXP_HOURS*time.Hour).Err(); err != nil {
+		logger.ErrorLogger.Warnf("Failed to update expiry for refresh token key %s after refresh: %v.", refreshTokenZSetKey, err)
 	}
 
-	logger.InfoLogger.Infof("Access token refreshed successfully for customer %s. New refresh token issued.", customerID)
+	logger.InfoLogger.Infof("Access token refreshed successfully for customer %s. New refresh token (JTI: %s) issued.", customerID, newJTI)
 	c.JSON(http.StatusOK, gin.H{
 		"accessToken":  newAccessToken,
-		"refreshToken": newRefreshToken, // Send the new pure JWT refresh token back to the client
+		"refreshToken": newRefreshToken,
 		"message":      "Tokens refreshed successfully!",
 	})
 }

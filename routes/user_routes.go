@@ -3,8 +3,10 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/controllers/user_controllers"
+	"github.com/joy095/identity/logger"
 	middleware "github.com/joy095/identity/middlewares"
 	"github.com/joy095/identity/middlewares/auth"
+	"github.com/joy095/identity/utils/jwt_parse"
 	"github.com/joy095/identity/utils/mail"
 )
 
@@ -27,18 +29,35 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/verify-email", middleware.CombinedRateLimiter("verify-email", "5-1m", "20-10m"), mail.VerifyEmail)
 
 	// Protected routes
+	router.Use(jwt_parse.ParseJWTToken())
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
+		protected.GET("/hi", func(c *gin.Context) {
+			logger.ErrorLogger.Error("!!!!!!!!!! /hi PROTECTED ROUTE HANDLER EXECUTED !!!!!!!!!!") // Use a very distinct log
+			// ... your existing handler logic ...
+			c.JSON(200, gin.H{
+				"message": "protected route",
+			})
+		})
 		protected.POST("/logout", middleware.CombinedRateLimiter("logout", "5-1m", "20-10m"), userController.Logout)
 
-		// Profile Management
+		// Profile Management - Only access your own profile
+		protected.GET("/profile", middleware.NewRateLimiter("30-1m", "profile"), userController.GetMyProfile)
 		protected.PATCH("/update-profile", middleware.CombinedRateLimiter("update-profile", "5-1m", "10-5m"), userController.UpdateProfile)
 		protected.POST("/update-email", middleware.CombinedRateLimiter("update-email", "5-1m", "30-60m"), userController.UpdateEmailWithPassword)
 		protected.POST("/verify-email-update-otp", middleware.CombinedRateLimiter("verify-email-update-otp", "5-1m", "30-60m"), userController.VerifyEmailChangeOTP)
 
-		// User retrieval by username (if authenticated)
-		protected.GET("/user/:username", middleware.NewRateLimiter("30-1m", "user/:username"), userController.GetUserByUsername)
+		// REMOVED: User retrieval by username - this was the security issue
+		// protected.GET("/user/:username", middleware.NewRateLimiter("30-1m", "user/:username"), userController.GetUserByUsername)
+	}
 
+	// Optional: Public routes for viewing basic user info (if needed for your app)
+	// This should only return PUBLIC information, not sensitive data
+	public := router.Group("/public")
+	{
+		// Only return non-sensitive user info like username, display name, etc.
+		// DO NOT return email, phone, or other private information
+		public.GET("/user/:username", middleware.NewRateLimiter("30-1m", "public-user"), userController.GetPublicUserProfile)
 	}
 }

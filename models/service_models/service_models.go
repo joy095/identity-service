@@ -57,7 +57,7 @@ func CreateService(db *pgxpool.Pool, service *Service) (*Service, error) {
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9
-        ) RETURNING id`
+        )`
 
 	_, err := db.Exec(context.Background(), query,
 		service.ID,
@@ -187,7 +187,7 @@ func UpdateService(db *pgxpool.Pool, service *Service) (*Service, error) {
             updated_at = $7
         WHERE
             id = $1 AND business_id = $8 -- Include business_id for security/ownership check
-        RETURNING id`
+        `
 
 	res, err := db.Exec(context.Background(), query,
 		service.ID,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool" // pgxpool for database connections
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
@@ -25,6 +26,7 @@ type Customer struct {
 	FirstName       *string // Changed to pointer to string
 	LastName        *string // Changed to pointer to string
 	IsVerifiedEmail bool
+	TokenVersion    int
 }
 
 var ctx = context.Background()
@@ -50,7 +52,7 @@ func CreateCustomer(db *pgxpool.Pool, email string) (*Customer, error) {
 	}
 
 	query := `INSERT INTO customers (id, email)
-              VALUES ($1, $2) RETURNING id, email, first_name, last_name, is_verified_email`
+              VALUES ($1, $2) RETURNING id, email, first_name, last_name, is_verified_email, token_version`
 
 	// Initialize pointers to nil for nullable fields when creating a new user
 	var firstName *string
@@ -58,7 +60,12 @@ func CreateCustomer(db *pgxpool.Pool, email string) (*Customer, error) {
 
 	customer := &Customer{}
 	err = db.QueryRow(context.Background(), query, userID, email).Scan(
-		&customer.ID, &customer.Email, &firstName, &lastName, &customer.IsVerifiedEmail,
+		&customer.ID,
+		&customer.Email,
+		&firstName,
+		&lastName,
+		&customer.IsVerifiedEmail,
+		&customer.TokenVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -90,9 +97,9 @@ func GetCustomerByEmail(db *pgxpool.Pool, email string) (*Customer, error) {
 	// Use pointers for FirstName and LastName to handle NULLs from the database
 	var firstName, lastName *string
 
-	query := `SELECT id, email, first_name, last_name, is_verified_email FROM customers WHERE email = $1`
+	query := `SELECT id, email, first_name, last_name, is_verified_email, token_version FROM customers WHERE email = $1`
 	err := db.QueryRow(context.Background(), query, email).Scan(
-		&customer.ID, &customer.Email, &firstName, &lastName, &customer.IsVerifiedEmail,
+		&customer.ID, &customer.Email, &firstName, &lastName, &customer.IsVerifiedEmail, &customer.TokenVersion,
 	)
 	if err != nil {
 		return nil, err // Return error directly, including pgx.ErrNoRows if not found
@@ -102,10 +109,44 @@ func GetCustomerByEmail(db *pgxpool.Pool, email string) (*Customer, error) {
 	return &customer, nil
 }
 
+// GetCustomerByID retrieves a customer record from the database by their ID.
+// It also fetches the token_version which is essential for JWT invalidation.
+func GetCustomerByID(db *pgxpool.Pool, customerID uuid.UUID) (*Customer, error) {
+	var customer Customer
+	// Use pointers for FirstName and LastName to handle NULLs from the database
+	var firstName, lastName *string
+
+	// Ensure the query selects all necessary fields, including token_version
+	query := `SELECT id, email, first_name, last_name, is_verified_email, token_version FROM customers WHERE id = $1`
+
+	err := db.QueryRow(context.Background(), query, customerID).Scan(
+		&customer.ID,
+		&customer.Email,
+		&firstName,
+		&lastName,
+		&customer.IsVerifiedEmail,
+		&customer.TokenVersion, // Scan the token_version here
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Return a specific error if no customer is found
+			return nil, fmt.Errorf("customer with ID %s not found", customerID.String())
+		}
+		// Return general database error for other issues
+		return nil, fmt.Errorf("database error fetching customer by ID %s: %w", customerID.String(), err)
+	}
+
+	// Assign the potentially nil pointers to the struct fields
+	customer.FirstName = firstName
+	customer.LastName = lastName
+
+	return &customer, nil
+}
+
 // --- Refresh Token Management in Redis ---
 
 // storeRefreshTokenInRedis stores a new refresh token for a user and device
-func storeRefreshTokenInRedis(userID uuid.UUID, refreshToken string, device string) error {
+func storeRefreshTokenInRedis(ctx context.Context, userID uuid.UUID, refreshToken string, device string) error {
 	redisKey := fmt.Sprintf("refresh_tokens:%s", userID.String())
 
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
@@ -146,7 +187,7 @@ func updateRefreshTokenInRedis(userID uuid.UUID, oldRefreshToken, newRefreshToke
 	redisKey := fmt.Sprintf("refresh_tokens:%s", userID.String())
 
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
-	if err != nil && err.Error() != "redis: nil" {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("failed to get existing refresh tokens from Redis: %w", err)
 	}
 
@@ -193,7 +234,7 @@ func ValidateRefreshTokenInRedis(userID uuid.UUID, refreshToken string) (bool, e
 	redisKey := fmt.Sprintf("refresh_tokens:%s", userID.String())
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
 	if err != nil {
-		if err.Error() == "redis: nil" {
+		if errors.Is(err, redis.Nil) {
 			return false, nil // No refresh tokens found for this user
 		}
 		return false, fmt.Errorf("failed to get refresh tokens from Redis: %w", err)
@@ -206,9 +247,8 @@ func ValidateRefreshTokenInRedis(userID uuid.UUID, refreshToken string) (bool, e
 
 	for _, entry := range tokenEntries {
 		if entry.Token == refreshToken {
-			if time.Since(entry.CreatedAt) < refreshTokenExpiry {
-				return true, nil
-			}
+			// Token exists and Redis hasn't expired it yet
+			return true, nil
 		}
 	}
 	return false, nil // Token not found or expired
@@ -221,56 +261,78 @@ func LoginCustomer(db *pgxpool.Pool, email string, otp string, device string) (*
 	redisKeyOTP := shared_utils.CUSTOMER_OTP_PREFIX + strings.ToLower(strings.TrimSpace(email))
 	storedHash, err := redisclient.GetRedisClient().Get(ctx, redisKeyOTP).Result()
 	if err != nil {
-		return nil, "", "", errors.New("OTP expired or not found")
+		if errors.Is(err, redis.Nil) {
+			logger.ErrorLogger.Info(fmt.Sprintf("OTP expired or not found for %s", email))
+			return nil, "", "", errors.New("OTP expired or not found")
+		}
+		logger.ErrorLogger.Errorf("Failed to retrieve OTP from Redis for %s: %v", email, err)
+		return nil, "", "", fmt.Errorf("internal server error during OTP verification: %w", err)
 	}
 
 	providedHash := utils.HashOTP(strings.TrimSpace(otp))
 	if providedHash != storedHash {
+		logger.ErrorLogger.Info(fmt.Sprintf("Incorrect OTP for %s", email))
 		return nil, "", "", errors.New("incorrect OTP")
 	}
 
-	customer, err := GetCustomerByEmail(db, email)
+	customer, err := GetCustomerByEmail(db, email) // This function MUST retrieve the Customer struct including TokenVersion
 	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to get customer after OTP verification: %w", err)
+		logger.ErrorLogger.Errorf("Failed to get customer by email %s after OTP verification: %v", email, err)
+		return nil, "", "", fmt.Errorf("customer not found or database error: %w", err) // More generic error
 	}
 
 	if err := redisclient.GetRedisClient().Del(ctx, redisKeyOTP).Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete OTP from Redis for email %s: %w", email, err)
+		logger.ErrorLogger.Warnf("Failed to delete OTP from Redis for email %s: %w", email, err)
+		// Don't return error here, as OTP verification already succeeded
 	}
 
-	accessToken, err := shared_models.GenerateAccessToken(customer.ID, time.Minute*60)
+	// --- INTEGRATE TOKEN_VERSION HERE ---
+	// Get the customer's current token_version from the fetched customer object.
+	currentTokenVersion := customer.TokenVersion
+
+	accessToken, err := shared_models.GenerateAccessToken(customer.ID, currentTokenVersion, time.Minute*60)
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to generate access token for customer %s: %w", customer.ID, err)
 		return nil, "", "", fmt.Errorf("failed to generate access token: %w", err)
 	}
 
-	refreshToken, err := shared_models.GenerateRefreshToken(customer.ID, refreshTokenExpiry)
+	refreshToken, err := shared_models.GenerateRefreshToken(customer.ID, currentTokenVersion, refreshTokenExpiry)
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to generate refresh token for customer %s: %w", customer.ID, err)
 		return nil, "", "", fmt.Errorf("failed to generate refresh token: %w", err)
 	}
+	// --- END TOKEN_VERSION INTEGRATION ---
 
-	err = storeRefreshTokenInRedis(customer.ID, refreshToken, device)
+	// Store refresh token in Redis (assuming storeRefreshTokenInRedis manages unique keys per device/session)
+	err = storeRefreshTokenInRedis(ctx, customer.ID, refreshToken, device) // Ensure this function handles the unique key based on device/JTI
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for customer %s and device %s: %w", customer.ID, device, err)
 		return nil, "", "", fmt.Errorf("failed to store refresh token in Redis: %w", err)
 	}
 
 	tx, err := db.Begin(context.Background())
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to begin transaction for customer %s login: %w", customer.ID, err)
 		return nil, "", "", fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback(context.Background())
+	defer tx.Rollback(context.Background()) // Rollback on error
 
-	_, err = tx.Exec(context.Background(),
-		`UPDATE customers SET is_verified_email = TRUE WHERE id = $1`,
-		customer.ID)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("failed to update customer verification status: %w", err)
+	// Update is_verified_email status (if not already true)
+	if !customer.IsVerifiedEmail {
+		_, err = tx.Exec(context.Background(),
+			`UPDATE customers SET is_verified_email = TRUE WHERE id = $1`,
+			customer.ID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to update customer verification status for %s: %w", customer.ID, err)
+			return nil, "", "", fmt.Errorf("failed to update customer verification status: %w", err)
+		}
+		customer.IsVerifiedEmail = true // Update in-memory struct
 	}
 
 	if err = tx.Commit(context.Background()); err != nil {
+		logger.ErrorLogger.Errorf("Failed to commit transaction for customer %s login: %w", customer.ID, err)
 		return nil, "", "", fmt.Errorf("failed to commit transaction: %w", err)
 	}
-
-	customer.IsVerifiedEmail = true
 
 	logger.InfoLogger.Infof("Customer ID %s logged in successfully via OTP", customer.ID)
 

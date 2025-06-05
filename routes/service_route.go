@@ -13,18 +13,12 @@ func RegisterServicesRoutes(router *gin.Engine) {
 	router.GET("/service/:id", serviceController.GetServiceByID) // Get a single service by its own ID
 
 	// Protected routes
-	protected := router.Group("/")
+	protected := router.Group("/service")
 	protected.Use(auth.AuthMiddleware())
 	{
-
-		// Standalone service routes for creation, update, delete on a specific service ID
-		// Note: CreateService requires business_id in payload, update/delete check ownership via business_id lookup
-		serviceGroup := protected.Group("/service")
-		{
-			serviceGroup.POST("/", serviceController.CreateService)      // Create a service for a specific business_id (in payload)
-			serviceGroup.PATCH("/:id", serviceController.UpdateService)  // Update a specific service by its own ID
-			serviceGroup.DELETE("/:id", serviceController.DeleteService) // Delete a specific service by its own ID
-		}
-
+		protected.POST("/", serviceController.CreateService)      // Create a service for a specific business_id (in payload)
+		protected.PATCH("/:id", serviceController.UpdateService)  // Update a specific service by its own ID
+		protected.DELETE("/:id", serviceController.DeleteService) // Delete a specific service by its own ID
 	}
+
 }

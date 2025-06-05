@@ -4,7 +4,6 @@ package routes
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/controllers/customer_controller"
-	"github.com/joy095/identity/middlewares/auth"
 	// Assuming mail.VerifyCustomerOTP is also a controller/handler
 )
 
@@ -29,9 +28,5 @@ func RegisterCustomerRoutes(router *gin.Engine) {
 
 		customerGroup.POST("/refresh-token", customerController.CustomerRefreshToken)
 
-		customerGroup.Use(auth.AuthMiddleware())
-		{
-
-		}
 	}
 }

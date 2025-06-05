@@ -78,12 +78,20 @@ type BulkUpdateWorkingHoursRequest struct {
 }
 
 // InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
+// DayWorkingHourRequest represents a working hour request for a specific day
+type DayWorkingHourRequest struct {
+	DayOfWeek string `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
+	OpenTime  string `json:"openTime" binding:"required,datetime=15:04:05"`
+	CloseTime string `json:"closeTime" binding:"required,datetime=15:04:05"`
+	IsClosed  bool   `json:"isClosed"`
+}
+
 type InitializeWorkingHoursRequest struct {
-	BusinessID         uuid.UUID                  `json:"businessId" binding:"required"`
-	DefaultOpenTime    string                     `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`  // Optional, defaults to "09:00:00"
-	DefaultCloseTime   string                     `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"` // Optional, defaults to "17:00:00"
-	Overrides          []CreateWorkingHourRequest `json:"overrides,omitempty"`                                    // Specific day overrides
-	InitializeWeekends bool                       `json:"initializeWeekends"`                                     // Option to initialize Saturday and Sunday as closed
+	BusinessID         uuid.UUID               `json:"businessId" binding:"required"`
+	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
+	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
+	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
+	InitializeWeekends bool                    `json:"initializeWeekends"`
 }
 
 // InitializeWorkingHours sets up default working hours (Mon-Fri 09:00-17:00, closed weekends)
@@ -251,31 +259,44 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update working hours for this business"})
 		return
 	}
-
 	tx, err := whc.DB.Begin(c.Request.Context())
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to begin transaction for bulk working hour update for business %s: %v", req.BusinessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update working hours"})
 		return
 	}
-	defer tx.Rollback(c.Request.Context()) // Rollback on error
+	defer tx.Rollback(c.Request.Context())
 	logger.InfoLogger.Debug("Database transaction started for bulk working hour update.")
 
-	// Use a map to track existing days to choose between INSERT and UPDATE
-	existingHours, err := working_hour_models.GetWorkingHoursByBusinessID(whc.DB, req.BusinessID) // Still use pool for read before transaction
+	// Fetch existing hours inside the transaction to prevent race conditions
+	query := `SELECT id, business_id, day_of_week, open_time, close_time, is_closed, created_at, updated_at 
+	          FROM working_hours WHERE business_id = $1`
+	rows, err := tx.Query(c.Request.Context(), query, req.BusinessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch existing working hours for business %s during bulk update: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to fetch existing working hours in transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve existing working hours"})
 		return
 	}
+	defer rows.Close()
+
 	existingMap := make(map[string]working_hour_models.WorkingHour)
-	for _, eh := range existingHours {
-		existingMap[eh.DayOfWeek] = eh
+	for rows.Next() {
+		var wh working_hour_models.WorkingHour
+		// ... scan logic ...
+		existingMap[wh.DayOfWeek] = wh
 	}
-	logger.InfoLogger.Debugf("Found %d existing working hour entries for business %s.", len(existingHours), req.BusinessID)
+
+	logger.InfoLogger.Debugf("Found %d existing working hour entries for business %s.", len(existingMap), req.BusinessID)
 
 	var results []working_hour_models.WorkingHour
 	for _, dayReq := range req.Days {
+		// Ensure BusinessID consistency if using CreateWorkingHourRequest
+		if dayReq.BusinessID != req.BusinessID {
+			logger.ErrorLogger.Errorf("Mismatched BusinessID in bulk update: expected %s, got %s", req.BusinessID, dayReq.BusinessID)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "BusinessID mismatch in day entries"})
+			return
+		}
+
 		if err := validateWorkingHoursTimes(dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed); err != nil {
 			tx.Rollback(c.Request.Context())
 			logger.ErrorLogger.Errorf("Validation failed for working hour %s during bulk update: %v", dayReq.DayOfWeek, err)
@@ -290,6 +311,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 			existing.OpenTime = dayReq.OpenTime
 			existing.CloseTime = dayReq.CloseTime
 			existing.IsClosed = dayReq.IsClosed
+			existing.UpdatedAt = time.Now()
 			// Update in transaction context
 			updatedHour, err := working_hour_models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing) // Use UpdateWorkingHourTx
 			if err != nil {
@@ -389,7 +411,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create working hour in database for business %s, day %s: %v", req.BusinessID, req.DayOfWeek, err)
 		// Check for specific errors, e.g., unique constraint violation
-		if strings.Contains(err.Error(), "unique_business_day_working_hour") {
+		if strings.Contains(err.Error(), "duplicate key value") || strings.Contains(err.Error(), "unique constraint") {
 			logger.InfoLogger.Infof("Attempted to create duplicate working hour for business %s, day %s.", req.BusinessID, req.DayOfWeek)
 			c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("Working hours for %s already exist for this business. Use PUT to update.", req.DayOfWeek)})
 		} else if strings.Contains(err.Error(), "foreign key constraint") {
