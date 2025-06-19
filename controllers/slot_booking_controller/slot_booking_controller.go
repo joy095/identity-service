@@ -158,7 +158,7 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	}
 
 	// 2. Get Service Details to determine price
-	service, err := service_models.GetServiceByID(s.DB, req.ServiceID)
+	service, err := service_models.GetServiceByIDModel(s.DB, req.ServiceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", req.ServiceID, err)
 		return nil, "", fmt.Errorf("invalid service selected: %w", err)

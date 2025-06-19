@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
@@ -27,10 +26,6 @@ import (
 	"github.com/joy095/identity/utils/shared_utils"
 	gomail "gopkg.in/gomail.v2" // Import gomail
 )
-
-func init() {
-	config.LoadEnv()
-}
 
 const (
 	ForgotPasswordTemplate      = "templates/email/forgot_password_otp.html"
@@ -491,18 +486,51 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// Hash the new password
-	hashedPassword, err := user_models.HashPassword(request.NewPassword)
+	hashedNewPassword, err := user_models.HashPassword(request.NewPassword)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to hash password for forgot password: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// Update user's password
-	_, err = db.DB.Exec(ctx, "UPDATE users SET password_hash = $1 WHERE id = $2", hashedPassword, user.ID)
+	// --- Start Transaction for Atomicity ---
+	tx, err := db.DB.Begin(context.Background())
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update password for user %s: %v", user.ID, err)
+		logger.ErrorLogger.Error("Failed to begin transaction for password change", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	defer tx.Rollback(context.Background()) // Rollback on error
+
+	// 1. Update the password in the database
+	_, err = tx.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+		return
+	}
+
+	// 2. Increment the token_version
+	_, err = tx.Exec(context.Background(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
+	if err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Username, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke old tokens"})
+		return
+	}
+
+	// 3. Optionally, clear the refresh_token field in the database
+	// This immediately invalidates the stored refresh token as well.
+	_, err = tx.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, user.ID)
+	if err != nil {
+		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Username, err))
+		// This is a warning because even if clearing fails, incrementing token_version still revokes.
+		// But it's good practice to clear the old token too.
+	}
+
+	// --- Commit Transaction ---
+	if err := tx.Commit(context.Background()); err != nil {
+		logger.ErrorLogger.Error("Failed to commit password change transaction", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
