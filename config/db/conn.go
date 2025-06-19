@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/logger"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,7 +15,6 @@ import (
 var DB *pgxpool.Pool
 
 func Connect() {
-	config.LoadEnv()
 
 	dsn := os.Getenv("DATABASE_URL")
 

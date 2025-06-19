@@ -152,7 +152,6 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 
 	logger.InfoLogger.Infof("Business %s created successfully by user %s", createdBusiness.ID, userID)
 	c.JSON(http.StatusCreated, gin.H{
-		"message":  "Business created successfully!",
 		"business": createdBusiness, // Return the full created business object
 	})
 }

@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
@@ -27,10 +26,6 @@ import (
 	"github.com/joy095/identity/utils/shared_utils"
 	gomail "gopkg.in/gomail.v2" // Import gomail
 )
-
-func init() {
-	config.LoadEnv()
-}
 
 const (
 	ForgotPasswordTemplate      = "templates/email/forgot_password_otp.html"
