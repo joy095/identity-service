@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/joy095/identity/logger"
@@ -40,6 +41,10 @@ func GetJWTSecret() []byte {
 		return []byte("default-insecure-secret-only-for-development-must-be-long-enough-for-jwt")
 	}
 	return secret
+}
+
+func ParseFloat(s string) (float64, error) {
+	return strconv.ParseFloat(s, 64)
 }
 
 // GetJWTRefreshSecret retrieves the base64-decoded JWT refresh secret.

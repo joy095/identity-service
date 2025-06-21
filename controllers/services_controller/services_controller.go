@@ -1,17 +1,16 @@
-// controllers/services_controller/services_controller.go
-
 package services_controller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -29,17 +28,15 @@ import (
 
 // Configuration constants
 const (
-	MaxMemorySize       = 32 << 20 // 32MB: Maximum memory to store multipart form data in RAM (less relevant now)
-	MaxImageSize        = 10 << 20 // 10MB: Maximum allowed image file size for upload
+	MaxMemorySize       = 32 << 20 // 32MB - Gin's default for form parsing, files larger than this are stored on disk.
+	MaxImageSize        = 10 << 20 // 10MB
 	MinDurationMinutes  = 15
 	MinPrice            = 1.0
-	ImageServiceTimeout = 60 * time.Second
-
-	MaxImageSizeMB = 10 // For user-friendly error messages
+	ImageServiceTimeout = 3 * time.Minute
+	MaxImageSizeMB      = 10 // For error message clarity
 )
 
 var (
-	// Supported MIME types for images
 	SupportedImageTypes = map[string]bool{
 		"image/jpeg": true,
 		"image/jpg":  true,
@@ -56,24 +53,22 @@ type ServiceController struct {
 	HTTPClient      *http.Client
 }
 
-// Request/Response structs with better validation
+// Request/Response structs
 type CreateServiceRequest struct {
-	BusinessID      uuid.UUID  `json:"businessId" binding:"required"`
-	Name            string     `json:"name" binding:"required,min=3,max=100"`
-	Description     string     `json:"description,omitempty" binding:"omitempty,max=5000"` // Added max length
-	DurationMinutes int        `json:"durationMinutes" binding:"required,min=15"`
-	ImageID         *uuid.UUID `json:"imageId,omitempty"`
-	Price           float64    `json:"price" binding:"required,min=1"`
+	BusinessID      uuid.UUID `json:"businessId"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description,omitempty"`
+	DurationMinutes int       `json:"durationMinutes"`
+	Price           float64   `json:"price"`
 }
 
 type UpdateServiceRequest struct {
-	Name            *string    `json:"name,omitempty" binding:"omitempty,min=3,max=100"`
-	Description     *string    `json:"description,omitempty" binding:"omitempty,max=5000"` // Added max length
-	DurationMinutes *int       `json:"durationMinutes,omitempty" binding:"omitempty,min=15"`
-	Price           *float64   `json:"price,omitempty" binding:"omitempty,min=1"`
-	Image           *http.File `json:"image,omitempty"` // Note: This field is unlikely to be directly populated by Gin's binding if you're using multipart forms. Gin's c.FormFile is preferred for file handling.
-	IsActive        *bool      `json:"isActive,omitempty"`
-	ImageID         *string    `json:"imageId,omitempty"`
+	Name            *string  `json:"name,omitempty"`
+	Description     *string  `json:"description,omitempty"`
+	DurationMinutes *int     `json:"durationMinutes,omitempty"`
+	Price           *float64 `json:"price,omitempty"`
+	IsActive        *bool    `json:"isActive,omitempty"`
+	ImageID         *string  `json:"imageId,omitempty"`
 }
 
 type ImageServiceResponse struct {
@@ -88,12 +83,7 @@ type ErrorResponse struct {
 	Code    string `json:"code,omitempty"`
 }
 
-type ImageUploadResult struct {
-	ImageID uuid.UUID
-	Error   error
-}
-
-// Custom errors for better error handling
+// Custom error type for structured error responses
 type ServiceError struct {
 	Code    string
 	Message string
@@ -108,54 +98,24 @@ func (e *ServiceError) Error() string {
 }
 
 func NewServiceError(code, message string, err error) *ServiceError {
-	return &ServiceError{
-		Code:    code,
-		Message: message,
-		Err:     err,
-	}
+	return &ServiceError{Code: code, Message: message, Err: err}
 }
 
-// validateImageFile validates the uploaded image file
-func (sc *ServiceController) validateImageFile(fileHeader *multipart.FileHeader, imageContent []byte) error {
-	// Check file size
-	if fileHeader.Size > MaxImageSize {
-		return NewServiceError("FILE_TOO_LARGE",
-			fmt.Sprintf("Image file too large. Maximum size is %dMB", MaxImageSizeMB), nil)
+// NewServiceController creates a new instance of ServiceController
+func NewServiceController(db *pgxpool.Pool) *ServiceController {
+	imageServiceURL := os.Getenv("IMAGE_SERVICE_URL")
+	if imageServiceURL == "" {
+		logger.WarnLogger.Warn("IMAGE_SERVICE_URL not set, using default http://localhost:8082")
+		imageServiceURL = "http://localhost:8082" // Align with main.go test endpoint
 	}
 
-	// Check file extension
-	filename := strings.ToLower(fileHeader.Filename)
-	validExtensions := []string{".jpg", ".jpeg", ".png", ".webp", ".gif"}
-	hasValidExtension := false
-	for _, ext := range validExtensions {
-		if strings.HasSuffix(filename, ext) {
-			hasValidExtension = true
-			break
-		}
+	return &ServiceController{
+		DB:              db,
+		ImageServiceURL: imageServiceURL,
+		HTTPClient: &http.Client{
+			Timeout: ImageServiceTimeout,
+		},
 	}
-
-	if !hasValidExtension {
-		return NewServiceError("INVALID_FILE_TYPE",
-			"Invalid file type. Supported formats: JPG, JPEG, PNG, WebP, GIF", nil)
-	}
-
-	// Check MIME type from header (client provided, not always reliable for security but good for initial check)
-	contentType := fileHeader.Header.Get("Content-Type")
-	if contentType != "" && !SupportedImageTypes[contentType] {
-		return NewServiceError("INVALID_MIME_TYPE",
-			fmt.Sprintf("Invalid MIME type: %s", contentType), nil)
-	}
-
-	// For more robust MIME type validation, read a portion of the file content
-	// and use http.DetectContentType for verification
-	if len(imageContent) > 0 {
-		detectedType := http.DetectContentType(imageContent[:min(512, len(imageContent))])
-		if !SupportedImageTypes[detectedType] {
-			return NewServiceError("INVALID_FILE_CONTENT", "File content doesn't match expected image format", nil)
-		}
-	}
-
-	return nil
 }
 
 // min returns the smaller of two integers
@@ -166,123 +126,124 @@ func min(a, b int) int {
 	return b
 }
 
-// NewServiceController creates a new instance of ServiceController with proper configuration.
-func NewServiceController(db *pgxpool.Pool) *ServiceController {
-	imageServiceURL := os.Getenv("IMAGE_SERVICE_URL")
-	if imageServiceURL == "" {
-		logger.WarnLogger.Warn("IMAGE_SERVICE_URL not set, using default http://localhost:8001")
-		imageServiceURL = "http://localhost:8001" // Default fallback for local development
+// validateImageFile checks image size, extension, and content type.
+func (sc *ServiceController) validateImageFile(file multipart.File, fileHeader *multipart.FileHeader) error {
+	if fileHeader.Size > MaxImageSize {
+		return NewServiceError("FILE_TOO_LARGE",
+			fmt.Sprintf("Image file too large. Maximum size is %dMB.", MaxImageSizeMB), nil)
 	}
 
-	return &ServiceController{
-		DB:              db,
-		ImageServiceURL: imageServiceURL,
-		HTTPClient: &http.Client{
-			Timeout: ImageServiceTimeout, // Timeout for the call to the image service
-		},
+	// Read the first 512 bytes to detect the content type.
+	headerBytes := make([]byte, 512)
+	n, err := file.Read(headerBytes)
+	if err != nil && err != io.EOF {
+		return NewServiceError("FILE_READ_ERROR", "Could not read file header for validation.", err)
 	}
+
+	// Rewind the file reader back to the start so it can be read again for streaming.
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return NewServiceError("FILE_SEEK_ERROR", "Could not rewind file for streaming.", err)
+	}
+
+	if n == 0 {
+		return NewServiceError("EMPTY_IMAGE", "Image file content is empty.", nil)
+	}
+
+	detectedType := http.DetectContentType(headerBytes[:n])
+	if !SupportedImageTypes[detectedType] {
+		return NewServiceError("INVALID_FILE_CONTENT",
+			fmt.Sprintf("File content type '%s' is not a supported image format. Supported are: JPG, PNG, GIF, WebP.", detectedType), nil)
+	}
+
+	return nil
 }
 
-// uploadImageToService handles image upload to the Python service
-func (sc *ServiceController) uploadImageToService(ctx context.Context, imageContent []byte,
-	filename, contentType string, businessID uuid.UUID, authHeader string) (*ImageUploadResult, error) {
+// uploadImageToService sends the image to the external image service.
+func (sc *ServiceController) uploadImageToService(ctx context.Context, imageReader io.Reader,
+	filename, contentType string, businessID uuid.UUID, authHeader string) (uuid.UUID, error) {
 
-	// Create multipart form data for the *outgoing* request to the image service
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
+	// Use an io.Pipe to connect the multipart writer to the HTTP request body without buffering the whole file in memory.
+	pr, pw := io.Pipe()
+	writer := multipart.NewWriter(pw)
 
-	// Add business ID field to the outgoing multipart request
-	if err := writer.WriteField("businessId", businessID.String()); err != nil {
-		return nil, NewServiceError("FORM_CREATION_ERROR", "Failed to create form field for image upload", err)
-	}
+	// Use a goroutine to write the multipart data to the pipe.
+	// This prevents blocking as the HTTP client reads from the other end of the pipe.
+	go func() {
+		defer pw.Close()     // Close the pipe writer to signal the end of data.
+		defer writer.Close() // Finalize the multipart form.
 
-	// Add image file to the outgoing multipart request
-	partHeader := make(textproto.MIMEHeader)
-	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
-	partHeader.Set("Content-Type", contentType) // Use the original content type of the uploaded file
+		// Add business ID as a form field
+		if err := writer.WriteField("businessId", businessID.String()); err != nil {
+			// Closing the pipe with an error will cause the reader to fail.
+			pw.CloseWithError(NewServiceError("FORM_CREATION_ERROR", "Failed to add business ID to form.", err))
+			return
+		}
 
-	part, err := writer.CreatePart(partHeader)
-	if err != nil {
-		return nil, NewServiceError("FORM_PART_ERROR", "Failed to create form file part for image upload", err)
-	}
+		// Create form file part for the image
+		partHeader := make(textproto.MIMEHeader)
+		partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename))
+		partHeader.Set("Content-Type", contentType)
 
-	if _, err := part.Write(imageContent); err != nil {
-		return nil, NewServiceError("FORM_WRITE_ERROR", "Failed to write image data to form for upload", err)
-	}
+		part, err := writer.CreatePart(partHeader)
+		if err != nil {
+			pw.CloseWithError(NewServiceError("FORM_PART_ERROR", "Failed to create image form part.", err))
+			return
+		}
 
-	if err := writer.Close(); err != nil {
-		return nil, NewServiceError("FORM_CLOSE_ERROR", "Failed to finalize form data for image upload", err)
-	}
+		// Stream the image data from the reader directly into the multipart part.
+		// This is the key change to avoid loading the file into memory.
+		if _, err := io.Copy(part, imageReader); err != nil {
+			pw.CloseWithError(NewServiceError("FORM_WRITE_ERROR", "Failed to stream image data to form.", err))
+			return
+		}
+	}()
 
-	// Create HTTP request to the image service
+	// Create and send the HTTP request. The request body is now the reading end of the pipe.
 	imageServiceUploadURL := sc.ImageServiceURL + "/upload-image/"
-	req, err := http.NewRequestWithContext(ctx, "POST", imageServiceUploadURL, body)
+	req, err := http.NewRequestWithContext(ctx, "POST", imageServiceUploadURL, pr)
 	if err != nil {
-		return nil, NewServiceError("REQUEST_CREATION_ERROR", "Failed to create HTTP request to image service", err)
+		return uuid.Nil, NewServiceError("REQUEST_CREATION_ERROR", "Failed to create request to image service.", err)
 	}
 
-	req.Header.Set("Content-Type", writer.FormDataContentType()) // Set the correct Content-Type for the multipart request
+	// The Content-Type header now includes the multipart boundary from the writer.
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader) // Forward authentication header
+		req.Header.Set("Authorization", authHeader)
 	}
 
-	logger.DebugLogger.Debugf("Uploading image to service: %s", imageServiceUploadURL)
-
-	// Send request to image service
 	resp, err := sc.HTTPClient.Do(req)
 	if err != nil {
-		// Differentiate between network issues and timeouts
 		if os.IsTimeout(err) {
-			return nil, NewServiceError("IMAGE_SERVICE_TIMEOUT", "Image service response timed out", err)
+			return uuid.Nil, NewServiceError("IMAGE_SERVICE_TIMEOUT", "Image service request timed out.", err)
 		}
-		return nil, NewServiceError("IMAGE_SERVICE_UNAVAILABLE", "Image service is unavailable or unreachable", err)
+		return uuid.Nil, NewServiceError("IMAGE_SERVICE_UNAVAILABLE", fmt.Sprintf("Image service is unavailable: %v", err), err)
 	}
 	defer resp.Body.Close()
 
-	// Read response body from image service
+	// Read and parse the response from the image service
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, NewServiceError("RESPONSE_READ_ERROR", "Failed to read image service response body", err)
+		return uuid.Nil, NewServiceError("RESPONSE_READ_ERROR", "Failed to read response from image service.", err)
 	}
 
-	// Handle non-success status codes from the image service
 	if resp.StatusCode != http.StatusCreated {
-		var errorResp struct { // Attempt to parse common Python service error formats (FastAPI/Flask)
-			Detail string `json:"detail"`
-			Error  string `json:"error"`
-		}
-
-		if json.Unmarshal(respBody, &errorResp) == nil {
-			message := errorResp.Detail
-			if message == "" {
-				message = errorResp.Error // Fallback to 'error' field
-			}
-			if message != "" {
-				return nil, NewServiceError("IMAGE_SERVICE_ERROR", message, fmt.Errorf("status %d", resp.StatusCode))
-			}
-		}
-
-		return nil, NewServiceError("IMAGE_SERVICE_ERROR",
-			fmt.Sprintf("Image service returned unexpected status %d: %s", resp.StatusCode, string(respBody)), nil)
+		return uuid.Nil, NewServiceError("IMAGE_SERVICE_ERROR",
+			fmt.Sprintf("Image service responded with error (status %d): %s", resp.StatusCode, string(respBody)), nil)
 	}
 
-	// Parse successful response from image service
 	var imageServiceResp ImageServiceResponse
 	if err := json.Unmarshal(respBody, &imageServiceResp); err != nil {
-		return nil, NewServiceError("RESPONSE_PARSE_ERROR", "Failed to parse successful image service response", err)
+		return uuid.Nil, NewServiceError("RESPONSE_PARSE_ERROR", fmt.Sprintf("Failed to parse image service response: %v. Response: %s", err, string(respBody)), err)
 	}
 
-	logger.InfoLogger.Infof("Image uploaded successfully, ID: %s", imageServiceResp.ImageID)
-	return &ImageUploadResult{ImageID: imageServiceResp.ImageID}, nil
+	return imageServiceResp.ImageID, nil
 }
 
-// cleanupImage attempts to delete the image from the image service in case of a database error.
+// cleanupImage attempts to delete the image from the image service (asynchronously).
 func (sc *ServiceController) cleanupImage(ctx context.Context, imageID uuid.UUID, authHeader string) {
 	if imageID == uuid.Nil {
-		return // Nothing to cleanup if imageID is nil
+		return
 	}
-
-	logger.InfoLogger.Infof("Attempting to cleanup image: %s due to service creation failure.", imageID)
 
 	cleanupURL := fmt.Sprintf("%s/delete-image/%s", sc.ImageServiceURL, imageID)
 	req, err := http.NewRequestWithContext(ctx, "DELETE", cleanupURL, nil)
@@ -297,24 +258,22 @@ func (sc *ServiceController) cleanupImage(ctx context.Context, imageID uuid.UUID
 
 	resp, err := sc.HTTPClient.Do(req)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to send cleanup request for image %s: %v", imageID, err)
+		logger.ErrorLogger.Errorf("Failed to cleanup image %s from image service: %v", imageID, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		respBody, _ := io.ReadAll(resp.Body) // Read body for detailed error logging
-		logger.ErrorLogger.Errorf("Image cleanup failed for %s (status %d): %s",
-			imageID, resp.StatusCode, string(respBody))
+		bodyBytes, _ := io.ReadAll(resp.Body) // Read body for more detailed logging
+		logger.ErrorLogger.Errorf("Image cleanup failed for %s (status %d). Response: %s", imageID, resp.StatusCode, string(bodyBytes))
 	} else {
-		logger.InfoLogger.Infof("Image cleanup successful for image %s", imageID)
+		logger.InfoLogger.Infof("Successfully cleaned up image %s from image service.", imageID)
 	}
 }
 
-// respondWithError sends a structured error response
+// respondWithError sends a structured JSON error response.
 func (sc *ServiceController) respondWithError(c *gin.Context, statusCode int, serviceErr *ServiceError) {
-	// Log the error for server-side debugging
-	logger.ErrorLogger.Errorf("Service error [%s] (HTTP %d): %v", serviceErr.Code, statusCode, serviceErr)
+	logger.ErrorLogger.Errorf("Service error [%s] (HTTP %d): %v", serviceErr.Code, statusCode, serviceErr.Err) // Log internal error
 
 	response := ErrorResponse{
 		Error: serviceErr.Message,
@@ -322,216 +281,159 @@ func (sc *ServiceController) respondWithError(c *gin.Context, statusCode int, se
 	}
 
 	if serviceErr.Err != nil {
-		// Only include underlying error details in development/debug environments,
-		// or if it's a safe error to expose.
-		// For production, consider generic "internal server error" details.
+		// Only expose internal error details if needed for debugging or development,
+		// otherwise, keep it generic for production APIs.
 		response.Details = serviceErr.Err.Error()
 	}
 
 	c.JSON(statusCode, response)
 }
 
-// CreateService handles the HTTP multipart/form-data request to create a new service with robust error handling.
+// CreateService handles service creation, including multipart form data and image upload.
 func (sc *ServiceController) CreateService(c *gin.Context) {
 	logger.InfoLogger.Info("CreateService controller called")
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	// 1. Validate Content-Type
+	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("INVALID_CONTENT_TYPE", "Request must be multipart/form-data.", nil))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 	defer cancel()
 
-	// --- 1. Validate Content Type ---
-	// Removed redundant GetHeader call
-	if !strings.Contains(strings.ToLower(c.Request.Header.Get("Content-Type")), "multipart/form-data") {
-		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("INVALID_CONTENT_TYPE", "Request must be multipart/form-data", nil))
+	// 2. Parse the multipart form
+	if err := c.Request.ParseMultipartForm(MaxMemorySize); err != nil {
+		logger.ErrorLogger.Errorf("Error parsing multipart form: %v", err)
+		var errorMsg string
+		var errorCode string
+		if strings.Contains(err.Error(), "too large") {
+			errorMsg = fmt.Sprintf("Request payload too large. Maximum allowed for form fields/small files is %dMB.", MaxMemorySize/(1<<20))
+			errorCode = "PAYLOAD_TOO_LARGE"
+		} else {
+			errorMsg = fmt.Sprintf("Failed to parse multipart form data. Please check your request format: %v", err)
+			errorCode = "FORM_PARSE_ERROR"
+		}
+		sc.respondWithError(c, http.StatusBadRequest, NewServiceError(errorCode, errorMsg, err))
 		return
 	}
+	defer c.Request.MultipartForm.RemoveAll()
 
-	logger.InfoLogger.Infof("Processing multipart request - Content-Length: %d", c.Request.ContentLength)
+	form := c.Request.MultipartForm
 
-	// --- 2. Check if request body is available ---
-	if c.Request.Body == nil {
-		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("NO_REQUEST_BODY", "Request body is nil. Ensure the request contains multipart form data.", nil))
-		return
+	// Helper function to get form value safely and trim spaces
+	getFormValue := func(key string) string {
+		if values, ok := form.Value[key]; ok && len(values) > 0 {
+			return strings.TrimSpace(values[0])
+		}
+		return ""
 	}
 
-	// --- NEW APPROACH: Manually parse multipart form to stream file data ---
-	// Create a multipart reader
-	reader, err := c.Request.MultipartReader()
-	if err != nil {
-		serviceErr := NewServiceError("FORM_PARSE_ERROR", "Failed to create multipart reader. Ensure valid multipart/form-data request.", err)
-		sc.respondWithError(c, http.StatusBadRequest, serviceErr)
-		return
-	}
-
-	// Initialize form data and file header/content storage
-	formData := make(map[string]string)
-	var fileHeader *multipart.FileHeader
-	var imageContent []byte // This will hold the entire image content in memory for validation/upload
-
-	// Iterate over each part in the multipart form
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break // All parts read
-		}
-		if err != nil {
-			logger.ErrorLogger.Errorf("Error reading multipart part: %v", err)
-			serviceErr := NewServiceError("FORM_PARSE_ERROR", "Failed to read a part of the multipart form.", err)
-			sc.respondWithError(c, http.StatusBadRequest, serviceErr)
-			return
-		}
-
-		fieldName := part.FormName()
-		if fieldName == "" {
-			continue // Skip parts without a form name
-		}
-
-		if part.FileName() != "" { // This is a file part
-			if fieldName == "image" {
-				// Read image content directly
-				imageData, readErr := io.ReadAll(part)
-				if readErr != nil {
-					logger.ErrorLogger.Errorf("Error reading image file part '%s': %v", fieldName, readErr)
-					serviceErr := NewServiceError("FILE_READ_ERROR", "Failed to read image file content.", readErr)
-					sc.respondWithError(c, http.StatusInternalServerError, serviceErr)
-					return
-				}
-				imageContent = imageData
-
-				// Manually create a FileHeader from the part.
-				// This is a bit of a hack as multipart.Part doesn't directly expose FileHeader fields.
-				// We populate essential fields for validation (Size, Filename, Header).
-				fileHeader = &multipart.FileHeader{
-					Filename: part.FileName(),
-					Header:   part.Header,
-					Size:     int64(len(imageContent)),
-					// Faked content to match the behavior of c.FormFile,
-					// as we've already read it into imageContent.
-					// We'll open a bytes.Reader from imageContent if needed later.
-				}
-				logger.DebugLogger.Debugf("Image file part '%s' read. Size: %d bytes", fieldName, fileHeader.Size)
-			} else {
-				// Handle other file uploads if needed, or ignore them
-				logger.WarnLogger.Warnf("Skipping unexpected file part: %s", fieldName)
-				_, _ = io.Copy(io.Discard, part) // Discard content to prevent blocking
-			}
-		} else { // This is a regular form field
-			fieldValue, readErr := io.ReadAll(part)
-			if readErr != nil {
-				logger.ErrorLogger.Errorf("Error reading form field '%s': %v", fieldName, readErr)
-				serviceErr := NewServiceError("FORM_READ_ERROR", fmt.Sprintf("Failed to read form field '%s'.", fieldName), readErr)
-				sc.respondWithError(c, http.StatusBadRequest, serviceErr)
-				return
-			}
-			formData[fieldName] = strings.TrimSpace(string(fieldValue))
-			logger.DebugLogger.Debugf("Form field '%s': '%s'", fieldName, formData[fieldName])
-		}
-	}
-
-	// After parsing all parts, construct CreateServiceRequest from formData
+	// 3. Extract and validate form fields
 	var req CreateServiceRequest
 	var validationErrors []string
 
-	// Populate req from formData and validate
-	if idStr, ok := formData["businessId"]; ok {
-		if id, err := uuid.Parse(idStr); err == nil {
-			req.BusinessID = id
-		} else {
-			validationErrors = append(validationErrors, "Invalid business ID format")
-		}
+	// BusinessID
+	businessIDStr := getFormValue("businessId")
+	if businessIDStr == "" {
+		validationErrors = append(validationErrors, "Business ID is required.")
 	} else {
-		validationErrors = append(validationErrors, "Business ID is required")
+		businessID, err := uuid.Parse(businessIDStr)
+		if err != nil {
+			validationErrors = append(validationErrors, "Invalid business ID format.")
+		}
+		req.BusinessID = businessID
 	}
 
-	if name, ok := formData["name"]; ok {
-		req.Name = name
-		if len(req.Name) < 3 || len(req.Name) > 100 {
-			validationErrors = append(validationErrors, "Service name must be between 3 and 100 characters")
-		}
-		if badwords.ContainsBadWords(req.Name) {
-			validationErrors = append(validationErrors, "Service name contains inappropriate language")
-		}
-	} else {
-		validationErrors = append(validationErrors, "Service name is required")
+	// Name
+	req.Name = getFormValue("name")
+	if req.Name == "" {
+		validationErrors = append(validationErrors, "Service name is required.")
+	} else if len(req.Name) < 3 || len(req.Name) > 100 {
+		validationErrors = append(validationErrors, "Service name must be between 3 and 100 characters.")
+	} else if badwords.ContainsBadWords(req.Name) {
+		validationErrors = append(validationErrors, "Service name contains inappropriate language.")
 	}
 
-	if description, ok := formData["description"]; ok {
-		req.Description = description
-		if len(req.Description) > 5000 { // Enforce max length
-			validationErrors = append(validationErrors, "Service description exceeds maximum allowed length")
-		}
-		if badwords.ContainsBadWords(req.Description) {
-			validationErrors = append(validationErrors, "Service description contains inappropriate language")
-		}
+	// Description
+	req.Description = getFormValue("description")
+	if len(req.Description) > 5000 {
+		validationErrors = append(validationErrors, "Description must not exceed 5000 characters.")
+	} else if req.Description != "" && badwords.ContainsBadWords(req.Description) {
+		validationErrors = append(validationErrors, "Description contains inappropriate language.")
 	}
 
-	if durationStr, ok := formData["durationMinutes"]; ok {
-		if duration, err := strconv.Atoi(durationStr); err == nil {
-			req.DurationMinutes = duration
-			if duration < MinDurationMinutes {
-				validationErrors = append(validationErrors, fmt.Sprintf("Duration must be at least %d minutes", MinDurationMinutes))
-			}
-		} else {
-			validationErrors = append(validationErrors, "Invalid duration format")
-		}
+	// DurationMinutes
+	durationStr := getFormValue("durationMinutes")
+	if durationStr == "" {
+		validationErrors = append(validationErrors, "Duration in minutes is required.")
 	} else {
-		validationErrors = append(validationErrors, "Duration is required")
+		duration, err := strconv.Atoi(durationStr)
+		if err != nil {
+			validationErrors = append(validationErrors, "Invalid duration format. Must be a whole number.")
+		} else if duration < MinDurationMinutes {
+			validationErrors = append(validationErrors, fmt.Sprintf("Duration must be at least %d minutes.", MinDurationMinutes))
+		}
+		req.DurationMinutes = duration
 	}
 
-	if priceStr, ok := formData["price"]; ok {
-		if price, err := strconv.ParseFloat(priceStr, 64); err == nil {
-			req.Price = price
-			if price < MinPrice {
-				validationErrors = append(validationErrors, fmt.Sprintf("Price must be at least %.2f", MinPrice))
-			}
-		} else {
-			validationErrors = append(validationErrors, "Invalid price format")
-		}
+	// Price
+	priceStr := getFormValue("price")
+	if priceStr == "" {
+		validationErrors = append(validationErrors, "Price is required.")
 	} else {
-		validationErrors = append(validationErrors, "Price is required")
+		price, err := utils.ParseFloat(priceStr) // Assuming utils.ParseFloat exists and works
+		if err != nil {
+			validationErrors = append(validationErrors, "Invalid price format. Must be a number.")
+		} else if price < MinPrice {
+			validationErrors = append(validationErrors, fmt.Sprintf("Price must be at least %.2f.", MinPrice))
+		}
+		req.Price = price
 	}
 
 	if len(validationErrors) > 0 {
-		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("VALIDATION_ERROR", strings.Join(validationErrors, "; "), nil))
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("VALIDATION_ERROR", strings.Join(validationErrors, "; "), nil))
 		return
 	}
 
-	// Ensure image was provided
-	if fileHeader == nil {
-		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("MISSING_IMAGE", "Image file is required for service creation", nil))
+	// 4. Handle image file
+	files, ok := form.File["image"]
+	if !ok || len(files) == 0 {
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("MISSING_IMAGE", "Image file is required for service creation.", nil))
 		return
 	}
+	fileHeader := files[0]
 
-	// --- 4. Validate Image File (now with imageContent) ---
-	if err := sc.validateImageFile(fileHeader, imageContent); err != nil {
+	// Open the multipart file. This gives us an io.ReadSeeker.
+	file, err := fileHeader.Open()
+	if err != nil {
+		sc.respondWithError(c, http.StatusInternalServerError, NewServiceError("FILE_OPEN_ERROR", "Failed to open uploaded image file.", err))
+		return
+	}
+	defer file.Close()
+
+	// Validate the file without reading it all into memory.
+	if err := sc.validateImageFile(file, fileHeader); err != nil {
 		sc.respondWithError(c, http.StatusBadRequest, err.(*ServiceError))
 		return
 	}
 
-	if len(imageContent) == 0 {
-		serviceErr := NewServiceError("EMPTY_IMAGE", "Image file cannot be empty after reading.", nil)
-		sc.respondWithError(c, http.StatusBadRequest, serviceErr)
-		return
-	}
-
-	// Determine content type of the uploaded image
-	imageContentType := fileHeader.Header.Get("Content-Type")
-	if imageContentType == "" {
-		// Fallback if Content-Type header is missing for the part (unlikely with well-formed multipart)
-		imageContentType = "application/octet-stream"
-	}
-	logger.DebugLogger.Debugf("Image '%s' (%d bytes) with Content-Type '%s' ready for upload.",
-		fileHeader.Filename, len(imageContent), imageContentType)
-
-	// --- 6. Authentication & Authorization ---
-	ownerUserID, err := utils.GetUserIDFromContext(c)
+	// 5. Authentication & Authorization
+	ownerUserID, err := utils.GetUserIDFromContext(c) // This depends on your auth middleware
 	if err != nil {
-		sc.respondWithError(c, http.StatusUnauthorized, NewServiceError("AUTH_ERROR", "Authentication required: user ID not found in context.", err))
+		sc.respondWithError(c, http.StatusUnauthorized, NewServiceError("AUTH_ERROR", "Authentication required to perform this action.", err))
 		return
 	}
 
 	business, err := business_models.GetBusinessByID(sc.DB, req.BusinessID)
 	if err != nil {
-		sc.respondWithError(c, http.StatusNotFound, NewServiceError("BUSINESS_NOT_FOUND", fmt.Sprintf("Associated business with ID %s not found.", req.BusinessID), err))
+		if strings.Contains(err.Error(), "no rows in result set") { // Specific check for "not found"
+			sc.respondWithError(c, http.StatusNotFound, NewServiceError("BUSINESS_NOT_FOUND", "Associated business not found.", err))
+		} else {
+			sc.respondWithError(c, http.StatusInternalServerError, NewServiceError("DATABASE_ERROR", "Failed to retrieve business details for authorization.", err))
+		}
 		return
 	}
 
@@ -540,29 +442,40 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 		return
 	}
 
-	// --- 7. Upload Image to Dedicated Image Service ---
-	authHeader := c.GetHeader("Authorization") // Pass original auth header
-	imageResult, err := sc.uploadImageToService(ctx, imageContent, fileHeader.Filename,
-		imageContentType, req.BusinessID, authHeader)
+	// 6. Upload image to external service
+	imageContentType := fileHeader.Header.Get("Content-Type")
+	// If the content type from the header is missing or generic, detect it.
+	if imageContentType == "" || imageContentType == "application/octet-stream" {
+		// We can't use http.DetectContentType here again without re-reading the header.
+		// Instead, we rely on the extension as a fallback. The validation already confirmed the actual content.
+		imageContentType = mime.TypeByExtension(filepath.Ext(fileHeader.Filename))
+		if imageContentType == "" {
+			imageContentType = "application/octet-stream" // Default fallback
+		}
+	}
+
+	authHeader := c.GetHeader("Authorization")
+
+	// Pass the 'file' reader directly. The upload function will stream from it.
+	imageID, err := sc.uploadImageToService(ctx, file, fileHeader.Filename, imageContentType, req.BusinessID, authHeader)
 	if err != nil {
 		sc.respondWithError(c, http.StatusInternalServerError, err.(*ServiceError))
 		return
 	}
 
-	// --- 8. Create Service in the Main Database ---
-	service := service_models.NewService(req.BusinessID, req.Name, req.Description,
-		req.DurationMinutes, req.Price)
-	service.ImageID = imageResult.ImageID // Associate the uploaded image ID
+	// 7. Create service in database
+	service := service_models.NewService(req.BusinessID, req.Name, req.Description, req.DurationMinutes, req.Price)
+	service.ImageID = imageID
 
 	createdService, err := service_models.CreateServiceModel(sc.DB, service)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create service in database: %v", err)
 
-		// Asynchronous cleanup of the uploaded image if DB creation fails
+		// Cleanup uploaded image asynchronously if DB insertion fails
 		go func() {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
-			sc.cleanupImage(cleanupCtx, imageResult.ImageID, authHeader)
+			sc.cleanupImage(cleanupCtx, imageID, authHeader) // Use the same authHeader for cleanup
 		}()
 
 		if strings.Contains(err.Error(), "duplicate key value") {
@@ -582,25 +495,26 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	})
 }
 
-// GetServiceByID handles fetching a single service.
+// GetServiceByID handles fetching a single service
 func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	logger.InfoLogger.Info("GetServiceByID controller called")
 
 	serviceIDStr := c.Param("id")
 	serviceID, err := uuid.Parse(serviceIDStr)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid service ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INVALID_ID", "Invalid service ID format.", err))
 		return
 	}
 
 	service, err := service_models.GetServiceByIDModel(sc.DB, serviceID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", serviceID, err)
-		if strings.Contains(err.Error(), "service not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		if strings.Contains(err.Error(), "no rows in result set") {
+			sc.respondWithError(c, http.StatusNotFound,
+				NewServiceError("SERVICE_NOT_FOUND", "Service not found.", err))
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
+			sc.respondWithError(c, http.StatusInternalServerError,
+				NewServiceError("DATABASE_ERROR", "Failed to fetch service.", err))
 		}
 		return
 	}
@@ -608,73 +522,72 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"service": service})
 }
 
-// UpdateService handles the HTTP request to update an existing service.
+// UpdateService handles service updates (expects JSON body, not multipart)
 func (sc *ServiceController) UpdateService(c *gin.Context) {
 	logger.InfoLogger.Info("UpdateService controller called")
 
 	serviceIDStr := c.Param("id")
 	serviceID, err := uuid.Parse(serviceIDStr)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid service ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INVALID_ID", "Invalid service ID format.", err))
 		return
 	}
 
 	var req UpdateServiceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Errorf("Invalid request payload for UpdateService: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request data: %s", err.Error())})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INVALID_REQUEST", "Invalid request data. Please provide valid JSON.", err))
 		return
 	}
 
-	// --- Bad words check for relevant fields ---
+	// Validate bad words for optional fields
 	if req.Name != nil && badwords.ContainsBadWords(*req.Name) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Service name contains inappropriate language."})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INAPPROPRIATE_CONTENT", "Service name contains inappropriate language.", nil))
 		return
 	}
 	if req.Description != nil && badwords.ContainsBadWords(*req.Description) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Service description contains inappropriate language."})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INAPPROPRIATE_CONTENT", "Service description contains inappropriate language.", nil))
 		return
 	}
 
-	// Extract user ID from authenticated context (to ensure business ownership)
+	// Authentication
 	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		if err.Error() == "authentication required: user ID not found" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		sc.respondWithError(c, http.StatusUnauthorized,
+			NewServiceError("AUTH_ERROR", "Authentication required.", err))
 		return
 	}
 
-	// Fetch the existing service to get its business_id and check ownership
+	// Fetch existing service to check ownership
 	existingService, err := service_models.GetServiceByIDModel(sc.DB, serviceID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch service %s for update: %v", serviceID, err)
-		if strings.Contains(err.Error(), "service not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		if strings.Contains(err.Error(), "no rows in result set") {
+			sc.respondWithError(c, http.StatusNotFound,
+				NewServiceError("SERVICE_NOT_FOUND", "Service not found.", err))
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
+			sc.respondWithError(c, http.StatusInternalServerError,
+				NewServiceError("DATABASE_ERROR", "Failed to fetch service for update.", err))
 		}
 		return
 	}
 
-	// Verify that the business associated with this service belongs to the authenticated user
 	business, err := business_models.GetBusinessByID(sc.DB, existingService.BusinessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch business %s for service %s ownership check: %v", existingService.BusinessID, serviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
+		sc.respondWithError(c, http.StatusInternalServerError,
+			NewServiceError("DATABASE_ERROR", "Failed to verify business ownership.", err))
 		return
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.ErrorLogger.Errorf("User %s attempted to update service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this service"})
+		sc.respondWithError(c, http.StatusForbidden,
+			NewServiceError("UNAUTHORIZED", "You are not authorized to update this service.", nil))
 		return
 	}
 
-	// Apply updates from the request to the existing service
+	// Apply updates to the existing service model
 	if req.Name != nil {
 		existingService.Name = *req.Name
 	}
@@ -693,8 +606,8 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	if req.ImageID != nil {
 		imageUUID, err := uuid.Parse(*req.ImageID)
 		if err != nil {
-			logger.ErrorLogger.Errorf("Invalid image ID format: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid image ID format"})
+			sc.respondWithError(c, http.StatusBadRequest,
+				NewServiceError("INVALID_IMAGE_ID", "Invalid image ID format.", err))
 			return
 		}
 		existingService.ImageID = imageUUID
@@ -702,8 +615,8 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 
 	updatedService, err := service_models.UpdateServiceModel(sc.DB, existingService)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update service %s in database: %v", serviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update service"})
+		sc.respondWithError(c, http.StatusInternalServerError,
+			NewServiceError("DATABASE_ERROR", "Failed to update service in the database.", err))
 		return
 	}
 
@@ -714,61 +627,59 @@ func (sc *ServiceController) UpdateService(c *gin.Context) {
 	})
 }
 
-// DeleteService handles the HTTP request to delete a service.
+// DeleteService handles service deletion
 func (sc *ServiceController) DeleteService(c *gin.Context) {
 	logger.InfoLogger.Info("DeleteService controller called")
 
 	serviceIDStr := c.Param("id")
 	serviceID, err := uuid.Parse(serviceIDStr)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid service ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
+		sc.respondWithError(c, http.StatusBadRequest,
+			NewServiceError("INVALID_ID", "Invalid service ID format.", err))
 		return
 	}
 
-	// Extract user ID from authenticated context (to ensure business ownership)
+	// Authentication
 	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		if err.Error() == "authentication required: user ID not found" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		sc.respondWithError(c, http.StatusUnauthorized,
+			NewServiceError("AUTH_ERROR", "Authentication required.", err))
 		return
 	}
 
-	// Fetch the existing service to get its business_id and check ownership
+	// Fetch existing service to check ownership
 	existingService, err := service_models.GetServiceByIDModel(sc.DB, serviceID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch service %s for deletion: %v", serviceID, err)
-		if strings.Contains(err.Error(), "service not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+		if strings.Contains(err.Error(), "no rows in result set") {
+			sc.respondWithError(c, http.StatusNotFound,
+				NewServiceError("SERVICE_NOT_FOUND", "Service not found.", err))
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
+			sc.respondWithError(c, http.StatusInternalServerError,
+				NewServiceError("DATABASE_ERROR", "Failed to fetch service for deletion.", err))
 		}
 		return
 	}
 
-	// Verify that the business associated with this service belongs to the authenticated user
 	business, err := business_models.GetBusinessByID(sc.DB, existingService.BusinessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch business %s for service %s ownership check: %v", existingService.BusinessID, serviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
+		sc.respondWithError(c, http.StatusInternalServerError,
+			NewServiceError("DATABASE_ERROR", "Failed to verify business ownership.", err))
 		return
 	}
 
 	if business.OwnerID != ownerUserID {
-		logger.ErrorLogger.Errorf("User %s attempted to delete service %s for unowned business %s", ownerUserID, serviceID, existingService.BusinessID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this service"})
+		sc.respondWithError(c, http.StatusForbidden,
+			NewServiceError("UNAUTHORIZED", "You are not authorized to delete this service.", nil))
 		return
 	}
 
+	// Delete service
 	if err := service_models.DeleteServiceModel(sc.DB, serviceID, existingService.BusinessID); err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete service %s from database: %v", serviceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete service"})
+		sc.respondWithError(c, http.StatusInternalServerError,
+			NewServiceError("DATABASE_ERROR", "Failed to delete service from the database.", err))
 		return
 	}
 
 	logger.InfoLogger.Infof("Service %s deleted successfully by user %s", serviceID, ownerUserID)
-	c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully."})
 }
