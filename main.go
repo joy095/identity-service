@@ -57,7 +57,7 @@ func main() {
 	// Apply CORS Middleware
 	r.Use(cors.CorsMiddleware())
 
-	r.MaxMultipartMemory = 50 << 20 // 50 MB
+	r.MaxMultipartMemory = 400 << 20 // 400 MB
 
 	// Register all your application routes
 	routes.RegisterUserRoutes(r)
