@@ -28,8 +28,8 @@ import (
 
 // Configuration constants
 const (
-	MaxMemorySize       = 32 << 20 // 32MB - Gin's default for form parsing, files larger than this are stored on disk.
-	MaxImageSize        = 10 << 20 // 10MB
+	MaxMemorySize       = 100 << 20 // 100MB - Gin's default for form parsing, files larger than this are stored on disk.
+	MaxImageSize        = 10 << 20  // 10MB
 	MinDurationMinutes  = 15
 	MinPrice            = 1.0
 	ImageServiceTimeout = 3 * time.Minute
@@ -116,14 +116,6 @@ func NewServiceController(db *pgxpool.Pool) *ServiceController {
 			Timeout: ImageServiceTimeout,
 		},
 	}
-}
-
-// min returns the smaller of two integers
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // validateImageFile checks image size, extension, and content type.
@@ -293,7 +285,7 @@ func (sc *ServiceController) respondWithError(c *gin.Context, statusCode int, se
 func (sc *ServiceController) CreateService(c *gin.Context) {
 	logger.InfoLogger.Info("CreateService controller called")
 
-	// 1. Validate Content-Type
+	// 1. Validate Content-Type (optional, Gin will error if not multipart)
 	if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
 		sc.respondWithError(c, http.StatusBadRequest, NewServiceError("INVALID_CONTENT_TYPE", "Request must be multipart/form-data.", nil))
 		return
@@ -302,39 +294,18 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 	defer cancel()
 
-	// 2. Parse the multipart form
-	if err := c.Request.ParseMultipartForm(MaxMemorySize); err != nil {
-		logger.ErrorLogger.Errorf("Error parsing multipart form: %v", err)
-		var errorMsg string
-		var errorCode string
-		if strings.Contains(err.Error(), "too large") {
-			errorMsg = fmt.Sprintf("Request payload too large. Maximum allowed for form fields/small files is %dMB.", MaxMemorySize/(1<<20))
-			errorCode = "PAYLOAD_TOO_LARGE"
-		} else {
-			errorMsg = fmt.Sprintf("Failed to parse multipart form data. Please check your request format: %v", err)
-			errorCode = "FORM_PARSE_ERROR"
-		}
-		sc.respondWithError(c, http.StatusBadRequest, NewServiceError(errorCode, errorMsg, err))
-		return
-	}
-	defer c.Request.MultipartForm.RemoveAll()
+	// 2. Use Gin's helpers to get form fields
+	businessIDStr := c.PostForm("businessId")
+	name := c.PostForm("name")
+	description := c.PostForm("description")
+	durationStr := c.PostForm("durationMinutes")
+	priceStr := c.PostForm("price")
 
-	form := c.Request.MultipartForm
-
-	// Helper function to get form value safely and trim spaces
-	getFormValue := func(key string) string {
-		if values, ok := form.Value[key]; ok && len(values) > 0 {
-			return strings.TrimSpace(values[0])
-		}
-		return ""
-	}
-
-	// 3. Extract and validate form fields
+	// 3. Validate form fields
 	var req CreateServiceRequest
 	var validationErrors []string
 
 	// BusinessID
-	businessIDStr := getFormValue("businessId")
 	if businessIDStr == "" {
 		validationErrors = append(validationErrors, "Business ID is required.")
 	} else {
@@ -346,7 +317,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// Name
-	req.Name = getFormValue("name")
+	req.Name = strings.TrimSpace(name)
 	if req.Name == "" {
 		validationErrors = append(validationErrors, "Service name is required.")
 	} else if len(req.Name) < 3 || len(req.Name) > 100 {
@@ -356,7 +327,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// Description
-	req.Description = getFormValue("description")
+	req.Description = strings.TrimSpace(description)
 	if len(req.Description) > 5000 {
 		validationErrors = append(validationErrors, "Description must not exceed 5000 characters.")
 	} else if req.Description != "" && badwords.ContainsBadWords(req.Description) {
@@ -364,7 +335,6 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// DurationMinutes
-	durationStr := getFormValue("durationMinutes")
 	if durationStr == "" {
 		validationErrors = append(validationErrors, "Duration in minutes is required.")
 	} else {
@@ -378,11 +348,10 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 
 	// Price
-	priceStr := getFormValue("price")
 	if priceStr == "" {
 		validationErrors = append(validationErrors, "Price is required.")
 	} else {
-		price, err := utils.ParseFloat(priceStr) // Assuming utils.ParseFloat exists and works
+		price, err := utils.ParseFloat(priceStr)
 		if err != nil {
 			validationErrors = append(validationErrors, "Invalid price format. Must be a number.")
 		} else if price < MinPrice {
@@ -397,16 +366,14 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 		return
 	}
 
-	// 4. Handle image file
-	files, ok := form.File["image"]
-	if !ok || len(files) == 0 {
+	// 4. Handle image file using Gin's helper
+	fileHeader, err := c.FormFile("image")
+	if err != nil {
 		sc.respondWithError(c, http.StatusBadRequest,
-			NewServiceError("MISSING_IMAGE", "Image file is required for service creation.", nil))
+			NewServiceError("MISSING_IMAGE", "Image file is required for service creation.", err))
 		return
 	}
-	fileHeader := files[0]
 
-	// Open the multipart file. This gives us an io.ReadSeeker.
 	file, err := fileHeader.Open()
 	if err != nil {
 		sc.respondWithError(c, http.StatusInternalServerError, NewServiceError("FILE_OPEN_ERROR", "Failed to open uploaded image file.", err))
@@ -414,7 +381,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// Validate the file without reading it all into memory.
+	// Validate the file without reading it all into memory
 	if err := sc.validateImageFile(file, fileHeader); err != nil {
 		sc.respondWithError(c, http.StatusBadRequest, err.(*ServiceError))
 		return
@@ -429,7 +396,7 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 
 	business, err := business_models.GetBusinessByID(sc.DB, req.BusinessID)
 	if err != nil {
-		if strings.Contains(err.Error(), "no rows in result set") { // Specific check for "not found"
+		if strings.Contains(err.Error(), "no rows in result set") {
 			sc.respondWithError(c, http.StatusNotFound, NewServiceError("BUSINESS_NOT_FOUND", "Associated business not found.", err))
 		} else {
 			sc.respondWithError(c, http.StatusInternalServerError, NewServiceError("DATABASE_ERROR", "Failed to retrieve business details for authorization.", err))
@@ -444,13 +411,10 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 
 	// 6. Upload image to external service
 	imageContentType := fileHeader.Header.Get("Content-Type")
-	// If the content type from the header is missing or generic, detect it.
 	if imageContentType == "" || imageContentType == "application/octet-stream" {
-		// We can't use http.DetectContentType here again without re-reading the header.
-		// Instead, we rely on the extension as a fallback. The validation already confirmed the actual content.
 		imageContentType = mime.TypeByExtension(filepath.Ext(fileHeader.Filename))
 		if imageContentType == "" {
-			imageContentType = "application/octet-stream" // Default fallback
+			imageContentType = "application/octet-stream"
 		}
 	}
 
@@ -470,14 +434,11 @@ func (sc *ServiceController) CreateService(c *gin.Context) {
 	createdService, err := service_models.CreateServiceModel(sc.DB, service)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create service in database: %v", err)
-
-		// Cleanup uploaded image asynchronously if DB insertion fails
 		go func() {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
-			sc.cleanupImage(cleanupCtx, imageID, authHeader) // Use the same authHeader for cleanup
+			sc.cleanupImage(cleanupCtx, imageID, authHeader)
 		}()
-
 		if strings.Contains(err.Error(), "duplicate key value") {
 			sc.respondWithError(c, http.StatusConflict, NewServiceError("DUPLICATE_SERVICE", "A service with this name already exists for this business.", err))
 		} else {

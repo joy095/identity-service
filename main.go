@@ -1,17 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"fmt"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -62,6 +57,8 @@ func main() {
 	// Apply CORS Middleware
 	r.Use(cors.CorsMiddleware())
 
+	r.MaxMultipartMemory = 50 << 20 // 50 MB
+
 	// Register all your application routes
 	routes.RegisterUserRoutes(r)
 	routes.RegisterCustomerRoutes(r)
@@ -79,111 +76,111 @@ func main() {
 		c.Status(200)
 	})
 
-	r.GET("/send-test-image", func(c *gin.Context) {
-		// Target Python server URL
-		// Ensure this matches the port your Python server is running on (e.g., 8082)
-		pythonServerURL := "http://localhost:8082/upload-image/"
+	// r.GET("/send-test-image", func(c *gin.Context) {
+	// 	// Target Python server URL
+	// 	// Ensure this matches the port your Python server is running on (e.g., 8082)
+	// 	pythonServerURL := "http://localhost:8082/upload-image/"
 
-		// --- CONFIGURATION: SET YOUR LOCAL IMAGE PATH HERE ---
-		imagePath := "C:\\Users\\Administrator\\Downloads\\10mb-example-jpg.jpg" // <--- *** CHANGE THIS PATH ***
+	// 	// --- CONFIGURATION: SET YOUR LOCAL IMAGE PATH HERE ---
+	// 	imagePath := "C:\\Users\\Administrator\\Downloads\\10mb-example-jpg.jpg" // <--- *** CHANGE THIS PATH ***
 
-		// Open the image file from the local file system
-		file, err := os.Open(imagePath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open local image file '%s': %v", imagePath, err)})
-			return
-		}
-		defer file.Close() // Ensure the file is closed
+	// 	// Open the image file from the local file system
+	// 	file, err := os.Open(imagePath)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open local image file '%s': %v", imagePath, err)})
+	// 		return
+	// 	}
+	// 	defer file.Close() // Ensure the file is closed
 
-		// Create a buffer to write our multipart form data
-		body := &bytes.Buffer{}
-		writer := multipart.NewWriter(body)
+	// 	// Create a buffer to write our multipart form data
+	// 	body := &bytes.Buffer{}
+	// 	writer := multipart.NewWriter(body)
 
-		// Get the filename from the path
-		filename := filepath.Base(imagePath)
+	// 	// Get the filename from the path
+	// 	filename := filepath.Base(imagePath)
 
-		// Determine the MIME type based on the file extension
-		contentType := mime.TypeByExtension(filepath.Ext(filename))
-		if contentType == "" {
-			// Fallback if MIME type cannot be determined (e.g., unknown extension)
-			contentType = "application/octet-stream"
-			fmt.Printf("Warning: Could not determine MIME type for %s, defaulting to %s\n", filename, contentType)
-		} else {
-			fmt.Printf("Determined MIME type for %s: %s\n", filename, contentType)
-		}
+	// 	// Determine the MIME type based on the file extension
+	// 	contentType := mime.TypeByExtension(filepath.Ext(filename))
+	// 	if contentType == "" {
+	// 		// Fallback if MIME type cannot be determined (e.g., unknown extension)
+	// 		contentType = "application/octet-stream"
+	// 		fmt.Printf("Warning: Could not determine MIME type for %s, defaulting to %s\n", filename, contentType)
+	// 	} else {
+	// 		fmt.Printf("Determined MIME type for %s: %s\n", filename, contentType)
+	// 	}
 
-		// Create a form file header with explicit Content-Type
-		part, err := writer.CreatePart(map[string][]string{
-			"Content-Disposition": {
-				fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename),
-			},
-			"Content-Type": {contentType}, // Explicitly set the MIME type
-		})
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create form file part: %v", err)})
-			return
-		}
+	// 	// Create a form file header with explicit Content-Type
+	// 	part, err := writer.CreatePart(map[string][]string{
+	// 		"Content-Disposition": {
+	// 			fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename),
+	// 		},
+	// 		"Content-Type": {contentType}, // Explicitly set the MIME type
+	// 	})
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create form file part: %v", err)})
+	// 		return
+	// 	}
 
-		// Copy the content of the local file to the form file part
-		_, err = io.Copy(part, file)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write image content to form: %v", err)})
-			return
-		}
+	// 	// Copy the content of the local file to the form file part
+	// 	_, err = io.Copy(part, file)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write image content to form: %v", err)})
+	// 		return
+	// 	}
 
-		// Close the multipart writer to finalize the body
-		err = writer.Close()
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to close multipart writer: %v", err)})
-			return
-		}
+	// 	// Close the multipart writer to finalize the body
+	// 	err = writer.Close()
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to close multipart writer: %v", err)})
+	// 		return
+	// 	}
 
-		// Create the HTTP request
-		req, err := http.NewRequest("POST", pythonServerURL, body)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create request: %v", err)})
-			return
-		}
+	// 	// Create the HTTP request
+	// 	req, err := http.NewRequest("POST", pythonServerURL, body)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create request: %v", err)})
+	// 		return
+	// 	}
 
-		// Set the Content-Type header for the overall request (including the boundary)
-		req.Header.Set("Content-Type", writer.FormDataContentType())
+	// 	// Set the Content-Type header for the overall request (including the boundary)
+	// 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-		// --- IMPORTANT: Include Authorization header ---
-		// Replace "your_actual_jwt_token_here" with your valid JWT token.
-		req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NTA1MDQ1MTAsImlhdCI6MTc1MDUwMDkxMCwiaXNzIjoiaWRlbnRpdHktc2VydmljZSIsImp0aSI6ImM1YmY0NDJlLTNkOWMtNGUzOC05YTlmLTVmODYxNTNjNzAyMCIsIm5iZiI6MTc1MDUwMDkxMCwic3ViIjoiMDE5NzNmZmYtYTZlYy03OGYxLTlhYTQtNWMyZTFhNzMzMTZlIiwidG9rZW5fdmVyc2lvbiI6NCwidHlwZSI6ImFjY2VzcyIsInVzZXJfaWQiOiIwMTk3M2ZmZi1hNmVjLTc4ZjEtOWFhNC01YzJlMWE3MzMxNmUifQ.ZjpgWMd7xUkW7iP4v59SD0GFCnfCJjsHKG6PnP7y08w")
+	// 	// --- IMPORTANT: Include Authorization header ---
+	// 	// Replace "your_actual_jwt_token_here" with your valid JWT token.
+	// 	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NTA1MDQ1MTAsImlhdCI6MTc1MDUwMDkxMCwiaXNzIjoiaWRlbnRpdHktc2VydmljZSIsImp0aSI6ImM1YmY0NDJlLTNkOWMtNGUzOC05YTlmLTVmODYxNTNjNzAyMCIsIm5iZiI6MTc1MDUwMDkxMCwic3ViIjoiMDE5NzNmZmYtYTZlYy03OGYxLTlhYTQtNWMyZTFhNzMzMTZlIiwidG9rZW5fdmVyc2lvbiI6NCwidHlwZSI6ImFjY2VzcyIsInVzZXJfaWQiOiIwMTk3M2ZmZi1hNmVjLTc4ZjEtOWFhNC01YzJlMWE3MzMxNmUifQ.ZjpgWMd7xUkW7iP4v59SD0GFCnfCJjsHKG6PnP7y08w")
 
-		// Send the request
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to send request to Python server: %v", err)})
-			return
-		}
-		defer resp.Body.Close()
+	// 	// Send the request
+	// 	client := &http.Client{Timeout: 30 * time.Second}
+	// 	resp, err := client.Do(req)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to send request to Python server: %v", err)})
+	// 		return
+	// 	}
+	// 	defer resp.Body.Close()
 
-		// Read the response from the Python server
-		responseBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read response body: %v", err)})
-			return
-		}
+	// 	// Read the response from the Python server
+	// 	responseBody, err := io.ReadAll(resp.Body)
+	// 	if err != nil {
+	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read response body: %v", err)})
+	// 		return
+	// 	}
 
-		fmt.Printf("Response from Python server (Status %d): %s\n", resp.StatusCode, string(responseBody))
+	// 	fmt.Printf("Response from Python server (Status %d): %s\n", resp.StatusCode, string(responseBody))
 
-		c.JSON(http.StatusOK, gin.H{
-			"message":    "Test image sent to Python server from local file.",
-			"status":     resp.Status,
-			"statusCode": resp.StatusCode,
-			"response":   string(responseBody),
-		})
-	})
+	// 	c.JSON(http.StatusOK, gin.H{
+	// 		"message":    "Test image sent to Python server from local file.",
+	// 		"status":     resp.Status,
+	// 		"statusCode": resp.StatusCode,
+	// 		"response":   string(responseBody),
+	// 	})
+	// })
 
 	// Graceful Shutdown for HTTP Server (from original code)
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           r,
-		ReadTimeout:       5 * time.Minute,
-		WriteTimeout:      5 * time.Minute,
+		ReadTimeout:       10 * time.Minute,
+		WriteTimeout:      10 * time.Minute,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 20 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB max header size
