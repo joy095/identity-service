@@ -19,6 +19,7 @@ import (
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/middlewares/auth"
 	"github.com/joy095/identity/middlewares/cors"
 	"github.com/joy095/identity/routes"
 	"github.com/joy095/identity/utils/mail"
@@ -73,6 +74,7 @@ func main() {
 		c.Status(200)
 	})
 
+	r.Use(auth.AuthMiddleware())
 	// This is the endpoint where your CLIENT (e.g., browser) will POST the image and token
 	r.POST("/upload-image", func(c *gin.Context) {
 		// 1. RECEIVE the image file from the client (e.g., browser, mobile app)
