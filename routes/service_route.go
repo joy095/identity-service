@@ -10,7 +10,10 @@ import (
 )
 
 func RegisterServicesRoutes(router *gin.Engine) {
-	serviceController := services_controller.NewServiceController(db.DB)
+	serviceController, err := services_controller.NewServiceController(db.DB)
+	if err != nil {
+		panic(err) // or handle the error appropriately
+	}
 
 	router.GET("/service/:id", serviceController.GetServiceByID) // Get a single service by its own ID
 
