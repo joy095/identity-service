@@ -1,20 +1,25 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
-	"github.com/joy095/identity/logger"           // Your combined logger/middleware package
-	"github.com/joy095/identity/middlewares/cors" // Your CORS middleware
+	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/middlewares/cors"
 	"github.com/joy095/identity/routes"
 	"github.com/joy095/identity/utils/mail"
 
@@ -25,13 +30,11 @@ import (
 var embeddedEmailTemplates embed.FS
 
 func init() {
-	// Initialize loggers before using
 	logger.InitLoggers()
 	config.LoadEnv()
 }
 
 func main() {
-	// Connect to database
 	db.Connect()
 	defer db.Close()
 
@@ -43,30 +46,24 @@ func main() {
 	mail.InitTemplates(embeddedEmailTemplates)
 	logger.InfoLogger.Info("Application: Email templates initialized.")
 
-	// Load bad words from a text file
 	badwords.LoadBadWords("badwords/en.txt")
 	logger.InfoLogger.Info("Bad words loaded successfully!")
 	fmt.Println("Bad words loaded successfully!")
 
-	// Use gin.New() instead of gin.Default()
 	r := gin.New()
-
-	// Add Gin's Recovery middleware FIRST
 	r.Use(gin.Recovery())
-
-	// Apply CORS Middleware
 	r.Use(cors.CorsMiddleware())
 
-	r.MaxMultipartMemory = 400 << 20 // 400 MB
+	// Set a maximum memory limit for parsing multipart forms.
+	// Files larger than this will be stored on disk.
+	r.MaxMultipartMemory = 32 << 20 // 32 MB
 
-	// Register all your application routes
 	routes.RegisterUserRoutes(r)
 	routes.RegisterCustomerRoutes(r)
 	routes.RegisterBusinessRoutes(r)
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r, db.DB)
 
-	// Health check endpoints
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"message": "ok from identity service",
@@ -76,117 +73,139 @@ func main() {
 		c.Status(200)
 	})
 
-	// r.GET("/send-test-image", func(c *gin.Context) {
-	// 	// Target Python server URL
-	// 	// Ensure this matches the port your Python server is running on (e.g., 8082)
-	// 	pythonServerURL := "http://localhost:8082/upload-image/"
+	// This is the endpoint where your CLIENT (e.g., browser) will POST the image and token
+	r.POST("/upload-image", func(c *gin.Context) {
+		// 1. RECEIVE the image file from the client (e.g., browser, mobile app)
+		// The form field name for the image file is expected to be "image"
+		fileHeader, err := c.FormFile("image")
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to get image file from incoming request: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to get image file: %v", err)})
+			return
+		}
 
-	// 	// --- CONFIGURATION: SET YOUR LOCAL IMAGE PATH HERE ---
-	// 	imagePath := "C:\\Users\\Administrator\\Downloads\\10mb-example-jpg.jpg" // <--- *** CHANGE THIS PATH ***
+		// Open the uploaded file for reading
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to open uploaded file: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open uploaded file: %v", err)})
+			return
+		}
+		defer file.Close() // Ensure the file is closed after reading
 
-	// 	// Open the image file from the local file system
-	// 	file, err := os.Open(imagePath)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open local image file '%s': %v", imagePath, err)})
-	// 		return
-	// 	}
-	// 	defer file.Close() // Ensure the file is closed
+		// 2. RECEIVE the Authorization token from the client's request
+		// It's typically in the "Authorization" header
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			logger.ErrorLogger.Error("Authorization header missing from incoming request.")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization token required."})
+			return
+		}
 
-	// 	// Create a buffer to write our multipart form data
-	// 	body := &bytes.Buffer{}
-	// 	writer := multipart.NewWriter(body)
+		// Target Python server URL for image processing
+		pythonServerURL := "http://localhost:8082/upload-image/"
 
-	// 	// Get the filename from the path
-	// 	filename := filepath.Base(imagePath)
+		// 3. PREPARE the new multipart request body to FORWARD to the Python server
+		body := &bytes.Buffer{}
+		writer := multipart.NewWriter(body)
 
-	// 	// Determine the MIME type based on the file extension
-	// 	contentType := mime.TypeByExtension(filepath.Ext(filename))
-	// 	if contentType == "" {
-	// 		// Fallback if MIME type cannot be determined (e.g., unknown extension)
-	// 		contentType = "application/octet-stream"
-	// 		fmt.Printf("Warning: Could not determine MIME type for %s, defaulting to %s\n", filename, contentType)
-	// 	} else {
-	// 		fmt.Printf("Determined MIME type for %s: %s\n", filename, contentType)
-	// 	}
+		// Determine the MIME type of the uploaded file
+		contentType := mime.TypeByExtension(filepath.Ext(fileHeader.Filename))
+		if contentType == "" {
+			contentType = "application/octet-stream" // Fallback
+			logger.InfoLogger.Infof("Warning: Could not determine MIME type for %s, defaulting to %s", fileHeader.Filename, contentType)
+		} else {
+			logger.InfoLogger.Infof("Determined MIME type for %s: %s", fileHeader.Filename, contentType)
+		}
 
-	// 	// Create a form file header with explicit Content-Type
-	// 	part, err := writer.CreatePart(map[string][]string{
-	// 		"Content-Disposition": {
-	// 			fmt.Sprintf(`form-data; name="image"; filename="%s"`, filename),
-	// 		},
-	// 		"Content-Type": {contentType}, // Explicitly set the MIME type
-	// 	})
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create form file part: %v", err)})
-	// 		return
-	// 	}
+		// Create a form file part for the image
+		part, err := writer.CreatePart(map[string][]string{
+			"Content-Disposition": {
+				fmt.Sprintf(`form-data; name="image"; filename="%s"`, fileHeader.Filename),
+			},
+			"Content-Type": {contentType},
+		})
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to create form file part for forwarding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create form file part for forwarding: %v", err)})
+			return
+		}
 
-	// 	// Copy the content of the local file to the form file part
-	// 	_, err = io.Copy(part, file)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write image content to form: %v", err)})
-	// 		return
-	// 	}
+		// Copy the content of the RECEIVED file into the new multipart part
+		_, err = io.Copy(part, file)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to copy received image content for forwarding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write image content to form for forwarding: %v", err)})
+			return
+		}
 
-	// 	// Close the multipart writer to finalize the body
-	// 	err = writer.Close()
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to close multipart writer: %v", err)})
-	// 		return
-	// 	}
+		// IMPORTANT: Close the multipart writer to finalize the body
+		err = writer.Close()
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to close multipart writer for forwarding: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to close multipart writer for forwarding: %v", err)})
+			return
+		}
 
-	// 	// Create the HTTP request
-	// 	req, err := http.NewRequest("POST", pythonServerURL, body)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create request: %v", err)})
-	// 		return
-	// 	}
+		// 4. CREATE the HTTP POST request to send to the Python server
+		req, err := http.NewRequest("POST", pythonServerURL, body)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to create request to Python server: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create request to Python server: %v", err)})
+			return
+		}
 
-	// 	// Set the Content-Type header for the overall request (including the boundary)
-	// 	req.Header.Set("Content-Type", writer.FormDataContentType())
+		// Set the Content-Type header for the outgoing request (including the multipart boundary)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	// 	// --- IMPORTANT: Include Authorization header ---
-	// 	// Replace "your_actual_jwt_token_here" with your valid JWT token.
-	// 	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3NTA1MDQ1MTAsImlhdCI6MTc1MDUwMDkxMCwiaXNzIjoiaWRlbnRpdHktc2VydmljZSIsImp0aSI6ImM1YmY0NDJlLTNkOWMtNGUzOC05YTlmLTVmODYxNTNjNzAyMCIsIm5iZiI6MTc1MDUwMDkxMCwic3ViIjoiMDE5NzNmZmYtYTZlYy03OGYxLTlhYTQtNWMyZTFhNzMzMTZlIiwidG9rZW5fdmVyc2lvbiI6NCwidHlwZSI6ImFjY2VzcyIsInVzZXJfaWQiOiIwMTk3M2ZmZi1hNmVjLTc4ZjEtOWFhNC01YzJlMWE3MzMxNmUifQ.ZjpgWMd7xUkW7iP4v59SD0GFCnfCJjsHKG6PnP7y08w")
+		// FORWARD the Authorization token received from the client to the Python server
+		req.Header.Set("Authorization", authHeader)
 
-	// 	// Send the request
-	// 	client := &http.Client{Timeout: 30 * time.Second}
-	// 	resp, err := client.Do(req)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to send request to Python server: %v", err)})
-	// 		return
-	// 	}
-	// 	defer resp.Body.Close()
+		// 5. SEND the request to the Python server
+		client := &http.Client{Timeout: 30 * time.Second} // Set a timeout for the Python server response
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to send request to Python server: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to send request to Python server: %v", err)})
+			return
+		}
+		defer resp.Body.Close() // Ensure the response body from Python is closed
 
-	// 	// Read the response from the Python server
-	// 	responseBody, err := io.ReadAll(resp.Body)
-	// 	if err != nil {
-	// 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read response body: %v", err)})
-	// 		return
-	// 	}
+		// 6. READ the response from the Python server
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to read response body from Python server: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read response body from Python server: %v", err)})
+			return
+		}
 
-	// 	fmt.Printf("Response from Python server (Status %d): %s\n", resp.StatusCode, string(responseBody))
+		logger.InfoLogger.Infof("Response from Python server (Status %d): %s", resp.StatusCode, string(responseBody))
 
-	// 	c.JSON(http.StatusOK, gin.H{
-	// 		"message":    "Test image sent to Python server from local file.",
-	// 		"status":     resp.Status,
-	// 		"statusCode": resp.StatusCode,
-	// 		"response":   string(responseBody),
-	// 	})
-	// })
+		// 7. FORWARD the Python server's response back to the original client
+		// This uses Python's status code directly.
+		c.Data(resp.StatusCode, resp.Header.Get("Content-Type"), responseBody)
+		// Alternatively, if you want to encapsulate Python's response in your own JSON:
+		/*
+			c.JSON(http.StatusOK, gin.H{
+				"message":    "Image received and forwarded for processing.",
+				"forwarded_status": resp.Status,
+				"forwarded_statusCode": resp.StatusCode,
+				"python_response": string(responseBody), // Raw response from Python
+			})
+		*/
+	})
+	// --- END OF UPDATED HANDLER ---
 
-	// Graceful Shutdown for HTTP Server (from original code)
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           r,
-		ReadTimeout:       10 * time.Minute,
-		WriteTimeout:      10 * time.Minute,
+		ReadTimeout:       10 * time.Minute, // Allow ample time for large uploads to Go server
+		WriteTimeout:      10 * time.Minute, // Allow ample time for forwarding + Python response
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 20 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1 MB max header size
 	}
 
-	// Goroutine to start the server
 	go func() {
 		fmt.Printf("Go Server listening on :%s\n", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -194,15 +213,12 @@ func main() {
 		}
 	}()
 
-	// Channel to listen for OS signals
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-	// Block until a signal is received
 	<-quit
 	fmt.Println("Shutting down Go server...")
 
-	// Create a context with a timeout for the shutdown process
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
