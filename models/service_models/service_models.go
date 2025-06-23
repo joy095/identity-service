@@ -8,22 +8,23 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5" // Use pgx for scanning/rows operations
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger" // Adjust import path for your logger
 )
 
 // Service represents a service offered by a business.
 type Service struct {
-	ID              uuid.UUID `json:"id"`
-	BusinessID      uuid.UUID `json:"businessId"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description,omitempty"`
-	DurationMinutes int       `json:"durationMinutes"`
-	Price           float64   `json:"price"` // Use float64 for price for convenience, or string for exact decimal handling
-	ImageID         uuid.UUID `json:"imageId"`
-	IsActive        bool      `json:"isActive"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID              uuid.UUID   `json:"id"`
+	BusinessID      uuid.UUID   `json:"businessId"`
+	Name            string      `json:"name"`
+	Description     string      `json:"description,omitempty"`
+	DurationMinutes int         `json:"durationMinutes"`
+	Price           float64     `json:"price"` // Use float64 for price for convenience, or string for exact decimal handling
+	ImageID         pgtype.UUID `json:"imageId"`
+	IsActive        bool        `json:"isActive"`
+	CreatedAt       time.Time   `json:"createdAt"`
+	UpdatedAt       time.Time   `json:"updatedAt"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -97,7 +98,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		WHERE
 			id = $1`
 
-	var imageIDFromDB uuid.NullUUID // For scanning nullable UUID from DB
+	var imageIDFromDB pgtype.UUID // For scanning nullable UUID from DB
 
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&service.ID,
@@ -123,9 +124,9 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 
 	// Assign ImageID from the scanned nullable UUID
 	if imageIDFromDB.Valid {
-		service.ImageID = imageIDFromDB.UUID
+		service.ImageID = pgtype.UUID{Bytes: imageIDFromDB.Bytes, Valid: true}
 	} else {
-		service.ImageID = uuid.Nil // Set to zero UUID if NULL in DB
+		service.ImageID = pgtype.UUID{Valid: false}
 	}
 
 	logger.InfoLogger.Infof("Service with ID %s fetched successfully", id)
@@ -140,7 +141,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 	query := `
 		SELECT
 			id, business_id, name, description, duration_minutes,
-			price, is_active, created_at, updated_at
+			price, image_id, is_active, created_at, updated_at
 		FROM
 			services
 		WHERE
@@ -163,6 +164,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 			&service.Description,
 			&service.DurationMinutes,
 			&service.Price,
+			&service.ImageID,
 			&service.IsActive,
 			&service.CreatedAt,
 			&service.UpdatedAt,
@@ -190,17 +192,18 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 	service.UpdatedAt = time.Now() // Update timestamp on modification
 
 	query := `
-        UPDATE services
-        SET
-            name = $2,
-            description = $3,
-            duration_minutes = $4,
-            price = $5,
-            is_active = $6,
-            updated_at = $7
-        WHERE
-            id = $1 AND business_id = $8 -- Include business_id for security/ownership check
-        `
+		UPDATE services
+		SET
+			name = $2,
+			description = $3,
+			duration_minutes = $4,
+			price = $5,
+			image_id = $6,
+			is_active = $7,
+			updated_at = $8
+		WHERE
+			id = $1 AND business_id = $9
+		`
 
 	res, err := db.Exec(context.Background(), query,
 		service.ID,
@@ -208,6 +211,7 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 		service.Description,
 		service.DurationMinutes,
 		service.Price,
+		service.ImageID,
 		service.IsActive,
 		service.UpdatedAt,
 		service.BusinessID, // Used in WHERE clause
