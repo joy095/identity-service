@@ -4,26 +4,28 @@ package service_models
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5" // Use pgx for scanning/rows operations
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger" // Adjust import path for your logger
 )
 
 // Service represents a service offered by a business.
 type Service struct {
-	ID              uuid.UUID `json:"id"`
-	BusinessID      uuid.UUID `json:"businessId"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description,omitempty"`
-	DurationMinutes int       `json:"durationMinutes"`
-	Price           float64   `json:"price"` // Use float64 for price for convenience, or string for exact decimal handling
-	ImageID         uuid.UUID `json:"imageId"`
-	IsActive        bool      `json:"isActive"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID              uuid.UUID   `json:"id"`
+	BusinessID      uuid.UUID   `json:"businessId"`
+	Name            string      `json:"name"`
+	Description     string      `json:"description,omitempty"`
+	DurationMinutes int         `json:"durationMinutes"`
+	Price           float64     `json:"price"` // Use float64 for price for convenience, or string for exact decimal handling
+	ImageID         pgtype.UUID `json:"imageId"`
+	IsActive        bool        `json:"isActive"`
+	CreatedAt       time.Time   `json:"createdAt"`
+	UpdatedAt       time.Time   `json:"updatedAt"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -41,7 +43,31 @@ func NewService(
 		Description:     description,
 		DurationMinutes: durationMinutes,
 		Price:           price,
-		IsActive:        true, // Services are active by default
+		ImageID:         pgtype.UUID{Valid: false}, // Explicitly initialize as invalid/NULL
+		IsActive:        true,                      // Services are active by default
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+}
+
+// NewServiceWithImage creates a new Service instance with an image ID.
+func NewServiceWithImage(
+	businessID uuid.UUID,
+	name, description string,
+	durationMinutes int,
+	price float64,
+	imageID uuid.UUID,
+) *Service {
+	now := time.Now()
+	return &Service{
+		ID:              uuid.New(),
+		BusinessID:      businessID,
+		Name:            name,
+		Description:     description,
+		DurationMinutes: durationMinutes,
+		Price:           price,
+		ImageID:         pgtype.UUID{Bytes: imageID, Valid: true}, // Set valid image ID
+		IsActive:        true,                                     // Services are active by default
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -51,6 +77,13 @@ func NewService(
 func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 	logger.InfoLogger.Info("Attempting to create service record in database")
 
+	// Log the ImageID details for debugging
+	if service.ImageID.Valid {
+		logger.InfoLogger.Infof("Creating service with Image ID: %s", service.ImageID.Bytes)
+	} else {
+		logger.InfoLogger.Info("Creating service without Image ID (NULL)")
+	}
+
 	query := `
         INSERT INTO services (
             id, business_id, name, description, duration_minutes,
@@ -58,7 +91,6 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-
         )`
 
 	_, err := db.Exec(context.Background(), query,
@@ -76,6 +108,12 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert service into database: %v", err)
+
+		// Check if it's a NOT NULL constraint violation
+		if strings.Contains(err.Error(), "null value in column \"image_id\"") {
+			return nil, fmt.Errorf("image is required for service creation")
+		}
+
 		return nil, fmt.Errorf("failed to create service: %w", err)
 	}
 
@@ -84,7 +122,7 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 }
 
 // GetServiceByIDModel fetches a service record by its ID.
-func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // Removed *gin.Context c
+func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", id)
 
 	service := &Service{}
@@ -97,8 +135,6 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		WHERE
 			id = $1`
 
-	var imageIDFromDB uuid.NullUUID // For scanning nullable UUID from DB
-
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&service.ID,
 		&service.BusinessID,
@@ -106,7 +142,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		&service.Description,
 		&service.DurationMinutes,
 		&service.Price,
-		&imageIDFromDB, // Scan into uuid.NullUUID
+		&service.ImageID, // pgtype.UUID handles NULL automatically
 		&service.IsActive,
 		&service.CreatedAt,
 		&service.UpdatedAt,
@@ -121,13 +157,6 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 
-	// Assign ImageID from the scanned nullable UUID
-	if imageIDFromDB.Valid {
-		service.ImageID = imageIDFromDB.UUID
-	} else {
-		service.ImageID = uuid.Nil // Set to zero UUID if NULL in DB
-	}
-
 	logger.InfoLogger.Infof("Service with ID %s fetched successfully", id)
 	return service, nil
 }
@@ -140,7 +169,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 	query := `
 		SELECT
 			id, business_id, name, description, duration_minutes,
-			price, is_active, created_at, updated_at
+			price, image_id, is_active, created_at, updated_at
 		FROM
 			services
 		WHERE
@@ -163,6 +192,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 			&service.Description,
 			&service.DurationMinutes,
 			&service.Price,
+			&service.ImageID, // pgtype.UUID handles NULL automatically
 			&service.IsActive,
 			&service.CreatedAt,
 			&service.UpdatedAt,
@@ -190,17 +220,18 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 	service.UpdatedAt = time.Now() // Update timestamp on modification
 
 	query := `
-        UPDATE services
-        SET
-            name = $2,
-            description = $3,
-            duration_minutes = $4,
-            price = $5,
-            is_active = $6,
-            updated_at = $7
-        WHERE
-            id = $1 AND business_id = $8 -- Include business_id for security/ownership check
-        `
+		UPDATE services
+		SET
+			name = $2,
+			description = $3,
+			duration_minutes = $4,
+			price = $5,
+			image_id = $6,
+			is_active = $7,
+			updated_at = $8
+		WHERE
+			id = $1 AND business_id = $9
+		`
 
 	res, err := db.Exec(context.Background(), query,
 		service.ID,
@@ -208,6 +239,7 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 		service.Description,
 		service.DurationMinutes,
 		service.Price,
+		service.ImageID,
 		service.IsActive,
 		service.UpdatedAt,
 		service.BusinessID, // Used in WHERE clause
