@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"os"
 	"strings"
 	"time"
 
@@ -142,7 +143,12 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 }
 
 func sendImageToService(body *bytes.Buffer, contentType string, authHeader string) (uuid.UUID, error) {
-	pythonServerURL := "http://localhost:8082/upload-image/"
+
+	pythonServerURL := os.Getenv("IMAGE_SERVICE_URL") + "/upload-image/"
+	if pythonServerURL == "" {
+		pythonServerURL = "http://localhost:8082/upload-image/"
+	}
+
 	httpReq, _ := http.NewRequest("POST", pythonServerURL, body)
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Authorization", authHeader)
