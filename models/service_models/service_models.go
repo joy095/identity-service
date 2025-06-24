@@ -4,6 +4,7 @@ package service_models
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,7 +43,31 @@ func NewService(
 		Description:     description,
 		DurationMinutes: durationMinutes,
 		Price:           price,
-		IsActive:        true, // Services are active by default
+		ImageID:         pgtype.UUID{Valid: false}, // Explicitly initialize as invalid/NULL
+		IsActive:        true,                      // Services are active by default
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+}
+
+// NewServiceWithImage creates a new Service instance with an image ID.
+func NewServiceWithImage(
+	businessID uuid.UUID,
+	name, description string,
+	durationMinutes int,
+	price float64,
+	imageID uuid.UUID,
+) *Service {
+	now := time.Now()
+	return &Service{
+		ID:              uuid.New(),
+		BusinessID:      businessID,
+		Name:            name,
+		Description:     description,
+		DurationMinutes: durationMinutes,
+		Price:           price,
+		ImageID:         pgtype.UUID{Bytes: imageID, Valid: true}, // Set valid image ID
+		IsActive:        true,                                     // Services are active by default
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
@@ -52,6 +77,13 @@ func NewService(
 func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 	logger.InfoLogger.Info("Attempting to create service record in database")
 
+	// Log the ImageID details for debugging
+	if service.ImageID.Valid {
+		logger.InfoLogger.Infof("Creating service with Image ID: %s", service.ImageID.Bytes)
+	} else {
+		logger.InfoLogger.Info("Creating service without Image ID (NULL)")
+	}
+
 	query := `
         INSERT INTO services (
             id, business_id, name, description, duration_minutes,
@@ -59,7 +91,6 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
         )
         VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-
         )`
 
 	_, err := db.Exec(context.Background(), query,
@@ -77,6 +108,12 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert service into database: %v", err)
+
+		// Check if it's a NOT NULL constraint violation
+		if strings.Contains(err.Error(), "null value in column \"image_id\"") {
+			return nil, fmt.Errorf("image is required for service creation")
+		}
+
 		return nil, fmt.Errorf("failed to create service: %w", err)
 	}
 
@@ -85,7 +122,7 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 }
 
 // GetServiceByIDModel fetches a service record by its ID.
-func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // Removed *gin.Context c
+func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", id)
 
 	service := &Service{}
@@ -98,8 +135,6 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		WHERE
 			id = $1`
 
-	var imageIDFromDB pgtype.UUID // For scanning nullable UUID from DB
-
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&service.ID,
 		&service.BusinessID,
@@ -107,7 +142,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		&service.Description,
 		&service.DurationMinutes,
 		&service.Price,
-		&imageIDFromDB, // Scan into uuid.NullUUID
+		&service.ImageID, // pgtype.UUID handles NULL automatically
 		&service.IsActive,
 		&service.CreatedAt,
 		&service.UpdatedAt,
@@ -120,13 +155,6 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) { // 
 		}
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", id, err)
 		return nil, fmt.Errorf("database error: %w", err)
-	}
-
-	// Assign ImageID from the scanned nullable UUID
-	if imageIDFromDB.Valid {
-		service.ImageID = pgtype.UUID{Bytes: imageIDFromDB.Bytes, Valid: true}
-	} else {
-		service.ImageID = pgtype.UUID{Valid: false}
 	}
 
 	logger.InfoLogger.Infof("Service with ID %s fetched successfully", id)
@@ -164,7 +192,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 			&service.Description,
 			&service.DurationMinutes,
 			&service.Price,
-			&service.ImageID,
+			&service.ImageID, // pgtype.UUID handles NULL automatically
 			&service.IsActive,
 			&service.CreatedAt,
 			&service.UpdatedAt,
