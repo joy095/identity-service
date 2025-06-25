@@ -75,6 +75,7 @@ func main() {
 
 	// Add the route for CreateService
 	r.POST("/create-service", handlers.CreateService)
+	r.POST("/update-service/:id", handlers.UpdateService)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "ok from identity service"})

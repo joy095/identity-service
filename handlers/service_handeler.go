@@ -21,13 +21,21 @@ import (
 	"github.com/joy095/identity/models/service_models"
 )
 
-type TestCreateServiceRequest struct {
+type CreateServiceRequest struct {
 	BusinessID      string  `form:"businessId" binding:"required"`
 	Name            string  `form:"name" binding:"required"`
 	Description     string  `form:"description,omitempty"`
 	DurationMinutes int     `form:"durationMinutes" binding:"required"`
 	Price           float64 `form:"price" binding:"required"`
 	IsActive        bool    `form:"isActive,omitempty"`
+}
+
+type UpdateServiceRequest struct {
+	Name            *string  `form:"name"`
+	Description     *string  `form:"description"`
+	DurationMinutes *int     `form:"durationMinutes"`
+	Price           *float64 `form:"price"`
+	IsActive        *bool    `form:"isActive"`
 }
 
 type ImageUploadResponse struct {
@@ -37,7 +45,7 @@ type ImageUploadResponse struct {
 func CreateService(c *gin.Context) {
 	logger.InfoLogger.Info("Received new request for /create-service")
 
-	var req TestCreateServiceRequest
+	var req CreateServiceRequest
 	if err := c.ShouldBind(&req); err != nil {
 		logger.ErrorLogger.Errorf("Failed to bind form data: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid form data", "details": err.Error()})
@@ -163,13 +171,34 @@ func sendImageToService(body *bytes.Buffer, contentType string, authHeader strin
 	return processImageResponse(resp)
 }
 
+func updateImageToService(body *bytes.Buffer, contentType, authHeader string, imageID uuid.UUID) (uuid.UUID, error) {
+
+	pythonServerURL := os.Getenv("IMAGE_SERVICE_URL") + "/replace-image/" + imageID.String()
+	if pythonServerURL == "" {
+		pythonServerURL = "http://localhost:8082/replace-image/" + imageID.String()
+	}
+
+	httpReq, _ := http.NewRequest("PUT", pythonServerURL, body)
+	httpReq.Header.Set("Content-Type", contentType)
+	httpReq.Header.Set("Authorization", authHeader)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to send request to image service")
+	}
+	defer resp.Body.Close()
+
+	return processImageResponse(resp)
+}
+
 func processImageResponse(resp *http.Response) (uuid.UUID, error) {
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to read response from image service")
 	}
 
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK {
 		return uuid.Nil, fmt.Errorf("image service returned error: %s", string(responseBody))
 	}
 
@@ -183,4 +212,104 @@ func processImageResponse(resp *http.Response) (uuid.UUID, error) {
 	}
 
 	return imgResp.ImageID, nil
+}
+
+// handlers/service_handlers.go
+func UpdateService(c *gin.Context) {
+	logger.InfoLogger.Info("Received new request for /update-service")
+
+	serviceIDStr := c.Param("id")
+	serviceID, err := uuid.Parse(serviceIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid Service ID format: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format."})
+		return
+	}
+
+	var req UpdateServiceRequest
+	if err := c.ShouldBind(&req); err != nil {
+		logger.ErrorLogger.Errorf("Failed to bind form data for update: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid form data", "details": err.Error()})
+		return
+	}
+
+	existingService, err := service_models.GetServiceByIDModel(db.DB, serviceID)
+	if err != nil {
+		if strings.Contains(err.Error(), "no rows in result set") {
+			logger.ErrorLogger.Errorf("Service with ID %s not found", serviceIDStr)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found."})
+			return
+		}
+		logger.ErrorLogger.Errorf("Failed to retrieve service from database: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve service."})
+		return
+	}
+
+	if req.Name != nil {
+		existingService.Name = *req.Name
+	}
+	if req.Description != nil {
+		existingService.Description = *req.Description
+	}
+	if req.DurationMinutes != nil {
+		existingService.DurationMinutes = *req.DurationMinutes
+	}
+	if req.Price != nil {
+		existingService.Price = *req.Price
+	}
+	if req.IsActive != nil {
+		existingService.IsActive = *req.IsActive
+	}
+
+	_, err = c.FormFile("image")
+	if err == nil {
+		// New image provided, upload it and update the ID
+		// Open new image file from form
+		fileHeader, err := c.FormFile("image")
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to get new image: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read image file."})
+			return
+		}
+
+		file, err := fileHeader.Open()
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to open new image: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open image file."})
+			return
+		}
+		defer file.Close()
+
+		body, contentType := prepareMultipartRequest(file, fileHeader)
+
+		// Use the existing image ID
+		imageID := existingService.ImageID.Bytes
+		authHeader := c.GetHeader("Authorization")
+
+		_, updateErr := updateImageToService(body, contentType, authHeader, imageID) //
+		if updateErr != nil {
+			logger.ErrorLogger.Errorf("Failed to update image for service %s: %v", serviceID, updateErr)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Image update failed: " + updateErr.Error()})
+			return
+		}
+		logger.InfoLogger.Infof("Replaced image for service %s (Image ID: %s)", serviceID, imageID)
+
+	} else if err != http.ErrMissingFile {
+		// An error other than "no file" occurred
+		logger.ErrorLogger.Errorf("Error checking for new image file: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Could not process image file for update"})
+		return
+	}
+
+	updatedService, err := service_models.UpdateServiceModel(db.DB, existingService)
+	if err != nil {
+		handleServiceCreationError(c, err) // Can reuse the same error handler for conflicts
+		return
+	}
+
+	logger.InfoLogger.Infof("Service '%s' (ID: %s) updated successfully", updatedService.Name, serviceIDStr)
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Service updated successfully!",
+		"service": updatedService,
+	})
 }
