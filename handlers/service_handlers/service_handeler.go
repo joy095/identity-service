@@ -198,7 +198,7 @@ func processImageResponse(resp *http.Response) (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("failed to read response from image service")
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return uuid.Nil, fmt.Errorf("image service returned error: %s", string(responseBody))
 	}
 
