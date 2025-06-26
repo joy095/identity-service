@@ -1,5 +1,5 @@
-// handlers/service_handlers.go
-package handlers
+// handlers/service_handlers/service_handlers.go
+package service_handlers
 
 import (
 	"bytes"
