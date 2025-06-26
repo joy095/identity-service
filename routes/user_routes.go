@@ -40,7 +40,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 		protected.POST("/logout", middleware.CombinedRateLimiter("logout", "5-1m", "20-10m"), userController.Logout)
 
 		// Profile Management - Only access your own profile
-		protected.GET("/profile", middleware.NewRateLimiter("30-1m", "profile"), userController.GetMyProfile)
+		protected.GET("/profile", middleware.NewRateLimiter("15-30s", "profile"), userController.GetMyProfile)
 		protected.PATCH("/update-profile", middleware.CombinedRateLimiter("update-profile", "5-1m", "10-5m"), userController.UpdateProfile)
 		protected.POST("/update-email", middleware.CombinedRateLimiter("update-email", "5-1m", "30-60m"), userController.UpdateEmailWithPassword)
 		protected.POST("/verify-email-update-otp", middleware.CombinedRateLimiter("verify-email-update-otp", "5-1m", "30-60m"), userController.VerifyEmailChangeOTP)

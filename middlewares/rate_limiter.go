@@ -63,11 +63,13 @@ func createRedisStore(routeID string, period time.Duration) (limiter.Store, erro
 }
 
 // ParseCustomRate allows formats like "10-2m", "30-20m", "5-1h", etc.
+// ParseCustomRate allows formats like "10-2m", "30-20m", "5-1h", "20-10s", etc.
 func ParseCustomRate(rateStr string) (limiter.Rate, error) {
 	parts := strings.Split(rateStr, "-")
 	if len(parts) != 2 {
 		return limiter.Rate{}, fmt.Errorf("invalid rate format: %s", rateStr)
 	}
+
 	limit, err := strconv.Atoi(parts[0])
 	if err != nil {
 		return limiter.Rate{}, fmt.Errorf("invalid limit: %s", parts[0])
@@ -76,19 +78,29 @@ func ParseCustomRate(rateStr string) (limiter.Rate, error) {
 	durationStr := parts[1]
 	var period time.Duration
 
-	if strings.HasSuffix(durationStr, "m") {
+	switch {
+	case strings.HasSuffix(durationStr, "s"):
+		seconds, err := strconv.Atoi(strings.TrimSuffix(durationStr, "s"))
+		if err != nil {
+			return limiter.Rate{}, fmt.Errorf("invalid seconds duration: %v", err)
+		}
+		period = time.Duration(seconds) * time.Second
+
+	case strings.HasSuffix(durationStr, "m"):
 		minutes, err := strconv.Atoi(strings.TrimSuffix(durationStr, "m"))
 		if err != nil {
-			return limiter.Rate{}, err
+			return limiter.Rate{}, fmt.Errorf("invalid minutes duration: %v", err)
 		}
 		period = time.Duration(minutes) * time.Minute
-	} else if strings.HasSuffix(durationStr, "h") {
+
+	case strings.HasSuffix(durationStr, "h"):
 		hours, err := strconv.Atoi(strings.TrimSuffix(durationStr, "h"))
 		if err != nil {
-			return limiter.Rate{}, err
+			return limiter.Rate{}, fmt.Errorf("invalid hours duration: %v", err)
 		}
 		period = time.Duration(hours) * time.Hour
-	} else {
+
+	default:
 		return limiter.Rate{}, fmt.Errorf("unsupported period: %s", durationStr)
 	}
 
