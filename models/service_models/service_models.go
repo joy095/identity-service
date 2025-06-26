@@ -258,8 +258,8 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 	return service, nil
 }
 
-// DeleteServiceModel deletes a service record from the database.
-func DeleteServiceModel(db *pgxpool.Pool, serviceID, businessID uuid.UUID) error {
+// DeleteServiceByIDModel deletes a service record from the database.
+func DeleteServiceByIDModel(db *pgxpool.Pool, serviceID, businessID uuid.UUID) error {
 	logger.InfoLogger.Infof("Attempting to delete service record with ID: %s for Business ID: %s", serviceID, businessID)
 
 	query := `DELETE FROM services WHERE id = $1 AND business_id = $2` // Include business_id for ownership check

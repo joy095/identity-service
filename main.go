@@ -15,7 +15,6 @@ import (
 	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
-	"github.com/joy095/identity/handlers"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/middlewares/cors"
 	"github.com/joy095/identity/routes"
@@ -72,9 +71,6 @@ func main() {
 	routes.RegisterBusinessRoutes(r)
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r, db.DB)
-
-	// Add the route for CreateService
-	r.POST("/create-service", handlers.CreateService)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "ok from identity service"})
