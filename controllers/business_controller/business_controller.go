@@ -492,12 +492,20 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 	}
 
 	// --- 6. Now delete the business record from our database ---
-	if err := business_models.DeleteBusiness(c.Request.Context(), bc.DB, businessID); err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", businessID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})
+	if existingBusiness.ImageID.Valid {
+		err = business_models.DeleteImageAndReferences(bc.DB, existingBusiness.ImageID.Bytes)
+	}
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to delete image %s and its references in database: %v", existingBusiness.ImageID, err)
+		// Check for specific errors from DeleteImageAndReferences if you want to customize HTTP status.
+		if strings.Contains(err.Error(), "image not found for deletion") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Image record not found in database"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image and its references in database"})
+		}
 		return
 	}
 
-	logger.InfoLogger.Infof("Business %s deleted successfully by user %s", businessID, userID)
-	c.JSON(http.StatusOK, gin.H{"message": "Business deleted successfully"})
+	logger.InfoLogger.Infof("Image %s and its references successfully deleted from database", existingBusiness.ImageID)
+	c.Status(http.StatusNoContent) // 204 No Content is a standard successful response for DELETE
 }

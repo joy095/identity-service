@@ -238,6 +238,62 @@ func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) error {
 	return nil
 }
 
+func DeleteImageAndReferences(db *pgxpool.Pool, imageID uuid.UUID) error {
+	tx, err := db.Begin(context.Background()) // Start a database transaction
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction for image deletion: %w", err)
+	}
+	defer tx.Rollback(context.Background()) // Rollback on error, unless committed
+
+	// 1. CRITICAL STEP: Nullify the image_id in the 'businesses' table
+	// This removes the foreign key reference that is causing the error.
+	_, err = tx.Exec(context.Background(), `
+		UPDATE businesses
+		SET image_id = NULL
+		WHERE image_id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to nullify image_id in businesses table for image %s: %v", imageID, err)
+		return fmt.Errorf("failed to nullify business image_id: %w", err)
+	}
+	logger.InfoLogger.Infof("Nullified image_id reference in businesses table for image %s", imageID)
+
+	// 2. Nullify the image_id in the 'services' table
+	// (Your logs show this is already happening, but it must be within this transaction)
+	_, err = tx.Exec(context.Background(), `
+		UPDATE services
+		SET image_id = NULL
+		WHERE image_id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to nullify image_id in services table for image %s: %v", imageID, err)
+		return fmt.Errorf("failed to nullify service image_id: %w", err)
+	}
+	logger.InfoLogger.Infof("Nullified image_id reference in services table for image %s", imageID)
+
+	// 3. Delete the image record from the 'images' table
+	// This step will now succeed because no other table references it anymore.
+	res, err := tx.Exec(context.Background(), `
+		DELETE FROM images
+		WHERE id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to delete image record %s: %v", imageID, err)
+		return fmt.Errorf("failed to delete image record: %w", err)
+	}
+
+	if res.RowsAffected() == 0 {
+		logger.WarnLogger.Warnf("Image with ID %s not found in images table for deletion.", imageID)
+		// Consider returning an error if the image MUST exist for a successful deletion.
+		// For example, return fmt.Errorf("image record not found")
+	} else {
+		logger.InfoLogger.Infof("Successfully deleted image record %s from images table", imageID)
+	}
+
+	// Commit the transaction if all steps were successful
+	return tx.Commit(context.Background())
+}
+
 // GetBusinessByID retrieves a single business by its ID.
 // This function was missing but is required by your controller.
 //
