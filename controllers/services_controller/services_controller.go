@@ -58,11 +58,11 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Service not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
 
 		} else {
 			logger.ErrorLogger.Error("Failed to fetch service: " + err.Error())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to fetch service"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
 
 		}
 		return
@@ -103,10 +103,11 @@ func (sc *ServiceController) DeleteService(c *gin.Context) error {
 		return fmt.Errorf("Service not found")
 	}
 
-	url := os.Getenv("IMAGE_SERVICE_URL") + "/images/" + (service.ImageID).String()
-	if url == "" {
-		url = "http://localhost:8082/images/" + (service.ImageID).String()
+	imageServiceURL := os.Getenv("IMAGE_SERVICE_URL")
+	if imageServiceURL == "" {
+		imageServiceURL = "http://localhost:8082"
 	}
+	url := fmt.Sprintf("%s/images/%s", strings.TrimRight(imageServiceURL, "/"), service.ImageID.String())
 
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {

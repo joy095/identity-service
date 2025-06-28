@@ -29,8 +29,6 @@ type Customer struct {
 	TokenVersion    int
 }
 
-var ctx = context.Background()
-
 const refreshTokenExpiry = time.Hour * 24 * 30 // 30 days
 
 // RefreshTokenEntry represents a single refresh token with its associated device information
@@ -43,7 +41,7 @@ type RefreshTokenEntry struct {
 // --- Database Operations for Customer ---
 
 // CreateCustomer function (This was missing, re-added)
-func CreateCustomer(db *pgxpool.Pool, email string) (*Customer, error) {
+func CreateCustomer(ctx context.Context, db *pgxpool.Pool, email string) (*Customer, error) {
 	logger.InfoLogger.Info("CreateCustomer called on models")
 
 	userID, err := shared_models.GenerateUUIDv7() // Assuming GenerateUUIDv7 is defined elsewhere
@@ -59,7 +57,7 @@ func CreateCustomer(db *pgxpool.Pool, email string) (*Customer, error) {
 	var lastName *string
 
 	customer := &Customer{}
-	err = db.QueryRow(context.Background(), query, userID, email).Scan(
+	err = db.QueryRow(ctx, query, userID, email).Scan(
 		&customer.ID,
 		&customer.Email,
 		&firstName,
@@ -183,7 +181,7 @@ func storeRefreshTokenInRedis(ctx context.Context, userID uuid.UUID, refreshToke
 // updateRefreshTokenInRedis updates an existing refresh token for a user and device
 // This function can be used if you want to strictly manage one refresh token per device
 // and replace it on each new login from that device.
-func updateRefreshTokenInRedis(userID uuid.UUID, oldRefreshToken, newRefreshToken, device string) error {
+func updateRefreshTokenInRedis(ctx context.Context, userID uuid.UUID, oldRefreshToken, newRefreshToken, device string) error {
 	redisKey := fmt.Sprintf("refresh_tokens:%s", userID.String())
 
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
@@ -230,7 +228,7 @@ func updateRefreshTokenInRedis(userID uuid.UUID, oldRefreshToken, newRefreshToke
 }
 
 // ValidateRefreshTokenInRedis checks if a given refresh token is valid for a user
-func ValidateRefreshTokenInRedis(userID uuid.UUID, refreshToken string) (bool, error) {
+func ValidateRefreshTokenInRedis(ctx context.Context, userID uuid.UUID, refreshToken string) (bool, error) {
 	redisKey := fmt.Sprintf("refresh_tokens:%s", userID.String())
 	existingTokensJSON, err := redisclient.GetRedisClient().Get(ctx, redisKey).Result()
 	if err != nil {
@@ -255,7 +253,7 @@ func ValidateRefreshTokenInRedis(userID uuid.UUID, refreshToken string) (bool, e
 }
 
 // LoginCustomer authenticates a customer using OTP and generates tokens
-func LoginCustomer(db *pgxpool.Pool, email string, otp string, device string) (*Customer, string, string, error) {
+func LoginCustomer(ctx context.Context, db *pgxpool.Pool, email string, otp string, device string) (*Customer, string, string, error) {
 	logger.InfoLogger.Info("LoginCustomer (OTP verification) called on models")
 
 	redisKeyOTP := shared_utils.CUSTOMER_OTP_PREFIX + strings.ToLower(strings.TrimSpace(email))

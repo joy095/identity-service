@@ -58,7 +58,7 @@ func (uc *CustomerController) CustomerRegister(c *gin.Context) {
 	}
 
 	// Create a new customer via the models layer
-	user, err := customer_models.CreateCustomer(db.DB, req.Email)
+	user, err := customer_models.CreateCustomer(c.Request.Context(), db.DB, req.Email)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database: %w", err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})

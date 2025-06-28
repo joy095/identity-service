@@ -493,7 +493,7 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 
 	// --- 6. Now delete the business record from our database ---
 	if existingBusiness.ImageID.Valid {
-		err = business_models.DeleteImageAndReferences(bc.DB, existingBusiness.ImageID.Bytes)
+		err = business_models.DeleteImageAndReferences(c.Request.Context(), bc.DB, uuid.UUID(existingBusiness.ImageID.Bytes))
 	}
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete image %s and its references in database: %v", existingBusiness.ImageID, err)

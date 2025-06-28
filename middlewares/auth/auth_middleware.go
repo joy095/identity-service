@@ -146,7 +146,7 @@ func AuthMiddleware() gin.HandlerFunc {
 			logger.ErrorLogger.Errorf("TOKEN VERSION MISMATCH DETECTED - JWT(%d) vs DB(%d) for user %s - ABORTING REQUEST",
 				tokenVersion, user.TokenVersion, user.ID)
 			c.Header("Content-Type", "application/json")
-			c.Abort() // Explicitly call Abort first
+			// c.Abort() // Explicitly call Abort first
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Session expired. Please log in again.",
 			})

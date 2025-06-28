@@ -238,12 +238,12 @@ func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) error {
 	return nil
 }
 
-func DeleteImageAndReferences(db *pgxpool.Pool, imageID uuid.UUID) error {
-	tx, err := db.Begin(context.Background()) // Start a database transaction
+func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uuid.UUID) error {
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction for image deletion: %w", err)
 	}
-	defer tx.Rollback(context.Background()) // Rollback on error, unless committed
+	defer tx.Rollback(ctx) // Rollback on error, unless committed
 
 	// 1. CRITICAL STEP: Nullify the image_id in the 'businesses' table
 	// This removes the foreign key reference that is causing the error.

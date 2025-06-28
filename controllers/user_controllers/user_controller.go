@@ -246,7 +246,7 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 	}
 
 	// Store the OTP and the new email with the user's ID
-	if err := shared_utils.StoreOTP(shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Username, otp); err != nil {
+	if err := shared_utils.StoreOTP(context.Background(), shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Username, otp); err != nil {
 		logger.ErrorLogger.Errorf("failed to store email change OTP for user %s: %v", userID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate email change verification"})
 		return
@@ -308,7 +308,7 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 		return
 	}
 
-	if err := shared_utils.StoreOTP(shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+req.Username, otp); err != nil {
+	if err := shared_utils.StoreOTP(context.Background(), shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+req.Username, otp); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store registration OTP for username %s: %w", req.Username, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP for verification"})
 		return
@@ -395,7 +395,7 @@ func (uc *UserController) Register(c *gin.Context) {
 	// For registration, it's generally good practice to store the OTP against the new user's ID
 	// or the email, and then verify that in a separate endpoint.
 	// Assuming `shared_utils.StoreOTP` is suitable for this purpose.
-	if err := shared_utils.StoreOTP(shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+user.Username, otp); err != nil {
+	if err := shared_utils.StoreOTP(context.Background(), shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+user.Username, otp); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store registration OTP for user %s: %w", user.ID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP for verification"})
 		return
@@ -506,7 +506,7 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	// This ensures the OTP is tied to a specific user trying to reset their password.
 	// The key should be unique per user for password reset.
 	resetKey := shared_utils.FORGOT_PASSWORD_OTP_PREFIX + user.Username
-	err = shared_utils.StoreOTP(resetKey, otp)
+	err = shared_utils.StoreOTP(context.Background(), resetKey, otp)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to store OTP for password reset for user %s: %w", user.ID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initiate password reset"})
@@ -559,7 +559,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 
 	// Retrieve the stored OTP using the same key format as in ForgotPassword
 	resetKey := shared_utils.FORGOT_PASSWORD_OTP_PREFIX + user.Username
-	storedOTP, err := shared_utils.RetrieveOTP(resetKey)
+	storedOTP, err := shared_utils.RetrieveOTP(context.Background(), resetKey)
 	if err != nil {
 		if errors.Is(err, mail.ErrOTPNotFound) {
 			logger.InfoLogger.Info(fmt.Sprintf("Password reset OTP not found or expired for user %s (email: %s)", user.ID, req.Email))
@@ -595,7 +595,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 	}
 
 	// Clear the OTP from Redis after successful password reset
-	if err := shared_utils.ClearOTP(resetKey); err != nil {
+	if err := shared_utils.ClearOTP(context.Background(), resetKey); err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to clear password reset OTP for user %s: %w", user.ID, err))
 	}
 
