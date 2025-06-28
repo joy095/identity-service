@@ -64,7 +64,7 @@ func CreateService(c *gin.Context) {
 	}
 
 	authHeader := c.GetHeader("Authorization")
-	imageID, err := handleImageUpload(c, authHeader)
+	imageID, err := HandleImageUpload(c, authHeader)
 	if err != nil {
 		return
 	}
@@ -75,7 +75,7 @@ func CreateService(c *gin.Context) {
 
 	createdService, err := service_models.CreateServiceModel(db.DB, service)
 	if err != nil {
-		handleServiceCreationError(c, err)
+		HandleServiceCreationError(c, err)
 		return
 	}
 
@@ -86,7 +86,7 @@ func CreateService(c *gin.Context) {
 	})
 }
 
-func handleImageUpload(c *gin.Context, authHeader string) (uuid.UUID, error) {
+func HandleImageUpload(c *gin.Context, authHeader string) (uuid.UUID, error) {
 	fileHeader, err := c.FormFile("image")
 	if err != nil {
 		handleFileError(c, err)
@@ -121,7 +121,7 @@ func handleFileError(c *gin.Context, err error) {
 	c.JSON(http.StatusBadRequest, gin.H{"error": "Could not process image file"})
 }
 
-func handleServiceCreationError(c *gin.Context, err error) {
+func HandleServiceCreationError(c *gin.Context, err error) {
 	logger.ErrorLogger.Errorf("Failed to create service in database: %v", err)
 	if strings.Contains(err.Error(), "duplicate key value") {
 		c.JSON(http.StatusConflict, gin.H{"error": "A service with this name already exists for this business."})
@@ -303,7 +303,7 @@ func UpdateService(c *gin.Context) {
 
 	updatedService, err := service_models.UpdateServiceModel(db.DB, existingService)
 	if err != nil {
-		handleServiceCreationError(c, err) // Can reuse the same error handler for conflicts
+		HandleServiceCreationError(c, err) // Can reuse the same error handler for conflicts
 		return
 	}
 

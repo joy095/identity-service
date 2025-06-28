@@ -18,6 +18,7 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 		protected.GET("/business/:id", businessController.GetBusiness)
 		protected.POST("/business", businessController.CreateBusiness)
 		protected.PUT("/business/:id", businessController.UpdateBusiness)
+		protected.PUT("/business-image/:id", businessController.ReplaceBusinessImage)
 		protected.DELETE("/business/:id", businessController.DeleteBusiness)
 	}
 }

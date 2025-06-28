@@ -1,14 +1,22 @@
 package business_controller
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/joy095/identity/badwords"
+	"github.com/joy095/identity/handlers/image_handlers" // <-- IMPORT the shared image handler
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/utils"
@@ -26,94 +34,87 @@ func NewBusinessController(db *pgxpool.Pool) *BusinessController {
 	}
 }
 
-type Location struct {
-	// Latitude should be between -90 and +90
-	Latitude float64 `json:"latitude" binding:"omitempty,min=-90,max=90"`
-	// Longitude should be between -180 and +180
-	Longitude float64 `json:"longitude" binding:"omitempty,min=-180,max=180"`
-}
-
-// CreateBusinessRequest represents the expected JSON payload for creating a business.
-// This is separate from the business_models.Business struct to allow for input validation rules
-// and to exclude fields like ID, CreatedAt, UpdatedAt that are set by the server.
+// CreateBusinessRequest represents the form data for creating a business.
+// Tags are changed from `json` to `form` to support multipart/form-data binding.
 type CreateBusinessRequest struct {
-	Name       string    `json:"name" binding:"required,min=3,max=100"`
-	Category   string    `json:"category" binding:"required,min=2,max=50"`
-	Address    string    `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
-	City       string    `json:"city" binding:"required,min=2,max=50"`
-	State      string    `json:"state" binding:"required,min=2,max=50"`
-	Country    string    `json:"country" binding:"required,min=2,max=50"`
-	PostalCode string    `json:"postalCode" binding:"required,min=3,max=20"`
-	TaxID      string    `json:"taxId,omitempty"`
-	About      string    `json:"about,omitempty"`
-	Location   *Location `json:"location,omitempty"`
-	// OwnerUserID will be extracted from the authenticated user's context, not from the request body.
+	Name       string  `form:"name" binding:"required,min=3,max=100"`
+	Category   string  `form:"category" binding:"required,min=2,max=50"`
+	Address    string  `form:"address,omitempty" binding:"omitempty,min=5,max=255"`
+	City       string  `form:"city" binding:"required,min=2,max=50"`
+	State      string  `form:"state" binding:"required,min=2,max=50"`
+	Country    string  `form:"country" binding:"required,min=2,max=50"`
+	PostalCode string  `form:"postalCode" binding:"required,min=3,max=20"`
+	TaxID      string  `form:"taxId,omitempty"`
+	About      string  `form:"about,omitempty"`
+	Latitude   float64 `form:"latitude" binding:"omitempty,min=-90,max=90"`
+	Longitude  float64 `form:"longitude" binding:"omitempty,min=-180,max=180"`
 }
 
-// UpdateBusinessRequest represents the expected JSON payload for updating a business.
+// UpdateBusinessRequest remains the same as it uses JSON.
 type UpdateBusinessRequest struct {
-	Name       *string  `json:"name,omitempty" binding:"omitempty,min=3,max=100"`
-	Category   *string  `json:"category,omitempty" binding:"omitempty,min=2,max=50"`
-	Address    *string  `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
-	City       *string  `json:"city,omitempty" binding:"omitempty,min=2,max=50"`
-	State      *string  `json:"state,omitempty" binding:"omitempty,min=2,max=50"`
-	Country    *string  `json:"country,omitempty" binding:"omitempty,min=2,max=50"`
-	PostalCode *string  `json:"postalCode,omitempty" binding:"omitempty,min=3,max=20"`
-	TaxID      *string  `json:"taxId,omitempty"`
-	About      *string  `json:"about,omitempty"`
-	Location   Location `json:"location"`
-	IsActive   *bool    `json:"isActive,omitempty"`
+	Name       *string                  `json:"name,omitempty" binding:"omitempty,min=3,max=100"`
+	Category   *string                  `json:"category,omitempty" binding:"omitempty,min=2,max=50"`
+	Address    *string                  `json:"address,omitempty" binding:"omitempty,min=5,max=255"`
+	City       *string                  `json:"city,omitempty" binding:"omitempty,min=2,max=50"`
+	State      *string                  `json:"state,omitempty" binding:"omitempty,min=2,max=50"`
+	Country    *string                  `json:"country,omitempty" binding:"omitempty,min=2,max=50"`
+	PostalCode *string                  `json:"postalCode,omitempty" binding:"omitempty,min=3,max=20"`
+	TaxID      *string                  `json:"taxId,omitempty"`
+	About      *string                  `json:"about,omitempty"`
+	Location   business_models.Location `json:"location"`
+	IsActive   *bool                    `json:"isActive,omitempty"`
 }
 
-// CreateBusiness handles the HTTP request to create a new business.
+// CreateBusiness handles the HTTP request to create a new business with an image.
 func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("CreateBusiness controller called")
 
 	var req CreateBusinessRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.ErrorLogger.Errorf("Invalid request payload for CreateBusiness: %v", err)
+	// Use ShouldBind to handle multipart/form-data
+	if err := c.ShouldBind(&req); err != nil {
+		logger.ErrorLogger.Errorf("Invalid form data for CreateBusiness: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request data: %s", err.Error())})
 		return
 	}
 
-	// --- Bad words check for relevant fields ---
-	if badwords.ContainsBadWords(req.Name) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Business name contains inappropriate language."})
-		return
-	}
-	if req.Address != "" && badwords.ContainsBadWords(req.Address) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Address contains inappropriate language."})
-		return
-	}
-	if req.About != "" && badwords.ContainsBadWords(req.About) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "About section contains inappropriate language."})
-		return
-	}
-	// Add checks for other string fields as needed (e.g., City, State, Country, etc.)
-	if badwords.ContainsBadWords(req.City) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "City name contains inappropriate language."})
-		return
-	}
-	if badwords.ContainsBadWords(req.State) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "State name contains inappropriate language."})
-		return
-	}
-	if badwords.ContainsBadWords(req.Country) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Country name contains inappropriate language."})
+	// --- Bad words check (no changes needed here) ---
+	if badwords.ContainsBadWords(req.Name) || badwords.ContainsBadWords(req.Address) ||
+		badwords.ContainsBadWords(req.About) || badwords.ContainsBadWords(req.City) ||
+		badwords.ContainsBadWords(req.State) || badwords.ContainsBadWords(req.Country) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Request contains inappropriate language."})
 		return
 	}
 
-	// --- Extract and parse OwnerUserID from authenticated context ---
-	userID, err := utils.GetUserIDFromContext(c)
-	if err != nil {
-		if err.Error() == "authentication required: user ID not found" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+	// --- Handle Image Upload ---
+	var imageID uuid.UUID
+	authHeader := c.GetHeader("Authorization")
+	// The `image_handlers.HandleImageUpload` function can be reused if you extract it to be public.
+	// For now, we assume a similar internal function or call the shared one.
+	// Let's create a temporary context to call the handler.
+	file, err := c.FormFile("image")
+	if err != nil && err != http.ErrMissingFile {
+		// An actual error occurred with the file.
+		image_handlers.HandleFileError(c, err) // Reuse error handler
 		return
 	}
-	// --- End of OwnerUserID extraction ---
+
+	if file != nil {
+		// An image was provided, so we process it.
+		uploadedImageID, uploadErr := image_handlers.HandleImageUpload(c, authHeader)
+		if uploadErr != nil {
+			// Error is already handled by the image handler, just return.
+			return
+		}
+		imageID = uploadedImageID
+	}
+	// If no file was provided, imageID remains uuid.Nil, which is handled by the model.
+
+	// --- Extract OwnerUserID from context (no changes needed) ---
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required: user ID not found"})
+		return
+	}
 
 	// Create a business_models.Business instance from the request data
 	business, err := business_models.NewBusiness(
@@ -126,33 +127,29 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		req.PostalCode,
 		req.TaxID,
 		req.About,
-		req.Location.Latitude,
-		req.Location.Longitude,
-		userID, // Pass the extracted owner user ID
+		req.Latitude,
+		req.Longitude,
+		userID,
+		imageID, // Pass the new imageID
 	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create business instance: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// if business == nil {
-	// 	logger.ErrorLogger.Error("Failed to create business instance")
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create business"})
-	// 	return
-	// }
 
 	// Call the model layer to create the business in the database
 	createdBusiness, err := business_models.CreateBusiness(c.Request.Context(), bc.DB, business)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create business in database: %v", err)
-		// Check for specific error types if needed (e.g., duplicate name)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create business"})
 		return
 	}
 
 	logger.InfoLogger.Infof("Business %s created successfully by user %s", createdBusiness.ID, userID)
 	c.JSON(http.StatusCreated, gin.H{
-		"business": createdBusiness, // Return the full created business object
+		"message":  "Business created successfully!",
+		"business": createdBusiness,
 	})
 }
 
@@ -348,44 +345,153 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	})
 }
 
-// DeleteBusiness handles the HTTP request to delete a business.
-func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
-	logger.InfoLogger.Info("DeleteBusiness controller called")
+// ReplaceBusinessImage handles replacing the image for an existing business.
+func (bc *BusinessController) ReplaceBusinessImage(c *gin.Context) {
+	logger.InfoLogger.Info("ReplaceBusinessImage controller called")
+	authHeader := c.GetHeader("Authorization")
 
-	businessIDStr := c.Param("id")
-	businessID, err := uuid.Parse(businessIDStr)
+	businessID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
 		return
 	}
 
-	// --- Extract and parse OwnerUserID from authenticated context ---
 	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		if err.Error() == "authentication required: user ID not found" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	// --- End of OwnerUserID extraction ---
 
-	// Fetch the existing business to check ownership
 	existingBusiness, err := business_models.GetBusinessByID(bc.DB, businessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch business %s for deletion: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
 
 	if existingBusiness.OwnerID != userID {
-		logger.ErrorLogger.Warnf("User %s attempted to delete business %s without ownership", userID, businessID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this business"})
+		return
+	}
+
+	// The image either doesn't exist (Nil UUID) or is valid.
+	existingImageID := existingBusiness.ImageID.Bytes
+
+	var newImageID uuid.UUID
+	var uploadErr error
+
+	if existingBusiness.ImageID.Valid {
+		// If an image already exists, call the replacement handler.
+		newImageID, uploadErr = image_handlers.HandleImageReplacement(c, authHeader, existingImageID)
+	} else {
+		// If no image exists, call the standard upload handler.
+		newImageID, uploadErr = image_handlers.HandleImageUpload(c, authHeader)
+	}
+
+	if uploadErr != nil {
+		// Error is handled by the image handler, so we just return.
+		return
+	}
+
+	// Update the business record with the new image ID.
+	existingBusiness.ImageID = pgtype.UUID{Bytes: newImageID, Valid: true}
+	updatedBusiness, err := business_models.UpdateBusiness(bc.DB, existingBusiness)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update business with new image"})
+		return
+	}
+
+	logger.InfoLogger.Infof("Image for business %s replaced successfully by user %s", businessID, userID)
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Business image updated successfully!",
+		"business": updatedBusiness,
+	})
+}
+
+// DeleteBusiness handles the HTTP request to delete a business and its associated image.
+func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
+	logger.InfoLogger.Info("DeleteBusiness controller called")
+
+	// 1. Validate Business ID
+	businessIDStr := strings.TrimSpace(c.Param("id"))
+	if businessIDStr == "" {
+		logger.ErrorLogger.Error("Business ID is required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Business ID is required"})
+		return
+	}
+
+	businessID, err := uuid.Parse(businessIDStr)
+	if err != nil {
+		logger.ErrorLogger.Error("Invalid business ID format: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+		return
+	}
+
+	// 2. Authenticate User and Authorize Access
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		logger.ErrorLogger.Error("Authentication required: " + err.Error())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// 3. Fetch Business Details
+	existingBusiness, err := business_models.GetBusinessByID(bc.DB, businessID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.ErrorLogger.Errorf("Business not found for ID %s: %v", businessID, err)
+			c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		} else {
+			logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", businessID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch business"})
+		}
+		return
+	}
+
+	// 4. Authorize Owner
+	if existingBusiness.OwnerID != userID {
+		logger.ErrorLogger.Errorf("User %s is not authorized to delete business %s (owner: %s)", userID, businessID, existingBusiness.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this business"})
 		return
 	}
 
+	// --- 5. Delete the associated image from the image service FIRST ---
+	if existingBusiness.ImageID.Valid {
+		imageID := existingBusiness.ImageID
+
+		url := os.Getenv("IMAGE_SERVICE_URL") + "/images/" + imageID.String()
+		if url == "" {
+			// Fallback in case IMAGE_SERVICE_URL is not set
+			url = "http://localhost:8082/images/" + imageID.String()
+		}
+
+		req, err := http.NewRequest("DELETE", url, nil)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to create delete image request for image ID %s: %v", imageID, err)
+			// Log the error but proceed with deleting the business record anyway.
+			// This prevents the record from being orphaned if the image service is down.
+		} else {
+			authHeader := c.GetHeader("Authorization")
+			req.Header.Set("Authorization", authHeader)
+
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				logger.ErrorLogger.Errorf("Image service request failed for image ID %s: %v", imageID, err)
+				// Log the error but proceed with deleting the business record anyway.
+			} else {
+				defer resp.Body.Close()
+				if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+					body, _ := io.ReadAll(resp.Body)
+					logger.ErrorLogger.Errorf("Image service returned error for image ID %s: %s", imageID, string(body))
+					// Log the error but proceed with deleting the business record anyway.
+				} else {
+					logger.InfoLogger.Infof("Successfully deleted image %s from image service for business %s", imageID, businessID)
+				}
+			}
+		}
+	}
+
+	// --- 6. Now delete the business record from our database ---
 	if err := business_models.DeleteBusiness(c.Request.Context(), bc.DB, businessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})
