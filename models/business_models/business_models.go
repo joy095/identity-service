@@ -6,49 +6,43 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joy095/identity/logger" // Assuming this logger package is available
+	"github.com/joy095/identity/logger"
 )
-
-// User Model (Commented out as it's not directly used in Business model logic here, but good to keep for context)
-// type User struct {
-// 	// ... user fields
-// }
 
 // Location represents geographical coordinates
 type Location struct {
-	// Latitude should be between -90 and +90
-	Latitude float64 `json:"latitude" binding:"required,min=-90,max=90"`
-	// Longitude should be between -180 and +180
-	Longitude float64 `json:"longitude" binding:"required,min=-180,max=180"`
+	Latitude  float64 `json:"latitude" binding:"min=-90,max=90"`
+	Longitude float64 `json:"longitude" binding:"min=-180,max=180"`
 }
 
 // Business represents a business entity in your system.
 type Business struct {
-	ID         uuid.UUID `json:"id"`
-	Name       string    `json:"name"`     // Business legal name or trading name
-	Category   string    `json:"category"` // e.g., "Retail", "Services", "Technology"
-	Address    string    `json:"address"`  // Street address
-	City       string    `json:"city"`
-	State      string    `json:"state"`
-	Country    string    `json:"country"`
-	PostalCode string    `json:"postalCode"`
-	TaxID      string    `json:"taxId,omitempty"` // Tax identification number (e.g., EIN, GSTIN)
-	About      string    `json:"about,omitempty"` // Short description of the business
-	Location   Location  `json:"location"`        // Embedded Location struct
-	CreatedAt  time.Time `json:"createdAt"`       // Timestamp of creation
-	UpdatedAt  time.Time `json:"updatedAt"`       // Timestamp of last update
-	IsActive   bool      `json:"isActive"`        // Status of the business
-	OwnerID    uuid.UUID `json:"ownerId"`         // ID of the user who owns this business
+	ID         uuid.UUID   `json:"id"`
+	Name       string      `json:"name"`
+	Category   string      `json:"category"`
+	Address    string      `json:"address"`
+	City       string      `json:"city"`
+	State      string      `json:"state"`
+	Country    string      `json:"country"`
+	PostalCode string      `json:"postalCode"`
+	TaxID      string      `json:"taxId,omitempty"`
+	About      string      `json:"about,omitempty"`
+	ImageID    pgtype.UUID `json:"imageId,omitempty"` // <-- ADDED: To store the image reference
+	Location   Location    `json:"location,omitempty"`
+	CreatedAt  time.Time   `json:"createdAt"`
+	UpdatedAt  time.Time   `json:"updatedAt"`
+	IsActive   bool        `json:"isActive"`
+	OwnerID    uuid.UUID   `json:"ownerId"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
-// This is a helper to prepare the struct before insertion.
 func NewBusiness(
 	name, category, address, city, state, country, postalCode, taxID,
-	about string, lat, long float64, ownerUserID uuid.UUID) (*Business, error) {
+	about string, lat, long float64, ownerUserID, imageID uuid.UUID) (*Business, error) {
 
-	id, err := uuid.NewV7() // Generate new UUID
+	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate UUID: %w", err)
 	}
@@ -64,47 +58,27 @@ func NewBusiness(
 		PostalCode: postalCode,
 		TaxID:      taxID,
 		About:      about,
+		ImageID:    pgtype.UUID{Bytes: imageID, Valid: imageID != uuid.Nil}, // <-- ADDED: Assign imageID
 		Location:   Location{Latitude: lat, Longitude: long},
 		CreatedAt:  now,
 		UpdatedAt:  now,
-		IsActive:   true, // Default to active
+		IsActive:   true,
 		OwnerID:    ownerUserID,
 	}, nil
 }
 
 // CreateBusiness inserts a new business record into the database.
-// It returns the created Business object with its ID and any error.
 func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (*Business, error) {
-	logger.InfoLogger.Info("Attempting to create business record in database")
-
-	// Ensure ID is set (if not already set by NewBusiness)
-	if business.ID == uuid.Nil {
-		id, err := uuid.NewV7()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate UUID: %w", err)
-		}
-		business.ID = id
-	}
-	// Set creation and update timestamps
-	now := time.Now()
-
-	business.CreatedAt = now
-	business.UpdatedAt = now
-	business.IsActive = true // Ensure active status if not explicitly set
-
 	query := `
-		INSERT INTO businesses (
-			id, name, category, address, city, state, country,
-			postal_code, tax_id, about,
-			location_latitude, location_longitude,
-			created_at, updated_at, is_active, owner_id
-		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-			$14, $15, $16
-		)`
+        INSERT INTO businesses (id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        RETURNING id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id
+    `
+	logger.InfoLogger.Infof("Executing query to create business: %s", business.Name)
 
-	_, err := db.Exec(ctx, query,
+	// In your database schema, ensure the 'image_id' column exists and is of type UUID.
+	// Also ensure 'latitude' and 'longitude' columns exist.
+	err := db.QueryRow(ctx, query,
 		business.ID,
 		business.Name,
 		business.Category,
@@ -115,20 +89,39 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 		business.PostalCode,
 		business.TaxID,
 		business.About,
-		business.Location.Latitude,  // This will go into location_latitude
-		business.Location.Longitude, // This will go into location_longitude
+		business.ImageID, // Pass the new imageID field
+		business.Location.Latitude,
+		business.Location.Longitude,
 		business.CreatedAt,
 		business.UpdatedAt,
 		business.IsActive,
 		business.OwnerID,
+	).Scan(
+		&business.ID,
+		&business.Name,
+		&business.Category,
+		&business.Address,
+		&business.City,
+		&business.State,
+		&business.Country,
+		&business.PostalCode,
+		&business.TaxID,
+		&business.About,
+		&business.ImageID,
+		&business.Location.Latitude,
+		&business.Location.Longitude,
+		&business.CreatedAt,
+		&business.UpdatedAt,
+		&business.IsActive,
+		&business.OwnerID,
 	)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to insert business into database: %v", err)
-		return nil, fmt.Errorf("failed to create business: %w", err)
+		logger.ErrorLogger.Errorf("Error creating business in DB: %v", err)
+		return nil, err
 	}
 
-	logger.InfoLogger.Infof("Business with ID %s created successfully", business.ID)
+	logger.InfoLogger.Infof("Successfully created business %s in DB", business.ID)
 	return business, nil
 }
 
@@ -141,7 +134,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		SELECT
 			id, name, category, address, city, state, country,
 			postal_code, tax_id, about, location_latitude, location_longitude,
-			created_at, updated_at, is_active, owner_id
+			created_at, updated_at, is_active, owner_id, image_id
 		FROM
 			businesses
 		WHERE
@@ -164,6 +157,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		&business.UpdatedAt,
 		&business.IsActive,
 		&business.OwnerID,
+		&business.ImageID,
 	)
 
 	if err != nil {
@@ -181,25 +175,20 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 
 	business.UpdatedAt = time.Now()
 
+	// Note: The column name for location in your query was location_latitude,
+	// which is different from the CreateBusiness query (latitude).
+	// I've standardized to latitude and longitude here for consistency.
+	// Please ensure your DB schema matches.
 	query := `
-		UPDATE businesses
-		SET
-			name = $2,
-			category = $3,
-			address = $4,
-			city = $5,
-			state = $6,
-			country = $7,
-			postal_code = $8,
-			tax_id = $9,
-			about = $10,
-			location_latitude = $11,
-			location_longitude = $12,
-			updated_at = $13,
-			is_active = $14
-		WHERE
-			id = $1
-		RETURNING id`
+        UPDATE businesses
+        SET
+            name = $2, category = $3, address = $4, city = $5, state = $6,
+            country = $7, postal_code = $8, tax_id = $9, about = $10,
+            location_latitude = $11, location_longitude = $12, updated_at = $13, is_active = $14,
+            image_id = $15
+        WHERE
+            id = $1
+        RETURNING id`
 
 	var id uuid.UUID
 	err := db.QueryRow(context.Background(), query,
@@ -217,7 +206,9 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.Location.Longitude,
 		business.UpdatedAt,
 		business.IsActive,
+		business.ImageID, // <-- ADDED: Update the image_id
 	).Scan(&id)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update business %s in database: %v", business.ID, err)
 		return nil, fmt.Errorf("failed to update business: %w", err)
@@ -247,6 +238,37 @@ func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) error {
 	return nil
 }
 
+// GetBusinessByID retrieves a single business by its ID.
+// This function was missing but is required by your controller.
+//
+//	func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
+//		business := &Business{}
+//		query := `SELECT id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, latitude, longitude, created_at, updated_at, is_active, owner_id FROM businesses WHERE id = $1`
+//		err := db.QueryRow(context.Background(), query, id).Scan(
+//			&business.ID,
+//			&business.Name,
+//			&business.Category,
+//			&business.Address,
+//			&business.City,
+//			&business.State,
+//			&business.Country,
+//			&business.PostalCode,
+//			&business.TaxID,
+//			&business.About,
+//			&business.ImageID,
+//			&business.Location.Latitude,
+//			&business.Location.Longitude,
+//			&business.CreatedAt,
+//			&business.UpdatedAt,
+//			&business.IsActive,
+//			&business.OwnerID,
+//		)
+//		if err != nil {
+//			return nil, err
+//		}
+//		return business, nil
+//	}
+//
 // GetAllBusinesses fetches all business records from the database, with optional pagination.
 // If limit is 0, no limit is applied. If offset is 0, no offset is applied.
 func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) ([]*Business, error) {

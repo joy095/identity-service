@@ -26,6 +26,7 @@ type Service struct {
 	IsActive        bool        `json:"isActive"`
 	CreatedAt       time.Time   `json:"createdAt"`
 	UpdatedAt       time.Time   `json:"updatedAt"`
+	ImageObjectName pgtype.Text `json:"image_object_name"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -126,15 +127,29 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", id)
 
 	service := &Service{}
+	var imageObjectName pgtype.Text // Declare a variable to hold the object_name
+
 	query := `
 		SELECT
-			id, business_id, name, description, duration_minutes,
-			price, image_id, is_active, created_at, updated_at
+			s.id,
+			s.business_id,
+			s.name,
+			s.description,
+			s.duration_minutes,
+			s.price,
+			s.is_active,
+			s.image_id,
+			s.created_at,
+			i.object_name
 		FROM
-			services
+			services AS s
+		LEFT JOIN
+			images AS i ON s.image_id = i.id
 		WHERE
-			id = $1`
+			s.id = $1;
+		`
 
+	// Make sure the order of arguments in Scan matches the order of columns in SELECT
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&service.ID,
 		&service.BusinessID,
@@ -142,11 +157,14 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 		&service.Description,
 		&service.DurationMinutes,
 		&service.Price,
-		&service.ImageID, // pgtype.UUID handles NULL automatically
 		&service.IsActive,
+		&service.ImageID, // Changed to pgtype.UUID to handle NULL
 		&service.CreatedAt,
-		&service.UpdatedAt,
+		&imageObjectName, // Scan the object_name into the new variable
 	)
+
+	// Assign the scanned object_name to the service struct field after scanning
+	service.ImageObjectName = imageObjectName
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
