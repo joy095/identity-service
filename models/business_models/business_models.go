@@ -35,6 +35,7 @@ type Business struct {
 	UpdatedAt  time.Time   `json:"updatedAt"`
 	IsActive   bool        `json:"isActive"`
 	OwnerID    uuid.UUID   `json:"ownerId"`
+	ObjectName *string     `db:"object_name,omitempty"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
@@ -130,15 +131,35 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 	logger.InfoLogger.Infof("Attempting to fetch business with ID: %s", id)
 
 	business := &Business{}
-	query := `
-		SELECT
-			id, name, category, address, city, state, country,
-			postal_code, tax_id, about, location_latitude, location_longitude,
-			created_at, updated_at, is_active, owner_id, image_id
-		FROM
-			businesses
-		WHERE
-			id = $1`
+	query := `SELECT
+	            b.id,
+	            b.name,
+	            b.category,
+	            b.address,
+	            b.city,
+	            b.state,
+	            b.country,
+	            b.postal_code,
+	            b.tax_id,
+	            b.about,
+	            b.location_latitude,
+	            b.location_longitude,
+	            b.created_at,
+	            b.updated_at,
+	            b.is_active,
+	            b.owner_id,
+	            b.image_id,
+	            CASE
+					WHEN b.image_id IS NOT NULL THEN i.object_name
+					ELSE NULL
+				END AS object_name -- THIS IS THE EXTRA COLUMN!
+			FROM
+				businesses AS b
+			LEFT JOIN
+				images AS i ON b.image_id = i.id
+			WHERE
+				b.id = $1;
+	`
 
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&business.ID,
@@ -158,6 +179,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		&business.IsActive,
 		&business.OwnerID,
 		&business.ImageID,
+		&business.ObjectName,
 	)
 
 	if err != nil {
@@ -218,93 +240,125 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 	return business, nil
 }
 
-// DeleteBusiness deletes a business record from the database by its ID.
-func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) error {
-	logger.InfoLogger.Infof("Attempting to delete business record with ID: %s", id)
-
-	query := `DELETE FROM businesses WHERE id = $1`
-
-	res, err := db.Exec(ctx, query, id)
+// DeleteBusiness deletes a business record from the database by its ID and from the image table if it exists.
+func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uuid.UUID) error {
+	tx, err := db.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete business %s from database: %v", id, err)
-		return fmt.Errorf("failed to delete business: %w", err)
+		return fmt.Errorf("failed to begin transaction for image deletion: %w", err)
+	}
+	defer tx.Rollback(ctx) // Rollback on error, unless committed
+
+	// 1. CRITICAL STEP: Nullify the image_id in the 'businesses' table
+	// This removes the foreign key reference that is causing the error.
+	_, err = tx.Exec(context.Background(), `
+		UPDATE businesses
+		SET image_id = NULL
+		WHERE image_id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to nullify image_id in businesses table for image %s: %v", imageID, err)
+		return fmt.Errorf("failed to nullify business image_id: %w", err)
+	}
+	logger.InfoLogger.Infof("Nullified image_id reference in businesses table for image %s", imageID)
+
+	// 2. Nullify the image_id in the 'services' table
+	// (Your logs show this is already happening, but it must be within this transaction)
+	_, err = tx.Exec(context.Background(), `
+		UPDATE services
+		SET image_id = NULL
+		WHERE image_id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to nullify image_id in services table for image %s: %v", imageID, err)
+		return fmt.Errorf("failed to nullify service image_id: %w", err)
+	}
+	logger.InfoLogger.Infof("Nullified image_id reference in services table for image %s", imageID)
+
+	// 3. Delete the image record from the 'images' table
+	// This step will now succeed because no other table references it anymore.
+	res, err := tx.Exec(context.Background(), `
+		DELETE FROM images
+		WHERE id = $1
+	`, imageID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to delete image record %s: %v", imageID, err)
+		return fmt.Errorf("failed to delete image record: %w", err)
 	}
 
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("business with ID %s not found for deletion", id)
+		logger.WarnLogger.Warnf("Image with ID %s not found in images table for deletion.", imageID)
+		// Consider returning an error if the image MUST exist for a successful deletion.
+		// For example, return fmt.Errorf("image record not found")
+	} else {
+		logger.InfoLogger.Infof("Successfully deleted image record %s from images table", imageID)
 	}
 
-	logger.InfoLogger.Infof("Business with ID %s deleted successfully", id)
-	return nil
+	// Commit the transaction if all steps were successful
+	return tx.Commit(context.Background())
 }
 
-// GetBusinessByID retrieves a single business by its ID.
-// This function was missing but is required by your controller.
-//
-//	func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
-//		business := &Business{}
-//		query := `SELECT id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, latitude, longitude, created_at, updated_at, is_active, owner_id FROM businesses WHERE id = $1`
-//		err := db.QueryRow(context.Background(), query, id).Scan(
-//			&business.ID,
-//			&business.Name,
-//			&business.Category,
-//			&business.Address,
-//			&business.City,
-//			&business.State,
-//			&business.Country,
-//			&business.PostalCode,
-//			&business.TaxID,
-//			&business.About,
-//			&business.ImageID,
-//			&business.Location.Latitude,
-//			&business.Location.Longitude,
-//			&business.CreatedAt,
-//			&business.UpdatedAt,
-//			&business.IsActive,
-//			&business.OwnerID,
-//		)
-//		if err != nil {
-//			return nil, err
-//		}
-//		return business, nil
-//	}
-//
 // GetAllBusinesses fetches all business records from the database, with optional pagination.
 // If limit is 0, no limit is applied. If offset is 0, no offset is applied.
 func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) ([]*Business, error) {
-	logger.InfoLogger.Info("Attempting to fetch all businesses from database")
+	logger.InfoLogger.Info("Attempting to fetch businesses from database with pagination")
 
 	businesses := []*Business{}
 
-	// Build query with placeholders
-	queryBuilder := `
-		SELECT
-			id, name, category, address, city, state, country,
-			postal_code, tax_id, about, location_latitude, location_longitude,
-			created_at, updated_at, is_active, owner_id
-		FROM
-			businesses
-		ORDER BY
-			created_at DESC`
+	// Base query including the LEFT JOIN and object_name
+	baseQuery := `
+        SELECT
+            b.id,
+            b.name,
+            b.category,
+            b.address,
+            b.city,
+            b.state,
+            b.country,
+            b.postal_code,
+            b.tax_id,
+            b.about,
+            b.location_latitude,
+            b.location_longitude,
+            b.created_at,
+            b.updated_at,
+            b.is_active,
+            b.owner_id,
+            b.image_id,
+            CASE
+                WHEN b.image_id IS NOT NULL THEN i.object_name
+                ELSE NULL
+            END AS object_name
+        FROM
+            businesses AS b
+        LEFT JOIN
+            images AS i ON b.image_id = i.id
+        ORDER BY
+            b.created_at DESC`
 
+	query := baseQuery
 	args := []interface{}{}
-	argCount := 0
+	placeholderNum := 1 // Start with $1 for first dynamic argument
 
-	if limit > 0 && offset > 0 {
-		queryBuilder += fmt.Sprintf(" LIMIT $%d OFFSET $%d", argCount+1, argCount+2)
-		args = append(args, limit, offset)
-	} else if limit > 0 {
-		queryBuilder += fmt.Sprintf(" LIMIT $%d", argCount+1)
+	// Conditionally add LIMIT and OFFSET clauses
+	// The controller ensures 'limit' will be > 0 (either user-defined or default).
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT $%d", placeholderNum)
 		args = append(args, limit)
-	} else if offset > 0 {
-		queryBuilder += fmt.Sprintf(" OFFSET $%d", argCount+1)
+		placeholderNum++
+	}
+	if offset > 0 {
+		query += fmt.Sprintf(" OFFSET $%d", placeholderNum)
 		args = append(args, offset)
+		placeholderNum++
 	}
 
-	rows, err := db.Query(ctx, queryBuilder, args...)
+	// Log the final query and arguments for debugging
+	logger.InfoLogger.Infof("Executing query: %s with args: %v", query, args)
+
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to query all businesses: %v", err)
-		return nil, fmt.Errorf("failed to retrieve all businesses: %w", err)
+		logger.ErrorLogger.Errorf("Failed to query businesses: %v", err)
+		return nil, fmt.Errorf("failed to retrieve businesses: %w", err)
 	}
 	defer rows.Close()
 
@@ -327,6 +381,8 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.UpdatedAt,
 			&business.IsActive,
 			&business.OwnerID,
+			&business.ImageID,
+			&business.ObjectName,
 		)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
@@ -336,70 +392,10 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 	}
 
 	if err = rows.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Error after iterating rows for all businesses: %v", err)
+		logger.ErrorLogger.Errorf("Error after iterating rows for businesses: %v", err)
 		return nil, fmt.Errorf("error during business row iteration: %w", err)
 	}
 
 	logger.InfoLogger.Infof("Fetched %d businesses successfully", len(businesses))
-	return businesses, nil
-}
-
-// GetBusinessesByOwnerID fetches all business records owned by a specific user ID.
-func GetBusinessesByOwnerID(ctx context.Context, db *pgxpool.Pool, ownerID uuid.UUID) ([]*Business, error) {
-	logger.InfoLogger.Infof("Attempting to fetch businesses for owner ID: %s", ownerID)
-
-	businesses := []*Business{}
-	query := `
-		SELECT
-			id, name, category, address, city, state, country,
-			postal_code, tax_id, about, location_latitude, location_longitude,
-			created_at, updated_at, is_active, owner_id
-		FROM
-			businesses
-		WHERE
-			owner_id = $1
-		ORDER BY
-			created_at DESC` // Order by creation time, newest first
-
-	rows, err := db.Query(ctx, query, ownerID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to query businesses for owner %s: %v", ownerID, err)
-		return nil, fmt.Errorf("failed to retrieve businesses by owner ID: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		business := &Business{}
-		err := rows.Scan(
-			&business.ID,
-			&business.Name,
-			&business.Category,
-			&business.Address,
-			&business.City,
-			&business.State,
-			&business.Country,
-			&business.PostalCode,
-			&business.TaxID,
-			&business.About,
-			&business.Location.Latitude,
-			&business.Location.Longitude,
-			&business.CreatedAt,
-			&business.UpdatedAt,
-			&business.IsActive,
-			&business.OwnerID,
-		)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to scan business row for owner %s: %v", ownerID, err)
-			return nil, fmt.Errorf("failed to scan business data for owner: %w", err)
-		}
-		businesses = append(businesses, business)
-	}
-
-	if err = rows.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Error after iterating rows for businesses by owner %s: %v", ownerID, err)
-		return nil, fmt.Errorf("error during business row iteration by owner: %w", err)
-	}
-
-	logger.InfoLogger.Infof("Fetched %d businesses for owner ID %s successfully", len(businesses), ownerID)
 	return businesses, nil
 }

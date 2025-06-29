@@ -73,7 +73,7 @@ func CreateService(c *gin.Context) {
 	service.IsActive = req.IsActive
 	service.ImageID = pgtype.UUID{Bytes: imageID, Valid: true}
 
-	createdService, err := service_models.CreateServiceModel(db.DB, service)
+	createdService, err := service_models.CreateServiceModel(c.Request.Context(), db.DB, service)
 	if err != nil {
 		HandleServiceCreationError(c, err)
 		return

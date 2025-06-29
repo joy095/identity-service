@@ -9,9 +9,8 @@ import (
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/utils"
+	"github.com/redis/go-redis/v9"
 )
-
-var ctx = context.Background()
 
 // Define durations for OTPs and tokens
 const (
@@ -39,9 +38,10 @@ var ErrOTPNotFound = errors.New("otp not found or expired")
 // --- OTP Storage and Retrieval Functions ---
 
 // StoreOTP hash in Redis with expiration
-func StoreOTP(key string, otp string) error {
+func StoreOTP(ctx context.Context, key string, otp string) error {
 	hashedOTP := utils.HashOTP(otp)
-	err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, 10*time.Minute).Err()
+	err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, OTP_EXPIRATION_MINUTES*time.Minute).Err()
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store OTP with key %s: %v", key, err)
 		return fmt.Errorf("failed to store OTP: %w", err)
@@ -50,10 +50,10 @@ func StoreOTP(key string, otp string) error {
 }
 
 // RetrieveOTP hash from Redis
-func RetrieveOTP(key string) (string, error) {
+func RetrieveOTP(ctx context.Context, key string) (string, error) {
 	storedHash, err := redisclient.GetRedisClient().Get(ctx, key).Result()
 	if err != nil {
-		if err.Error() == "redis: nil" {
+		if errors.Is(err, redis.Nil) {
 			return "", ErrOTPNotFound
 		}
 		logger.ErrorLogger.Errorf("Failed to retrieve OTP for key %s: %v", key, err)
@@ -63,7 +63,7 @@ func RetrieveOTP(key string) (string, error) {
 }
 
 // ClearOTP from Redis
-func ClearOTP(key string) error {
+func ClearOTP(ctx context.Context, key string) error {
 	err := redisclient.GetRedisClient().Del(ctx, key).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to clear OTP for key %s: %v", key, err)

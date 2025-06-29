@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/config"
 	"github.com/joy095/identity/config/db"
@@ -27,21 +26,6 @@ var embeddedEmailTemplates embed.FS
 func init() {
 	logger.InitLoggers()
 	config.LoadEnv()
-}
-
-// Updated request struct to make image required
-type TestCreateServiceRequest struct {
-	BusinessID      string  `form:"businessId" binding:"required"`
-	Name            string  `form:"name" binding:"required"`
-	Description     string  `form:"description,omitempty"`
-	DurationMinutes int     `form:"durationMinutes" binding:"required"`
-	Price           float64 `form:"price" binding:"required"`
-	IsActive        bool    `form:"isActive,omitempty"`
-}
-
-// Corrected JSON tag to match Python's 'image_id'
-type ImageUploadResponse struct {
-	ImageID uuid.UUID `json:"image_id"`
 }
 
 func main() {

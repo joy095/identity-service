@@ -1,4 +1,4 @@
-// models/service.go
+// models/service_models
 package service_models
 
 import (
@@ -75,7 +75,7 @@ func NewServiceWithImage(
 }
 
 // CreateServiceModel inserts a new service record into the database.
-func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
+func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service) (*Service, error) {
 	logger.InfoLogger.Info("Attempting to create service record in database")
 
 	// Log the ImageID details for debugging
@@ -94,7 +94,7 @@ func CreateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
         )`
 
-	_, err := db.Exec(context.Background(), query,
+	_, err := db.Exec(ctx, query,
 		service.ID,
 		service.BusinessID,
 		service.Name,

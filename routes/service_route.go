@@ -25,6 +25,6 @@ func RegisterServicesRoutes(router *gin.Engine) {
 			}
 		})
 		protected.POST("/create-service", middleware.CombinedRateLimiter("create-service", "5-30s", "20-5m"), service_handlers.CreateService)
-		protected.POST("/update-service/:id", middleware.CombinedRateLimiter("create-service", "5-30s", "20-5m"), service_handlers.UpdateService)
+		protected.POST("/update-service/:id", middleware.CombinedRateLimiter("update-service/:id", "5-30s", "20-5m"), service_handlers.UpdateService)
 	}
 }

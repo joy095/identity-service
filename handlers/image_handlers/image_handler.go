@@ -43,7 +43,11 @@ func HandleImageUpload(c *gin.Context, authHeader string) (uuid.UUID, error) {
 
 	// Build the request for the POST /upload-image/ endpoint
 	pythonServerURL := getServiceURL() + "/upload-image/"
-	httpReq, _ := http.NewRequest("POST", pythonServerURL, body)
+	httpReq, err := http.NewRequest("POST", pythonServerURL, body)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create HTTP request: %v", err)
+		return uuid.Nil, fmt.Errorf("failed to create request")
+	}
 
 	return sendRequestToImageService(httpReq, contentType, authHeader)
 }
