@@ -4,6 +4,7 @@ package service_models
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ type Service struct {
 	IsActive        bool        `json:"isActive"`
 	CreatedAt       time.Time   `json:"createdAt"`
 	UpdatedAt       time.Time   `json:"updatedAt"`
-	ImageObjectName pgtype.Text `json:"image_object_name"`
+	ObjectName      *string     `json:"object_name"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -163,9 +164,6 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 		&imageObjectName, // Scan the object_name into the new variable
 	)
 
-	// Assign the scanned object_name to the service struct field after scanning
-	service.ImageObjectName = imageObjectName
-
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			logger.InfoLogger.Infof("Service with ID %s not found", id)
@@ -177,6 +175,98 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 
 	logger.InfoLogger.Infof("Service with ID %s fetched successfully", id)
 	return service, nil
+}
+
+func GetAllServicesModel(db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
+	logger.InfoLogger.Info("Attempting to fetch all services for business ID: " + businessID.String())
+
+	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
+
+	query := `
+		SELECT
+			s.id,
+			s.business_id,
+			s.name,
+			s.description,
+			s.duration_minutes,
+			s.price,
+			s.image_id,
+			s.is_active,
+			s.created_at,
+			s.updated_at,
+			CASE
+				WHEN s.image_id IS NOT NULL THEN i.object_name
+				ELSE NULL
+			END AS object_name
+		FROM
+			services AS s
+		LEFT JOIN
+			images AS i ON s.image_id = i.id
+		WHERE
+			s.business_id = $1
+		ORDER BY s.name ASC`
+
+	rows, err := db.Query(context.Background(), query, businessID)
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to execute query to fetch services: " + err.Error())
+		return nil, fmt.Errorf("failed to fetch services from database: %w", err)
+	}
+	defer rows.Close()
+
+	var services []Service
+	for rows.Next() {
+		var service Service
+		var imageID pgtype.UUID    // For scanning nullable UUID
+		var objectName pgtype.Text // For scanning nullable string
+
+		err := rows.Scan(
+			&service.ID,
+			&service.BusinessID,
+			&service.Name,
+			&service.Description,
+			&service.DurationMinutes,
+			&service.Price,
+			&imageID,
+			&service.IsActive,
+			&service.CreatedAt,
+			&service.UpdatedAt,
+			&objectName, // Scan into pgtype.Text
+		)
+		if err != nil {
+			logger.ErrorLogger.Error("Failed to scan service row: " + err.Error())
+			return nil, fmt.Errorf("failed to scan service row: %w", err)
+		}
+
+		// Handle nullable ImageID
+		if imageID.Valid {
+			service.ImageID = pgtype.UUID{Bytes: imageID.Bytes, Valid: true}
+		} else {
+			service.ImageID = pgtype.UUID{Valid: false}
+		}
+
+		// Handle nullable ObjectName and construct full URL
+		if objectName.Valid {
+			fullPath := cloudflareImageBaseURL + "/" + objectName.String
+			service.ObjectName = &fullPath
+		} else {
+			// If object_name is NULL, set to an empty string pointer or nil, based on your preference
+			// Setting to nil is generally cleaner if it represents "no image"
+			service.ObjectName = nil
+			// Or if you prefer an empty string:
+			// emptyStr := ""
+			// service.ObjectName = &emptyStr
+		}
+
+		services = append(services, service)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Error("Error after iterating through service rows: " + err.Error())
+		return nil, fmt.Errorf("error during service row iteration: %w", err)
+	}
+
+	logger.InfoLogger.Info("Successfully fetched services for business ID: " + businessID.String())
+	return services, nil
 }
 
 // GetServicesByBusinessID fetches all services for a given business ID.

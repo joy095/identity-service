@@ -3,6 +3,7 @@ package business_models
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -130,6 +131,8 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 	logger.InfoLogger.Infof("Attempting to fetch business with ID: %s", id)
 
+	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
+
 	business := &Business{}
 	query := `SELECT
 	            b.id,
@@ -181,6 +184,14 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		&business.ImageID,
 		&business.ObjectName,
 	)
+
+	if business.ObjectName != nil {
+		fullPath := cloudflareImageBaseURL + "/" + *business.ObjectName
+		business.ObjectName = &fullPath
+	} else {
+		emptyStr := ""
+		business.ObjectName = &emptyStr
+	}
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", id, err)
@@ -362,6 +373,8 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 	}
 	defer rows.Close()
 
+	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
+
 	for rows.Next() {
 		business := &Business{}
 		err := rows.Scan(
@@ -388,6 +401,15 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
 			return nil, fmt.Errorf("failed to scan business data: %w", err)
 		}
+
+		if business.ObjectName != nil {
+			fullPath := cloudflareImageBaseURL + "/" + *business.ObjectName
+			business.ObjectName = &fullPath
+		} else {
+			emptyStr := ""
+			business.ObjectName = &emptyStr
+		}
+
 		businesses = append(businesses, business)
 	}
 

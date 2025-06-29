@@ -37,6 +37,41 @@ type ImageUploadResponse struct {
 	ImageID uuid.UUID `json:"image_id"`
 }
 
+func (sc *ServiceController) GetAllServiceByBusiness(c *gin.Context) {
+	logger.InfoLogger.Info("GetAllServiceByBusiness controller called")
+
+	businessIDStr := strings.TrimSpace(c.Param("businessId"))
+
+	if businessIDStr == "" {
+		logger.ErrorLogger.Error("Business ID is required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Business ID is required"})
+		return
+	}
+
+	businessID, err := uuid.Parse(businessIDStr)
+	if err != nil {
+		logger.ErrorLogger.Error("Invalid business ID format: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+		return
+	}
+
+	services, err := service_models.GetAllServicesModel(db.DB, businessID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.ErrorLogger.Error("Service not found: " + err.Error())
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+
+		} else {
+			logger.ErrorLogger.Error("Failed to fetch service: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
+
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"service": services})
+}
+
 func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	logger.InfoLogger.Info("GetServiceByID controller called")
 
