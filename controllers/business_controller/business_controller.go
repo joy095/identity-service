@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,11 @@ import (
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/utils"
+)
+
+const (
+	DEFAULT_BUSINESS_FETCH_LIMIT = 50  // Default number of businesses to return if limit is not specified (for lazy fetching)
+	MAX_BUSINESS_FETCH_LIMIT     = 100 // Maximum number of businesses allowed in a single request
 )
 
 // BusinessController holds dependencies for business-related operations.
@@ -153,32 +159,53 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	})
 }
 
-// GetBusinesses handles fetching all businesses or businesses owned by the authenticated user.
-func (bc *BusinessController) GetBusinesses(c *gin.Context) {
+// GetBusinesses handles fetching all businesses or businesses with pagination.
+func (bc *BusinessController) GetAllBusinesses(c *gin.Context) {
 	logger.InfoLogger.Info("GetBusinesses controller called")
 
-	// Get the authenticated user's ID from the context
-	ownerID, err := utils.GetUserIDFromContext(c)
+	// Parse 'limit' from query parameter, default to DEFAULT_BUSINESS_FETCH_LIMIT
+	limitStr := c.DefaultQuery("limit", strconv.Itoa(DEFAULT_BUSINESS_FETCH_LIMIT))
+	limit, err := strconv.Atoi(limitStr)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get user ID from context: %v", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		logger.ErrorLogger.Errorf("Invalid limit parameter: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid 'limit' parameter. Must be an integer."})
 		return
 	}
 
-	businesses, err := business_models.GetBusinessesByOwnerID(c.Request.Context(), bc.DB, ownerID)
+	// Enforce minimum limit (e.g., no negative or zero limits)
+	if limit < 1 {
+		logger.ErrorLogger.Warnf("Limit parameter too low (%d). Setting to default limit (%d).", limit, DEFAULT_BUSINESS_FETCH_LIMIT)
+		limit = DEFAULT_BUSINESS_FETCH_LIMIT
+	}
+
+	// Enforce maximum limit
+	if limit > MAX_BUSINESS_FETCH_LIMIT {
+		logger.ErrorLogger.Warnf("Limit parameter exceeds maximum allowed (%d > %d). Setting to max limit.", limit, MAX_BUSINESS_FETCH_LIMIT)
+		limit = MAX_BUSINESS_FETCH_LIMIT
+	}
+
+	// Parse 'offset' from query parameter, default to 0
+	offsetStr := c.DefaultQuery("offset", "0")
+	offset, err := strconv.Atoi(offsetStr)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to retrieve businesses for user %s: %v", ownerID, err)
+		logger.ErrorLogger.Errorf("Invalid offset parameter: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid 'offset' parameter. Must be an integer."})
+		return
+	}
+	// Ensure offset is not negative
+	if offset < 0 {
+		logger.ErrorLogger.Warnf("Negative offset parameter received (%d). Setting to 0.", offset)
+		offset = 0
+	}
+
+	businesses, err := business_models.GetAllBusinesses(c.Request.Context(), bc.DB, limit, offset)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to retrieve businesses: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
 		return
 	}
 
-	if len(businesses) == 0 {
-		logger.InfoLogger.Infof("No businesses found for user %s", ownerID)
-		c.JSON(http.StatusNotFound, gin.H{"message": "No businesses found for this user."})
-		return
-	}
-
-	logger.InfoLogger.Infof("Successfully retrieved %d businesses for user %s", len(businesses), ownerID)
+	logger.InfoLogger.Infof("Successfully retrieved %d businesses", len(businesses))
 	c.JSON(http.StatusOK, gin.H{"businesses": businesses})
 }
 
@@ -194,14 +221,6 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 		return
 	}
 
-	// Get the authenticated user's ID from the context
-	ownerID, err := utils.GetUserIDFromContext(c)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get user ID from context: %v", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
 	business, err := business_models.GetBusinessByID(bc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to retrieve business %s: %v", businessID, err)
@@ -209,14 +228,7 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 		return
 	}
 
-	// Ensure the retrieved business belongs to the authenticated user
-	if business.OwnerID != ownerID {
-		logger.WarnLogger.Warnf("User %s attempted to access business %s not owned by them", ownerID, businessID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to view this business"})
-		return
-	}
-
-	logger.InfoLogger.Infof("Successfully retrieved business %s for user %s", businessID, ownerID)
+	logger.InfoLogger.Infof("Successfully retrieved business %s ", businessID)
 	c.JSON(http.StatusOK, gin.H{"business": business})
 }
 

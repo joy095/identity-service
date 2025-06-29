@@ -10,12 +10,14 @@ import (
 func RegisterBusinessRoutes(router *gin.Engine) {
 	businessController := business_controller.NewBusinessController(db.DB)
 
+	// Public routes
+	router.GET("/business", businessController.GetAllBusinesses)
+	router.GET("/business/:id", businessController.GetBusiness)
+
 	// Protected routes
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
-		protected.GET("/business", businessController.GetBusinesses)
-		protected.GET("/business/:id", businessController.GetBusiness)
 		protected.POST("/business", businessController.CreateBusiness)
 		protected.PUT("/business/:id", businessController.UpdateBusiness)
 		protected.PUT("/business-image/:id", businessController.ReplaceBusinessImage)
