@@ -73,8 +73,12 @@ func HandleImageReplacement(c *gin.Context, authHeader string, existingImageID u
 
 	// Build the request for the PUT /replace-image/{image_id} endpoint
 	pythonServerURL := getServiceURL() + "/replace-image/" + existingImageID.String()
-	httpReq, _ := http.NewRequest("PUT", pythonServerURL, body)
-
+	httpReq, err := http.NewRequest("PUT", pythonServerURL, body)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create HTTP request for image replacement: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create replacement request"})
+		return uuid.Nil, err
+	}
 	return sendRequestToImageService(httpReq, contentType, authHeader)
 }
 

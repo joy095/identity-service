@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -145,7 +146,7 @@ func (s *SlotBookingService) ReleaseSlotReservation(ctx context.Context, slotID,
 // BookSlot handles the entire slot booking workflow.
 // It returns the created Booking object and the Razorpay Order ID for the frontend.
 func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingRequest) (*booking_models.Booking, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	logger.InfoLogger.Infof("Initiating slot booking for slot %s, service %s, customer %s", req.SlotID, req.ServiceID, req.CustomerID)
@@ -184,8 +185,10 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 
 	// 4. Initiate Razorpay Payment Order
 	amountInPaise := int(service.Price * 100)
-	currency := "INR" // Assuming INR for India
-
+	currency := os.Getenv("PAYMENT_CURRENCY")
+	if currency == "" {
+		currency = "INR" // Default to INR
+	}
 	orderData := map[string]interface{}{
 		"amount":   amountInPaise,
 		"currency": currency,

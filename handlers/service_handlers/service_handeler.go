@@ -143,7 +143,15 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, "image", fileHeader.Filename))
 	h.Set("Content-Type", originalContentType)
 
-	part, _ := writer.CreatePart(h)
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
+		return nil, ""
+	}
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
+		return nil, ""
+	}
 	io.Copy(part, file)
 	writer.Close()
 

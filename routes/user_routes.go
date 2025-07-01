@@ -44,17 +44,5 @@ func RegisterUserRoutes(router *gin.Engine) {
 		protected.PATCH("/update-profile", middleware.CombinedRateLimiter("update-profile", "5-1m", "10-5m"), userController.UpdateProfile)
 		protected.POST("/update-email", middleware.CombinedRateLimiter("update-email", "5-1m", "30-60m"), userController.UpdateEmailWithPassword)
 		protected.POST("/verify-email-update-otp", middleware.CombinedRateLimiter("verify-email-update-otp", "5-1m", "30-60m"), userController.VerifyEmailChangeOTP)
-
-		// REMOVED: User retrieval by username - this was the security issue
-		// protected.GET("/user/:username", middleware.NewRateLimiter("30-1m", "user/:username"), userController.GetUserByUsername)
-	}
-
-	// Optional: Public routes for viewing basic user info (if needed for your app)
-	// This should only return PUBLIC information, not sensitive data
-	public := router.Group("/public")
-	{
-		// Only return non-sensitive user info like username, display name, etc.
-		// DO NOT return email, phone, or other private information
-		public.GET("/user/:username", middleware.NewRateLimiter("30-1m", "public-user"), userController.GetPublicUserProfile)
 	}
 }

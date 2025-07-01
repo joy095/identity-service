@@ -849,32 +849,6 @@ func (uc *UserController) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 
-// GetUserByUsername retrieves a user by username
-// func (uc *UserController) GetUserByUsername(c *gin.Context) {
-// 	logger.InfoLogger.Info("GetUserByUsername function called")
-
-// 	username := c.Param("username")
-
-// 	user, err := user_models.GetUserByUsername(db.DB, username)
-// 	if err != nil {
-// 		logger.ErrorLogger.Error("User not found")
-// 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-// 		return
-// 	}
-
-// 	c.JSON(http.StatusOK, gin.H{
-// 		"user": gin.H{
-// 			"id":        user.ID,
-// 			"username":  user.Username,
-// 			"email":     user.Email,
-// 			"firstName": user.FirstName,
-// 			"lastName":  user.LastName,
-// 		},
-// 	})
-
-// 	logger.InfoLogger.Info("User retrieved successfully")
-// }
-
 // GetUserByID retrieves a user by ID
 func (uc *UserController) GetUserByID(c *gin.Context) {
 	logger.InfoLogger.Info("GetUserByID function called")
@@ -936,85 +910,6 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 			"lastName":  user.LastName,
 			"createdAt": user.CreatedAt,
 			"updatedAt": user.UpdatedAt,
-		},
-	})
-}
-
-// GetPublicUserProfile returns only public information about a user
-// This is for cases where users need to see basic info about other users
-func (uc *UserController) GetPublicUserProfile(c *gin.Context) {
-	logger.InfoLogger.Info("GetPublicUserProfile called")
-
-	username := c.Param("username")
-	if username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
-		return
-	}
-
-	// Get user from database
-	user, err := user_models.GetUserByUsername(db.DB, username)
-	if err != nil {
-		logger.ErrorLogger.Errorf("User not found: %v", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Return ONLY public information - NO sensitive data
-	c.JSON(http.StatusOK, gin.H{
-		"user": gin.H{
-			"id":        user.ID,
-			"username":  user.Username,
-			"firstName": user.FirstName,
-			"lastName":  user.LastName,
-			// DO NOT include: email, phone, addresses, etc.
-		},
-	})
-}
-
-// REMOVE or SECURE the existing GetUserByUsername method
-// If you need to keep it, it should have proper authorization logic
-func (uc *UserController) GetUserByUsername(c *gin.Context) {
-	logger.InfoLogger.Info("GetUserByUsername called")
-
-	// Get authenticated user's ID from token
-	userIDFromToken, exists := c.Get("user_id")
-	if !exists {
-		logger.ErrorLogger.Error("User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	username := c.Param("username")
-	if username == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Username is required"})
-		return
-	}
-
-	// Get the requested user
-	requestedUser, err := user_models.GetUserByUsername(db.DB, username)
-	if err != nil {
-		logger.ErrorLogger.Errorf("User not found: %v", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// CRITICAL: Only allow users to access their own profile
-	if requestedUser.ID.String() != userIDFromToken {
-		logger.ErrorLogger.Errorf("Unauthorized access attempt: user %s trying to access %s", userIDFromToken, requestedUser.ID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied: You can only access your own profile"})
-		return
-	}
-
-	// If it's their own profile, return full information
-	c.JSON(http.StatusOK, gin.H{
-		"user": gin.H{
-			"id":        requestedUser.ID,
-			"username":  requestedUser.Username,
-			"email":     requestedUser.Email,
-			"firstName": requestedUser.FirstName,
-			"lastName":  requestedUser.LastName,
-			"createdAt": requestedUser.CreatedAt,
-			"updatedAt": requestedUser.UpdatedAt,
 		},
 	})
 }
