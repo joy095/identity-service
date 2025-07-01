@@ -12,7 +12,7 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 
 	// Public routes
 	router.GET("/business", businessController.GetAllBusinesses)
-	router.GET("/business/:id", businessController.GetBusiness)
+	router.GET("/business/:publicId", businessController.GetBusiness)
 
 	// Protected routes
 	protected := router.Group("/")

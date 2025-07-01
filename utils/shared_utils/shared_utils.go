@@ -2,8 +2,10 @@ package shared_utils
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 
 	redisclient "github.com/joy095/identity/config/redis"
@@ -70,4 +72,19 @@ func ClearOTP(ctx context.Context, key string) error {
 		return fmt.Errorf("failed to clear OTP: %w", err)
 	}
 	return nil
+}
+
+const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+func GenerateTinyID(length int) string {
+	result := make([]byte, length)
+	for i := 0; i < length; i++ {
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to generate random number: %v", err)
+			return ""
+		}
+		result[i] = charset[num.Int64()]
+	}
+	return string(result)
 }

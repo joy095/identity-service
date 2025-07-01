@@ -37,12 +37,13 @@ type Business struct {
 	IsActive   bool        `json:"isActive"`
 	OwnerID    uuid.UUID   `json:"ownerId"`
 	ObjectName *string     `db:"object_name,omitempty"`
+	PublicId   *string     `json:"publicId"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
 func NewBusiness(
 	name, category, address, city, state, country, postalCode, taxID,
-	about string, lat, long float64, ownerUserID, imageID uuid.UUID) (*Business, error) {
+	about, publicId string, lat, long float64, ownerUserID, imageID uuid.UUID) (*Business, error) {
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -66,15 +67,16 @@ func NewBusiness(
 		UpdatedAt:  now,
 		IsActive:   true,
 		OwnerID:    ownerUserID,
+		PublicId:   &publicId,
 	}, nil
 }
 
 // CreateBusiness inserts a new business record into the database.
 func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (*Business, error) {
 	query := `
-        INSERT INTO businesses (id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-        RETURNING id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id
+        INSERT INTO businesses (id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id, public_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        RETURNING id, name, category, address, city, state, country, postal_code, tax_id, about, image_id, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id, public_id
     `
 	logger.InfoLogger.Infof("Executing query to create business: %s", business.Name)
 
@@ -98,6 +100,7 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 		business.UpdatedAt,
 		business.IsActive,
 		business.OwnerID,
+		business.PublicId,
 	).Scan(
 		&business.ID,
 		&business.Name,
@@ -116,6 +119,7 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 		&business.UpdatedAt,
 		&business.IsActive,
 		&business.OwnerID,
+		&business.PublicId,
 	)
 
 	if err != nil {
@@ -127,7 +131,7 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 	return business, nil
 }
 
-// GetBusinessByID fetches a business record by its ID.
+// GetBusinessByID fetches a business record by its UUID ID (internal use).
 func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 	logger.InfoLogger.Infof("Attempting to fetch business with ID: %s", id)
 
@@ -151,6 +155,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 	            b.updated_at,
 	            b.is_active,
 	            b.owner_id,
+				b.public_id,
 	            b.image_id,
 	            CASE
 					WHEN b.image_id IS NOT NULL THEN i.object_name
@@ -181,6 +186,7 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		&business.UpdatedAt,
 		&business.IsActive,
 		&business.OwnerID,
+		&business.PublicId,
 		&business.ImageID,
 		&business.ObjectName,
 	)
@@ -199,6 +205,83 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 	}
 
 	logger.InfoLogger.Infof("Business with ID %s fetched successfully", id)
+	return business, nil
+}
+
+// GetBusinessByPublicId fetches a business record by its public ID (client-facing).
+func GetBusinessByPublicId(db *pgxpool.Pool, publicId string) (*Business, error) {
+	logger.InfoLogger.Infof("Attempting to fetch business with public ID: %s", publicId)
+
+	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
+
+	business := &Business{}
+	query := `SELECT
+	            b.id,
+	            b.name,
+	            b.category,
+	            b.address,
+	            b.city,
+	            b.state,
+	            b.country,
+	            b.postal_code,
+	            b.tax_id,
+	            b.about,
+	            b.location_latitude,
+	            b.location_longitude,
+	            b.created_at,
+	            b.updated_at,
+	            b.is_active,
+	            b.owner_id,
+				b.public_id,
+	            b.image_id,
+	            CASE
+					WHEN b.image_id IS NOT NULL THEN i.object_name
+					ELSE NULL
+				END AS object_name -- THIS IS THE EXTRA COLUMN!
+			FROM
+				businesses AS b
+			LEFT JOIN
+				images AS i ON b.image_id = i.id
+			WHERE
+				b.public_id = $1;
+	`
+
+	err := db.QueryRow(context.Background(), query, publicId).Scan(
+		&business.ID,
+		&business.Name,
+		&business.Category,
+		&business.Address,
+		&business.City,
+		&business.State,
+		&business.Country,
+		&business.PostalCode,
+		&business.TaxID,
+		&business.About,
+		&business.Location.Latitude,
+		&business.Location.Longitude,
+		&business.CreatedAt,
+		&business.UpdatedAt,
+		&business.IsActive,
+		&business.OwnerID,
+		&business.PublicId, // Need to process public ID before last ImageID(UUID)
+		&business.ImageID,
+		&business.ObjectName,
+	)
+
+	if business.ObjectName != nil {
+		fullPath := cloudflareImageBaseURL + "/" + *business.ObjectName
+		business.ObjectName = &fullPath
+	} else {
+		emptyStr := ""
+		business.ObjectName = &emptyStr
+	}
+
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to fetch business with public ID %s: %v", publicId, err)
+		return nil, fmt.Errorf("business not found or database error: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Business with public ID %s fetched successfully", publicId)
 	return business, nil
 }
 
@@ -239,7 +322,7 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.Location.Longitude,
 		business.UpdatedAt,
 		business.IsActive,
-		business.ImageID, // <-- ADDED: Update the image_id
+		business.ImageID,
 	).Scan(&id)
 
 	if err != nil {
@@ -251,7 +334,7 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 	return business, nil
 }
 
-// DeleteBusiness deletes a business record from the database by its ID and from the image table if it exists.
+// DeleteImageAndReferences deletes a business record from the database by its ID and from the image table if it exists.
 func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uuid.UUID) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -261,7 +344,7 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 
 	// 1. CRITICAL STEP: Nullify the image_id in the 'businesses' table
 	// This removes the foreign key reference that is causing the error.
-	_, err = tx.Exec(context.Background(), `
+	_, err = tx.Exec(ctx, `
 		UPDATE businesses
 		SET image_id = NULL
 		WHERE image_id = $1
@@ -334,6 +417,7 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
             b.updated_at,
             b.is_active,
             b.owner_id,
+			b.public_id,
             b.image_id,
             CASE
                 WHEN b.image_id IS NOT NULL THEN i.object_name
@@ -394,6 +478,7 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.UpdatedAt,
 			&business.IsActive,
 			&business.OwnerID,
+			&business.PublicId, // Need to process public ID before last ImageID(UUID)
 			&business.ImageID,
 			&business.ObjectName,
 		)

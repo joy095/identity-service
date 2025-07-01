@@ -43,7 +43,7 @@ func main() {
 	badwords.LoadBadWords("badwords/en.txt")
 	logger.InfoLogger.Info("Bad words loaded successfully!")
 
-	r := gin.New()
+	r := gin.Default()
 	r.Use(gin.Recovery())
 	r.Use(cors.CorsMiddleware())
 

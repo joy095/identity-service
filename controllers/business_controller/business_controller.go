@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/utils"
+	"github.com/joy095/identity/utils/shared_utils"
 )
 
 const (
@@ -54,6 +56,7 @@ type CreateBusinessRequest struct {
 	About      string  `form:"about,omitempty"`
 	Latitude   float64 `form:"latitude" binding:"omitempty,min=-90,max=90"`
 	Longitude  float64 `form:"longitude" binding:"omitempty,min=-180,max=180"`
+	PublicId   string  `form:"publicId"`
 }
 
 // UpdateBusinessRequest remains the same as it uses JSON.
@@ -122,6 +125,12 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		return
 	}
 
+	// Sanitize name: lowercase, replace spaces with hyphens, remove special chars
+	sanitizedName := strings.ToLower(req.Name)
+	sanitizedName = strings.ReplaceAll(sanitizedName, " ", "-")
+	sanitizedName = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(sanitizedName, "")
+	PublicId := sanitizedName + "-" + shared_utils.GenerateTinyID(8)
+
 	// Create a business_models.Business instance from the request data
 	business, err := business_models.NewBusiness(
 		req.Name,
@@ -133,10 +142,11 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		req.PostalCode,
 		req.TaxID,
 		req.About,
+		PublicId,
 		req.Latitude,
 		req.Longitude,
 		userID,
-		imageID, // Pass the new imageID
+		imageID,
 	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create business instance: %v", err)
@@ -213,15 +223,15 @@ func (bc *BusinessController) GetAllBusinesses(c *gin.Context) {
 func (bc *BusinessController) GetBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("GetBusiness controller called")
 
-	businessIDStr := c.Param("id")
-	businessID, err := uuid.Parse(businessIDStr)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
-		return
-	}
+	businessID := c.Param("publicId") // Extract publicId
+	// businessID, err := uuid.Parse(businessIDStr)
+	// if err != nil {
+	// 	logger.ErrorLogger.Errorf("Invalid business ID format: %v", err)
+	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+	// 	return
+	// }
 
-	business, err := business_models.GetBusinessByID(bc.DB, businessID)
+	business, err := business_models.GetBusinessByPublicId(bc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to retrieve business %s: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
