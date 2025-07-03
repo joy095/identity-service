@@ -28,6 +28,11 @@ func NewWorkingHourController(db *pgxpool.Pool) *WorkingHourController {
 	}
 }
 
+const (
+	DEFAULT_OPEN_TIME  = "09:00:00"
+	DEFAULT_CLOSE_TIME = "17:00:00"
+)
+
 // CreateWorkingHourRequest represents the expected JSON payload for creating a working hour slot.
 type CreateWorkingHourRequest struct {
 	BusinessID uuid.UUID `json:"businessId" binding:"required"`
@@ -43,6 +48,29 @@ type UpdateWorkingHourRequest struct {
 	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty,datetime=15:04:05"`
 	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty,datetime=15:04:05"`
 	IsClosed  *bool   `json:"isClosed,omitempty"`
+}
+
+// DayWorkingHourRequest represents a working hour request for a specific day (without BusinessID)
+type DayWorkingHourRequest struct {
+	DayOfWeek string `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
+	OpenTime  string `json:"openTime" binding:"required,datetime=15:04:05"`
+	CloseTime string `json:"closeTime" binding:"required,datetime=15:04:05"`
+	IsClosed  bool   `json:"isClosed"`
+}
+
+// BulkUpdateWorkingHoursRequest represents the expected JSON payload for bulk updating/upserting working hour slots.
+type BulkUpdateWorkingHoursRequest struct {
+	BusinessID uuid.UUID               `json:"businessId" binding:"required"`
+	Days       []DayWorkingHourRequest `json:"days" binding:"required,min=1"` // Changed to use DayWorkingHourRequest
+}
+
+// InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
+type InitializeWorkingHoursRequest struct {
+	BusinessID         uuid.UUID               `json:"businessId" binding:"required"`
+	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
+	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
+	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
+	InitializeWeekends bool                    `json:"initializeWeekends"`
 }
 
 // validateWorkingHoursTimes ensures open_time < close_time if not closed
@@ -69,29 +97,6 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 	}
 	logger.InfoLogger.Debugf("Working hours time validation passed for open: %s, close: %s", openTimeStr, closeTimeStr)
 	return nil
-}
-
-// BulkUpdateWorkingHoursRequest represents the expected JSON payload for bulk updating/upserting working hour slots.
-type BulkUpdateWorkingHoursRequest struct {
-	BusinessID uuid.UUID                  `json:"businessId" binding:"required"`
-	Days       []CreateWorkingHourRequest `json:"days" binding:"required,min=1"` // Array of working hour definitions
-}
-
-// InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
-// DayWorkingHourRequest represents a working hour request for a specific day
-type DayWorkingHourRequest struct {
-	DayOfWeek string `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime  string `json:"openTime" binding:"required,datetime=15:04:05"`
-	CloseTime string `json:"closeTime" binding:"required,datetime=15:04:05"`
-	IsClosed  bool   `json:"isClosed"`
-}
-
-type InitializeWorkingHoursRequest struct {
-	BusinessID         uuid.UUID               `json:"businessId" binding:"required"`
-	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
-	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
-	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
-	InitializeWeekends bool                    `json:"initializeWeekends"`
 }
 
 // InitializeWorkingHours sets up default working hours (Mon-Fri 09:00-17:00, closed weekends)
@@ -148,8 +153,8 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Debugf("No existing working hours found for business %s, proceeding with initialization.", req.BusinessID)
 
 	// Set default open and close times
-	defaultOpenTime := "09:00:00"
-	defaultCloseTime := "17:00:00"
+	defaultOpenTime := DEFAULT_OPEN_TIME
+	defaultCloseTime := DEFAULT_CLOSE_TIME
 	if req.DefaultOpenTime != "" {
 		defaultOpenTime = req.DefaultOpenTime
 	}
@@ -304,13 +309,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 
 	var results []working_hour_models.WorkingHour
 	for _, dayReq := range req.Days {
-		// Ensure BusinessID consistency if using CreateWorkingHourRequest
-		if dayReq.BusinessID != req.BusinessID {
-			logger.ErrorLogger.Errorf("Mismatched BusinessID in bulk update: expected %s, got %s", req.BusinessID, dayReq.BusinessID)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "BusinessID mismatch in day entries"})
-			return
-		}
-
+		// Validate the day request
 		if err := validateWorkingHoursTimes(dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed); err != nil {
 			tx.Rollback(c.Request.Context())
 			logger.ErrorLogger.Errorf("Validation failed for working hour %s during bulk update: %v", dayReq.DayOfWeek, err)
@@ -476,16 +475,9 @@ func (whc *WorkingHourController) GetWorkingHourByID(c *gin.Context) {
 func (whc *WorkingHourController) GetWorkingHoursByBusinessID(c *gin.Context) {
 	logger.InfoLogger.Info("GetWorkingHoursByBusinessID controller called")
 
-	businessIDStr := c.Param("business_id")
-	businessID, err := uuid.Parse(businessIDStr)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format '%s': %v", businessIDStr, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
-		return
-	}
-	logger.InfoLogger.Debugf("Attempting to fetch working hours for Business ID: %s", businessID)
+	businessID := c.Param("businessPublicID") // Business Public URL
 
-	whs, err := working_hour_models.GetWorkingHoursByBusinessID(whc.DB, businessID)
+	whs, err := working_hour_models.GetWorkingHoursByBusinessPublicID(whc.DB, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch working hours for business %s: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch working hours"})

@@ -207,6 +207,74 @@ func GetWorkingHoursByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Work
 	return whs, nil
 }
 
+// GetWorkingHoursByBusinessID fetches all working hours for a given business ID.
+func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]WorkingHour, error) {
+	logger.InfoLogger.Infof("Attempting to fetch working hours for Business Public ID: %s", publicID)
+
+	var whs []WorkingHour
+	query := `
+		SELECT
+			w.id,
+			w.business_id,
+			w.day_of_week,
+			w.open_time,
+			w.close_time,
+			w.is_closed,
+			w.created_at,
+			w.updated_at
+		FROM
+			working_hours w
+		LEFT JOIN
+			businesses b ON w.business_id = b.id
+		WHERE
+			b.public_id = $1
+		ORDER BY
+			CASE w.day_of_week
+				WHEN 'Sunday' THEN 1
+				WHEN 'Monday' THEN 2
+				WHEN 'Tuesday' THEN 3
+				WHEN 'Wednesday' THEN 4
+				WHEN 'Thursday' THEN 5
+				WHEN 'Friday' THEN 6
+				WHEN 'Saturday' THEN 7
+			END
+	`
+
+	rows, err := db.Query(context.Background(), query, publicID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to query working hours for business public ID %s: %v", publicID, err)
+		return nil, fmt.Errorf("failed to fetch working hours: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var wh WorkingHour
+		err := rows.Scan(
+			&wh.ID,
+			&wh.BusinessID,
+			&wh.DayOfWeek,
+			&wh.OpenTime,
+			&wh.CloseTime,
+			&wh.IsClosed,
+			&wh.CreatedAt,
+			&wh.UpdatedAt,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan row for working hours for business public ID %s: %v", publicID, err)
+			return nil, fmt.Errorf("failed to scan working hour row: %w", err)
+		}
+		whs = append(whs, wh)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error during row iteration for business public ID %s: %v", publicID, err)
+		return nil, fmt.Errorf("error during row iteration: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Fetched %d working hours for business public ID %s from database.", len(whs), publicID)
+	return whs, nil
+}
+
 // UpdateWorkingHour updates an existing working hour record using the pool.
 func UpdateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to update working hour ID: %s for BusinessID: %s, Day: %s (using pool)", wh.ID, wh.BusinessID, wh.DayOfWeek)
