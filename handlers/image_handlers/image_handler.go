@@ -28,7 +28,7 @@ func HandleImageUpload(c *gin.Context, authHeader string) (uuid.UUID, error) {
 	fileHeader, err := c.FormFile("image")
 	if err != nil {
 		HandleFileError(c, err)
-		return uuid.Nil, err
+		return uuid.Nil, fmt.Errorf("handled file error")
 	}
 
 	file, err := fileHeader.Open()
@@ -91,8 +91,17 @@ func HandleImageDeletion(authHeader string, imageID uuid.UUID) error {
 
 	// Build the request for the DELETE /images/{image_id} endpoint
 	pythonServerURL := getServiceURL() + "/images/" + imageID.String()
-	httpReq, _ := http.NewRequest("DELETE", pythonServerURL, nil)
-	httpReq.Header.Set("Authorization", authHeader)
+	httpReq, err := http.NewRequest("DELETE", pythonServerURL, nil)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create DELETE request for image %s: %v", imageID, err)
+		return fmt.Errorf("failed to create delete request")
+	}
+
+	httpReq.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: authHeader,
+		Path:  "/",
+	})
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)
@@ -117,7 +126,11 @@ func HandleImageDeletion(authHeader string, imageID uuid.UUID) error {
 // sendRequestToImageService is a generic function to execute a request and process the response.
 func sendRequestToImageService(req *http.Request, contentType, authHeader string) (uuid.UUID, error) {
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", authHeader)
+	req.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: authHeader,
+		Path:  "/",
+	})
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -154,8 +167,16 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, "image", fileHeader.Filename))
 	h.Set("Content-Type", fileHeader.Header.Get("Content-Type"))
-	part, _ := writer.CreatePart(h)
-	io.Copy(part, file)
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
+		return nil, ""
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to copy file data: %v", err)
+		return nil, ""
+	}
 	writer.Close()
 	return body, writer.FormDataContentType()
 }

@@ -85,10 +85,11 @@ func UpdateBookingStatus(ctx context.Context, db *pgxpool.Pool, bookingID uuid.U
 
 	query := `
 		UPDATE bookings
-		SET status = $2, updated_at = NOW()
+		SET status = $2, updated_at = $3
 		WHERE id = $1`
 
-	cmdTag, err := db.Exec(ctx, query, bookingID, status)
+	updatedAt := time.Now()
+	cmdTag, err := db.Exec(ctx, query, bookingID, status, updatedAt)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update booking %s status: %v", bookingID, err)
 		return fmt.Errorf("failed to update booking status: %w", err)

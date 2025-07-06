@@ -42,7 +42,7 @@ var ErrOTPNotFound = errors.New("otp not found or expired")
 // StoreOTP hash in Redis with expiration
 func StoreOTP(ctx context.Context, key string, otp string) error {
 	hashedOTP := utils.HashOTP(otp)
-	err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, OTP_EXPIRATION_MINUTES*time.Minute).Err()
+	err := redisclient.GetRedisClient(ctx).Set(ctx, key, hashedOTP, OTP_EXPIRATION_MINUTES*time.Minute).Err()
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store OTP with key %s: %v", key, err)
@@ -53,7 +53,7 @@ func StoreOTP(ctx context.Context, key string, otp string) error {
 
 // RetrieveOTP hash from Redis
 func RetrieveOTP(ctx context.Context, key string) (string, error) {
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, key).Result()
+	storedHash, err := redisclient.GetRedisClient(ctx).Get(ctx, key).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return "", ErrOTPNotFound
@@ -66,7 +66,7 @@ func RetrieveOTP(ctx context.Context, key string) (string, error) {
 
 // ClearOTP from Redis
 func ClearOTP(ctx context.Context, key string) error {
-	err := redisclient.GetRedisClient().Del(ctx, key).Err()
+	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to clear OTP for key %s: %v", key, err)
 		return fmt.Errorf("failed to clear OTP: %w", err)
@@ -74,7 +74,7 @@ func ClearOTP(ctx context.Context, key string) error {
 	return nil
 }
 
-const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const charset = "0123456789-abcdefghijklmnopqrstuvwxyz"
 
 func GenerateTinyID(length int) string {
 	result := make([]byte, length)

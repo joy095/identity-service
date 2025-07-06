@@ -19,7 +19,6 @@ import (
 	"github.com/joy095/identity/config/db"
 	redisclient "github.com/joy095/identity/config/redis"
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models/customer_models"
 	"github.com/joy095/identity/models/shared_models"
 	"github.com/joy095/identity/models/user_models"
 	"github.com/joy095/identity/utils"
@@ -28,11 +27,9 @@ import (
 )
 
 const (
-	ForgotPasswordTemplate      = "templates/email/forgot_password_otp.html"
-	EmailVerificationTemplate   = "templates/email/email_verification_otp.html"
-	VerifyNewEmailOTPTemplate   = "templates/email/verify_new_email_otp.html"
-	CustomerLoginTemplate       = "templates/email/customer_otp_login.html"
-	CustomerVerifyEmailTemplate = "templates/email/customer_verify_email_otp.html"
+	ForgotPasswordTemplate    = "templates/email/forgot_password_otp.html"
+	EmailVerificationTemplate = "templates/email/email_verification_otp.html"
+	VerifyNewEmailOTPTemplate = "templates/email/verify_new_email_otp.html"
 )
 
 // The `parsedTemplates` variable will be populated by an external call.
@@ -52,10 +49,10 @@ func InitTemplates(fs embed.FS) {
 	}
 
 	// --- TEMPORARY DEBUGGING CODE START ---
-	log.Println("Mail Package: Listing parsed template names:")
-	for _, t := range parsedTemplates.Templates() {
-		log.Printf("  - %s\n", t.Name())
-	}
+	// log.Println("Mail Package: Listing parsed template names:")
+	// for _, t := range parsedTemplates.Templates() {
+	// 	log.Printf("  - %s\n", t.Name())
+	// }
 	// --- TEMPORARY DEBUGGING CODE END ---
 
 	log.Println("Mail Package: Templates loaded successfully.")
@@ -182,48 +179,13 @@ func SendEmailChangeNewOTP(newEmail, firstName, lastName, otp string) error {
 	return sendEmail(newEmail, "Verify Your New Email Address", VerifyNewEmailOTPTemplate, data)
 }
 
-// SendCustomerOTP sends an OTP to a customer.
-func SendCustomerOTP(emailAddress, otp string, templatePath string) error {
-	logger.InfoLogger.Infof("SendCustomerOTP called to %s using template %s", emailAddress, templatePath)
-
-	var customer customer_models.Customer                                              // Assuming models.Customer has Email and ID
-	query := `SELECT id, email, first_name, last_name FROM customers WHERE email = $1` // Include names if available
-	err := db.DB.QueryRow(ctx, query, emailAddress).Scan(&customer.ID, &customer.Email, &customer.FirstName, &customer.LastName)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Customer not found for sending OTP to %s: %v", emailAddress, err)
-		return fmt.Errorf("customer not found: %w", err)
-	}
-
-	// Store OTP using email as key for customer OTPs
-	// Using a generic "otp:" prefix for customer OTPs if no specific prefix is defined for them
-	err = redisclient.GetRedisClient().Set(ctx, shared_utils.CUSTOMER_OTP_PREFIX+emailAddress, utils.HashOTP(otp), time.Minute*shared_utils.OTP_EXPIRATION_MINUTES).Err()
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to store customer OTP for %s: %v", emailAddress, err)
-		return fmt.Errorf("failed to store OTP: %w", err)
-	}
-
-	data := struct {
-		FirstName *string
-		LastName  *string
-		OTP       string
-		Year      int
-	}{
-		FirstName: customer.FirstName, // Use customer's first name
-		LastName:  customer.LastName,  // Use customer's last name
-		OTP:       otp,
-		Year:      time.Now().Year(),
-	}
-
-	return sendEmail(customer.Email, "Your OTP Code", templatePath, data)
-}
-
 // StoreEmailChangeNewOTP stores the OTP in Redis for the new email address verification.
 func StoreEmailChangeNewOTP(userID, newEmail, otpHash string) error {
 	logger.InfoLogger.Infof("Storing new email change OTP for user %s, new email %s", userID, newEmail)
 	key := shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX + userID
 	// Store newEmail along with the OTP hash
 	value := fmt.Sprintf("%s:%s", otpHash, newEmail)
-	err := redisclient.GetRedisClient().Set(ctx, key, value, time.Minute*shared_utils.NEW_EMAIL_OTP_EXP_MINUTES).Err()
+	err := redisclient.GetRedisClient(ctx).Set(ctx, key, value, time.Minute*shared_utils.NEW_EMAIL_OTP_EXP_MINUTES).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store new email change OTP for user %s: %v", userID, err)
 		return fmt.Errorf("failed to store new email change OTP: %w", err)
@@ -236,7 +198,7 @@ func StoreEmailChangeNewOTP(userID, newEmail, otpHash string) error {
 func RetrieveEmailChangeNewOTP(userID string) (string, string, error) {
 	logger.InfoLogger.Infof("Retrieving new email change OTP for user %s", userID)
 	key := shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX + userID
-	value, err := redisclient.GetRedisClient().Get(ctx, key).Result()
+	value, err := redisclient.GetRedisClient(ctx).Get(ctx, key).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
 			return "", "", ErrOTPNotFound
@@ -258,7 +220,7 @@ func RetrieveEmailChangeNewOTP(userID string) (string, string, error) {
 func ClearEmailChangeNewOTP(userID string) error {
 	logger.InfoLogger.Infof("Clearing new email change OTP for user %s", userID)
 	key := shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX + userID
-	err := redisclient.GetRedisClient().Del(ctx, key).Err()
+	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to clear new email change OTP for user %s: %v", userID, err)
 		return fmt.Errorf("failed to clear new email change OTP: %w", err)
@@ -276,7 +238,6 @@ func ResendOTP(c *gin.Context) {
 		Email     string `json:"email" binding:"required,email"`
 		FirstName string `json:"firstName" binding:"required"`
 		LastName  string `json:"lastName" binding:"required"`
-		Username  string `json:"username" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -308,9 +269,9 @@ func ResendOTP(c *gin.Context) {
 	}
 
 	// Use specific key prefix for initial email verification
-	err = redisclient.GetRedisClient().Set(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Username, utils.HashOTP(otp), time.Minute*shared_utils.OTP_EXPIRATION_MINUTES).Err()
+	err = redisclient.GetRedisClient(c).Set(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Email, utils.HashOTP(otp), time.Minute*shared_utils.OTP_EXPIRATION_MINUTES).Err()
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to store OTP in ResendOTP for %s: %v", request.Username, err)
+		logger.ErrorLogger.Errorf("Failed to store OTP in ResendOTP for %s: %v", request.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP"})
 		return
 	}
@@ -335,9 +296,8 @@ func VerifyEmail(c *gin.Context) {
 	logger.InfoLogger.Info("VerifyEmail called (for initial email verification)")
 
 	var request struct {
-		Email    string `json:"email" binding:"required,email"`
-		OTP      string `json:"otp" binding:"required,len=6"`
-		Username string `json:"username"` // Assuming username is part of the request
+		Email string `json:"email" binding:"required,email"`
+		OTP   string `json:"otp" binding:"required,len=6"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -347,33 +307,27 @@ func VerifyEmail(c *gin.Context) {
 	}
 
 	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
-	request.Username = strings.ToLower(strings.TrimSpace(request.Username))
 
-	// Retrieve OTP hash from Redis using the specific prefix for initial verification
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Username).Result()
+	// Retrieve OTP hash from Redis
+	storedHash, err := redisclient.GetRedisClient(c).Get(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Email).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
-			logger.ErrorLogger.Errorf("OTP expired or not found for %s (initial verification)", request.Email)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "OTP expired or not found"})
-			return
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "OTP fetch failed"})
 		}
-		logger.ErrorLogger.Errorf("Failed to retrieve OTP from Redis in VerifyEmail: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error during OTP verification"})
 		return
 	}
 
-	// Verify OTP
 	if utils.HashOTP(request.OTP) != storedHash {
 		logger.ErrorLogger.Errorf("Incorrect OTP for %s (initial verification)", request.Email)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect OTP"})
 		return
 	}
 
-	// Get user by email to retrieve userID and token_version
-	user, err := user_models.GetUserByUsername(db.DB, request.Username) // Assuming username is provided and used to fetch user
-	if err != nil {
-		logger.ErrorLogger.Errorf("User not found for username %s: %v", request.Username, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	user, err := user_models.GetUserByEmail(context.Background(), db.DB, request.Email)
+	if err != nil || user.Email != request.Email {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "User not found or email mismatch"})
 		return
 	}
 
@@ -391,50 +345,52 @@ func VerifyEmail(c *gin.Context) {
 	// Generate access token (60 minutes) including token_version
 	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, 60*time.Minute)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate access token in VerifyEmail")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate access token"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Access token generation failed"})
 		return
 	}
 
-	// Generate refresh token (30 days) including token_version
-	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, currentTokenVersion, 30*24*time.Hour) // Refresh Token expires in 30 days
+	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, user.TokenVersion, 30*24*time.Hour)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to generate refresh token in VerifyEmail")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
-		return
-	}
-	// --- END TOKEN_VERSION INTEGRATION ---
-
-	// Delete OTP from Redis after successful verification
-	if err := redisclient.GetRedisClient().Del(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Username).Err(); err != nil {
-		logger.ErrorLogger.Warnf("Failed to delete initial verification OTP from Redis for %s: %v", request.Username, err)
-	}
-
-	_, err = db.DB.Exec(ctx,
-		"UPDATE users SET is_verified_email = true WHERE id = $1",
-		user.ID,
-	)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update user data (is_verified_email) for user %s: %v", user.ID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user data"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Refresh token generation failed"})
 		return
 	}
 
-	// USER_REFRESH_TOKEN_PREFIX
-	// err := redisclient.GetRedisClient().Set(ctx, key, hashedOTP, 10*time.Minute).Err()
-	err = redisclient.GetRedisClient().Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+user.ID.String(), refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
+	// Delete used OTP
+	_ = redisclient.GetRedisClient(c).Del(ctx, shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+request.Email).Err()
 
+	// Mark user as verified
+	_, err = db.DB.Exec(ctx, "UPDATE users SET is_verified_email = true WHERE id = $1", user.ID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for user %s: %v", user.ID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user verification status"})
+		return
+	}
+
+	// Store refresh token in Redis
+	err = redisclient.GetRedisClient(c).Set(
+		ctx,
+		shared_utils.USER_REFRESH_TOKEN_PREFIX+user.ID.String(),
+		refreshToken,
+		time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS,
+	).Err()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
 		return
 	}
-	logger.InfoLogger.Infof("Email verified and tokens generated successfully for user %s", user.ID)
 
+	// Set JWT cookies
+	if err := shared_models.SetJWTCookie(c, "access_token", accessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set access token cookie"})
+		return
+	}
+
+	if err := shared_models.SetJWTCookie(c, "refresh_token", refreshToken, shared_models.REFRESH_TOKEN_EXPIRY, "/refresh"); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set refresh token cookie"})
+		return
+	}
+
+	// No tokens in response if you use cookies
 	c.JSON(http.StatusOK, gin.H{
-		"accessToken":  accessToken,
-		"refreshToken": refreshToken,
-		"message":      "Email verified and logged in successfully!",
+		"message": "Email verified and login successful",
 	})
 }
 
@@ -444,9 +400,8 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 
 	var request struct {
 		Email       string `json:"email" binding:"required,email"`
-		OTP         string `json:"otp" binding:"required,len=6"` // Assuming 6-digit OTP
+		OTP         string `json:"otp" binding:"required,len=6"`
 		NewPassword string `json:"newPassword" binding:"required,min=8"`
-		Username    string `json:"username" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -458,7 +413,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	request.Email = strings.ToLower(strings.TrimSpace(request.Email))
 
 	// Retrieve OTP hash from Redis using the password reset key
-	storedHash, err := redisclient.GetRedisClient().Get(ctx, shared_utils.FORGOT_PASSWORD_OTP_PREFIX+request.Username).Result()
+	storedHash, err := redisclient.GetRedisClient(c).Get(ctx, shared_utils.FORGOT_PASSWORD_OTP_PREFIX+request.Email).Result()
 	if err != nil {
 		if err.Error() == "redis: nil" {
 			logger.ErrorLogger.Info(fmt.Sprintf("Forgot password OTP expired or not found for %s", request.Email))
@@ -478,7 +433,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// Get user
-	user, err := user_models.GetUserByUsername(db.DB, request.Username)
+	user, err := user_models.GetUserByEmail(context.Background(), db.DB, request.Email)
 	if err != nil || user.Email != request.Email {
 		logger.ErrorLogger.Errorf("User not found or email mismatch for forgot password: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found or email mismatch"})
@@ -505,7 +460,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// 1. Update the password in the database
 	_, err = tx.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Username, err))
+		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}
@@ -513,7 +468,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// 2. Increment the token_version
 	_, err = tx.Exec(context.Background(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Username, err))
+		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke old tokens"})
 		return
 	}
@@ -522,7 +477,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// This immediately invalidates the stored refresh token as well.
 	_, err = tx.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, user.ID)
 	if err != nil {
-		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Username, err))
+		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
 		// This is a warning because even if clearing fails, incrementing token_version still revokes.
 		// But it's good practice to clear the old token too.
 	}
@@ -535,7 +490,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// Delete OTP from Redis
-	if err := redisclient.GetRedisClient().Del(ctx, shared_utils.FORGOT_PASSWORD_OTP_PREFIX+request.Username).Err(); err != nil {
+	if err := redisclient.GetRedisClient(c).Del(ctx, shared_utils.FORGOT_PASSWORD_OTP_PREFIX+request.Email).Err(); err != nil {
 		logger.ErrorLogger.Warnf("Failed to delete forgot password OTP after use for %s: %v", request.Email, err)
 	}
 
@@ -544,50 +499,4 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Password reset successful",
 	})
-}
-
-// Send OTP to customer for login
-func SendCustomerLoginOTP(c *gin.Context) {
-	logger.InfoLogger.Info("SendCustomerLoginOTP called")
-
-	var request struct {
-		Email string `json:"email" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&request); err != nil {
-		logger.ErrorLogger.Error("Invalid request for SendCustomerLoginOTP: " + err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Check if customer exists
-	var count int
-	err := db.DB.QueryRow(ctx, "SELECT COUNT(*) FROM customers WHERE email = $1", request.Email).Scan(&count)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to check customer existence for login OTP: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process request"})
-		return
-	}
-	if count == 0 {
-		logger.InfoLogger.Info("Customer not found for login OTP, sending generic response.")
-		c.JSON(http.StatusOK, gin.H{"message": "If the email exists, an OTP has been sent."})
-		return
-	}
-
-	otp, err := utils.GenerateSecureOTP()
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to generate OTP in SendCustomerLoginOTP: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
-		return
-	}
-
-	err = SendCustomerOTP(request.Email, otp, CustomerLoginTemplate) // Use the constant
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to send customer login OTP to %s: %v", request.Email, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send OTP"})
-		return
-	}
-
-	logger.InfoLogger.Infof("Customer login OTP sent successfully to %s", request.Email)
-	c.JSON(http.StatusOK, gin.H{"message": "OTP sent successfully"})
 }

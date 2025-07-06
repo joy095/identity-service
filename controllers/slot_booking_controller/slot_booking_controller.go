@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"time"
 
@@ -184,10 +185,16 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	logger.InfoLogger.Infof("Pending booking %s created for slot %s", createdBooking.ID, req.SlotID)
 
 	// 4. Initiate Razorpay Payment Order
-	amountInPaise := int(service.Price * 100)
+	amountInPaise := int(math.Round(service.Price * 100))
+
 	currency := os.Getenv("PAYMENT_CURRENCY")
 	if currency == "" {
 		currency = "INR" // Default to INR
+	}
+	supportedCurrencies := map[string]bool{"INR": true, "USD": true, "EUR": true}
+	if !supportedCurrencies[currency] {
+		logger.WarnLogger.Warnf("Unsupported currency %s, defaulting to INR", currency)
+		currency = "INR"
 	}
 	orderData := map[string]interface{}{
 		"amount":   amountInPaise,
@@ -204,7 +211,9 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	rzpOrder, err := s.RazorpayClient.CreateOrder(orderData)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create Razorpay order for booking %s: %v", createdBooking.ID, err)
-		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
+		if err := booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed); err != nil {
+			logger.ErrorLogger.Errorf("Critical: Failed to update booking %s to failed status: %v", createdBooking.ID, err)
+		}
 		return nil, "", fmt.Errorf("failed to initiate payment: %w", err)
 	}
 
@@ -228,7 +237,10 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	_, err = payment_transaction_models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save initial payment transaction for booking %s: %v", createdBooking.ID, err)
-		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
+		if err := booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed); err != nil {
+			logger.ErrorLogger.Errorf("Failed to update booking %s to failed status: %v", createdBooking.ID, err)
+		}
+
 		return nil, "", fmt.Errorf("failed to record payment attempt: %w", err)
 	}
 
@@ -303,8 +315,11 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 
 	paymentTx.RazorpayPaymentID = paymentEntity.ID
 	paymentTx.Status = paymentEntity.Status
-	paymentTx.Amount = float64(paymentEntity.Amount) / 100
-	paymentTx.Currency = paymentEntity.Currency
+	// Validate amount matches original transaction
+	if float64(paymentEntity.Amount)/100 != paymentTx.Amount {
+		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", paymentTx.Amount, float64(paymentEntity.Amount)/100)
+		return fmt.Errorf("payment amount mismatch")
+	}
 	paymentTx.PaymentMethod = paymentEntity.Method
 	paymentTx.ErrorDescription = paymentEntity.ErrorDescription
 

@@ -172,7 +172,10 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", id, err)
 		return nil, fmt.Errorf("database error: %w", err)
 	}
-
+	// Assign the object_name to the service if it's valid
+	if imageObjectName.Valid {
+		service.ObjectName = &imageObjectName.String
+	}
 	logger.InfoLogger.Infof("Service with ID %s fetched successfully", id)
 	return service, nil
 }

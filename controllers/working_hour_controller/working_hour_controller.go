@@ -475,7 +475,7 @@ func (whc *WorkingHourController) GetWorkingHourByID(c *gin.Context) {
 func (whc *WorkingHourController) GetWorkingHoursByBusinessID(c *gin.Context) {
 	logger.InfoLogger.Info("GetWorkingHoursByBusinessID controller called")
 
-	businessID := c.Param("businessPublicID") // Business Public URL
+	businessID := c.Param("businessPublicId") // Business Public URL
 
 	whs, err := working_hour_models.GetWorkingHoursByBusinessPublicID(whc.DB, businessID)
 	if err != nil {

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/joy095/identity/logger"
@@ -41,10 +40,6 @@ func GetJWTSecret() []byte {
 		return []byte("default-insecure-secret-only-for-development-must-be-long-enough-for-jwt")
 	}
 	return secret
-}
-
-func ParseFloat(s string) (float64, error) {
-	return strconv.ParseFloat(s, 64)
 }
 
 // GetJWTRefreshSecret retrieves the base64-decoded JWT refresh secret.
@@ -99,11 +94,11 @@ func HashOTP(otp string) string {
 
 	salt := []byte(saltBase + "-otp-verification-salt")
 
-	time := uint32(2)
-	memory := uint32(64 * 1024)
-	threads := uint8(1)
+	timeIterations := uint32(2)
+	memoryKB := uint32(64 * 1024)
+	parallelism := uint8(1)
 	keyLen := uint32(32)
-	hashed := argon2.IDKey([]byte(otp), salt, time, memory, threads, keyLen)
+	hashed := argon2.IDKey([]byte(otp), salt, timeIterations, memoryKB, parallelism, keyLen)
 
 	return fmt.Sprintf("%x", hashed)
 }
