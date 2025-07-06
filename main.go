@@ -51,13 +51,15 @@ func main() {
 	r.MaxMultipartMemory = 32 << 20 // 32 MB
 
 	routes.RegisterUserRoutes(r)
-	routes.RegisterCustomerRoutes(r)
 	routes.RegisterBusinessRoutes(r)
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r, db.DB)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "ok from identity service"})
+	})
+	r.HEAD("/health", func(c *gin.Context) {
+		c.Status(200)
 	})
 
 	srv := &http.Server{

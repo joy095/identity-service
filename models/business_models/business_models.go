@@ -30,8 +30,9 @@ type Business struct {
 	PostalCode string      `json:"postalCode"`
 	TaxID      string      `json:"taxId,omitempty"`
 	About      string      `json:"about,omitempty"`
-	ImageID    pgtype.UUID `json:"imageId,omitempty"` // <-- ADDED: To store the image reference
-	Location   Location    `json:"location,omitempty"`
+	ImageID    pgtype.UUID `json:"imageId,omitempty"`
+	Latitude   float64     `form:"latitude,omitempty"`
+	Longitude  float64     `form:"longitude,omitempty"`
 	CreatedAt  time.Time   `json:"createdAt"`
 	UpdatedAt  time.Time   `json:"updatedAt"`
 	IsActive   bool        `json:"isActive"`
@@ -61,8 +62,9 @@ func NewBusiness(
 		PostalCode: postalCode,
 		TaxID:      taxID,
 		About:      about,
-		ImageID:    pgtype.UUID{Bytes: imageID, Valid: imageID != uuid.Nil}, // <-- ADDED: Assign imageID
-		Location:   Location{Latitude: lat, Longitude: long},
+		ImageID:    pgtype.UUID{Bytes: imageID, Valid: imageID != uuid.Nil},
+		Latitude:   lat,
+		Longitude:  long,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		IsActive:   true,
@@ -94,8 +96,8 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 		business.TaxID,
 		business.About,
 		business.ImageID, // Pass the new imageID field
-		business.Location.Latitude,
-		business.Location.Longitude,
+		business.Latitude,
+		business.Longitude,
 		business.CreatedAt,
 		business.UpdatedAt,
 		business.IsActive,
@@ -113,8 +115,8 @@ func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (
 		&business.TaxID,
 		&business.About,
 		&business.ImageID,
-		&business.Location.Latitude,
-		&business.Location.Longitude,
+		&business.Latitude,
+		&business.Longitude,
 		&business.CreatedAt,
 		&business.UpdatedAt,
 		&business.IsActive,
@@ -180,8 +182,8 @@ func GetBusinessByID(db *pgxpool.Pool, id uuid.UUID) (*Business, error) {
 		&business.PostalCode,
 		&business.TaxID,
 		&business.About,
-		&business.Location.Latitude,
-		&business.Location.Longitude,
+		&business.Latitude,
+		&business.Longitude,
 		&business.CreatedAt,
 		&business.UpdatedAt,
 		&business.IsActive,
@@ -226,8 +228,8 @@ func GetBusinessByPublicId(db *pgxpool.Pool, publicId string) (*Business, error)
 	            b.postal_code,
 	            b.tax_id,
 	            b.about,
-	            b.location_latitude,
-	            b.location_longitude,
+	           	b.location_latitude,
+				b.location_longitude,
 	            b.created_at,
 	            b.updated_at,
 	            b.is_active,
@@ -257,8 +259,8 @@ func GetBusinessByPublicId(db *pgxpool.Pool, publicId string) (*Business, error)
 		&business.PostalCode,
 		&business.TaxID,
 		&business.About,
-		&business.Location.Latitude,
-		&business.Location.Longitude,
+		&business.Latitude,
+		&business.Longitude,
 		&business.CreatedAt,
 		&business.UpdatedAt,
 		&business.IsActive,
@@ -318,8 +320,8 @@ func UpdateBusiness(db *pgxpool.Pool, business *Business) (*Business, error) {
 		business.PostalCode,
 		business.TaxID,
 		business.About,
-		business.Location.Latitude,
-		business.Location.Longitude,
+		business.Latitude,
+		business.Longitude,
 		business.UpdatedAt,
 		business.IsActive,
 		business.ImageID,
@@ -357,7 +359,7 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 
 	// 2. Nullify the image_id in the 'services' table
 	// (Your logs show this is already happening, but it must be within this transaction)
-	_, err = tx.Exec(context.Background(), `
+	_, err = tx.Exec(ctx, `
 		UPDATE services
 		SET image_id = NULL
 		WHERE image_id = $1
@@ -370,7 +372,7 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 
 	// 3. Delete the image record from the 'images' table
 	// This step will now succeed because no other table references it anymore.
-	res, err := tx.Exec(context.Background(), `
+	res, err := tx.Exec(ctx, `
 		DELETE FROM images
 		WHERE id = $1
 	`, imageID)
@@ -388,7 +390,7 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 	}
 
 	// Commit the transaction if all steps were successful
-	return tx.Commit(context.Background())
+	return tx.Commit(ctx)
 }
 
 // GetAllBusinesses fetches all business records from the database, with optional pagination.
@@ -472,8 +474,8 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.PostalCode,
 			&business.TaxID,
 			&business.About,
-			&business.Location.Latitude,
-			&business.Location.Longitude,
+			&business.Latitude,
+			&business.Longitude,
 			&business.CreatedAt,
 			&business.UpdatedAt,
 			&business.IsActive,

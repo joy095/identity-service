@@ -2,8 +2,10 @@ package shared_models
 
 import (
 	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/joy095/identity/logger"
@@ -36,6 +38,23 @@ type Claims struct {
 	Type         string    `json:"type"`
 	TokenVersion int       `json:"token_version"`
 	jwt.RegisteredClaims
+}
+
+// SetJWTCookie sets a JWT cookie with secure attributes
+func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path string) error {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     path,
+		Expires:  time.Now().Add(expiry),
+		MaxAge:   int(expiry.Seconds()),
+		HttpOnly: true, // Prevent JS access
+		Secure:   true, //  Required with SameSite=None
+		SameSite: http.SameSiteNoneMode,
+	})
+
+	logger.InfoLogger.Infof("Set cookie %s with path %s and expiry %v", name, path, expiry)
+	return nil
 }
 
 // GenerateRefreshToken creates a JWT token for refresh purposes

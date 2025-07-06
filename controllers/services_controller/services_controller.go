@@ -107,21 +107,21 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 }
 
 // --- Delete Service by ID ---
-func (sc *ServiceController) DeleteService(c *gin.Context) error {
+func (sc *ServiceController) DeleteService(c *gin.Context) {
 	logger.InfoLogger.Info("DeleteService controller called")
 
 	serviceIDStr := strings.TrimSpace(c.Param("id"))
 	if serviceIDStr == "" {
 		logger.ErrorLogger.Error("Service ID is required")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Service ID is required"})
-		return fmt.Errorf("service ID is required")
+		return
 	}
 
 	serviceID, err := uuid.Parse(serviceIDStr)
 	if err != nil {
 		logger.ErrorLogger.Error("Invalid service ID format: " + err.Error())
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
-		return fmt.Errorf("Invalid service ID format")
+		return
 	}
 
 	service, err := service_models.GetServiceByIDModel(db.DB, serviceID)
@@ -135,42 +135,51 @@ func (sc *ServiceController) DeleteService(c *gin.Context) error {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to fetch service"})
 
 		}
-		return fmt.Errorf("Service not found")
-	}
-
-	imageServiceURL := os.Getenv("IMAGE_SERVICE_URL")
-	if imageServiceURL == "" {
-		imageServiceURL = "http://localhost:8082"
-	}
-	url := fmt.Sprintf("%s/images/%s", strings.TrimRight(imageServiceURL, "/"), service.ImageID.String())
-
-	req, err := http.NewRequest("DELETE", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create delete request: %w", err)
-	}
-
-	authHeader := c.GetHeader("Authorization")
-	req.Header.Set("Authorization", authHeader)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("image service request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("image service returned error: %s", string(body))
-	}
-
-	err = service_models.DeleteServiceByIDModel(db.DB, serviceID, service.BusinessID)
-	if err != nil {
 		logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})
-		return fmt.Errorf("failed to delete service")
+		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully with ID " + serviceID.String()})
-	return nil
+	if service.ImageID.Bytes == uuid.Nil {
+		logger.InfoLogger.Info("No image associated with service, skipping image deletion")
+	} else {
+		imageServiceURL := os.Getenv("IMAGE_SERVICE_URL")
+		if imageServiceURL == "" {
+			imageServiceURL = "http://localhost:8082"
+		}
+		url := fmt.Sprintf("%s/images/%s", strings.TrimRight(imageServiceURL, "/"), service.ImageID.String())
+
+		req, err := http.NewRequest("DELETE", url, nil)
+		if err != nil {
+			logger.ErrorLogger.Error("Failed to create delete request: " + err.Error())
+			return
+		}
+
+		authHeader := c.GetHeader("Authorization")
+		req.Header.Set("Authorization", authHeader)
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.ErrorLogger.Error("Failed to delete image: " + err.Error())
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			body, _ := io.ReadAll(resp.Body)
+			logger.ErrorLogger.Error("Image service returned error: " + string(body))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete associated image"})
+			return
+		}
+
+		err = service_models.DeleteServiceByIDModel(db.DB, serviceID, service.BusinessID)
+		if err != nil {
+			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})
+			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully with ID " + serviceID.String()})
+	}
 }

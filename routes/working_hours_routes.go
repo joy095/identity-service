@@ -12,7 +12,7 @@ func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
 
 	workingHourController := working_hour_controller.NewWorkingHourController(db)
 
-	public := router.Group("/working-hour-business/:businessPublicID")
+	public := router.Group("/working-hour-business/:businessPublicId")
 
 	{
 		public.GET("/working-hours", workingHourController.GetWorkingHoursByBusinessID)

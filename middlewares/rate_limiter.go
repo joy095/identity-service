@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strconv"
@@ -46,8 +47,8 @@ func getUserIDFromContext(c *gin.Context) string {
 
 // createRedisStore creates a Redis-backed rate limiter store with a route-specific and user-specific prefix,
 // and sets the expiration based on the rate's period.
-func createRedisStore(routeID string, period time.Duration) (limiter.Store, error) {
-	rdb := db.GetRedisClient()
+func createRedisStore(ctx context.Context, routeID string, period time.Duration) (limiter.Store, error) {
+	rdb := db.GetRedisClient(ctx)
 
 	store, err := redisstore.NewStoreWithOptions(rdb, limiter.StoreOptions{
 		Prefix:   fmt.Sprintf("rate_limiter:%s", routeID), // This prefix will be combined with the key function
@@ -122,7 +123,7 @@ func NewRateLimiter(rateStr, routeID string) gin.HandlerFunc {
 	}
 
 	// Pass the period to createRedisStore for proper expiration
-	store, err := createRedisStore(routeID, rate.Period)
+	store, err := createRedisStore(context.Background(), routeID, rate.Period)
 	if err != nil {
 		log.Printf("Error creating Redis store for route %s: %v", routeID, err)
 		// Return a fallback middleware that just passes through

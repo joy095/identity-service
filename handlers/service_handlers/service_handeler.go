@@ -148,11 +148,10 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
 		return nil, ""
 	}
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
+	if _, err := io.Copy(part, file); err != nil {
+		logger.ErrorLogger.Errorf("Failed to copy file content: %v", err)
 		return nil, ""
 	}
-	io.Copy(part, file)
 	writer.Close()
 
 	return body, writer.FormDataContentType()
