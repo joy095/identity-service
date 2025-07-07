@@ -33,6 +33,12 @@ const (
 	KeyLength   = 64        // Derived key size (bytes)
 )
 
+// ErrUserNotFound is returned when no user is found with the given email.
+var ErrUserNotFound = errors.New("user not found")
+
+// ErrVerificationExpired is returned when a user exists but their email verification period has expired.
+var ErrVerificationExpired = errors.New("email verification period expired")
+
 // User Model
 type User struct {
 	ID              uuid.UUID
@@ -46,6 +52,7 @@ type User struct {
 	IsVerifiedEmail bool
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	Status          string
 }
 
 // generateSalt generates a secure random salt
@@ -162,7 +169,7 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 	return token, claims, nil
 }
 
-// CreateUser registers a new user and returns JWT & refresh token
+// Create user if the user not verified that case will delete the user (after 15 minutes of creation)
 func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (*User, error) {
 	logger.InfoLogger.Info("CreateUser called on models")
 
@@ -176,12 +183,28 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		return nil, fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
 
-	// Insert the user into the database
-	query := `INSERT INTO users (id, email, password_hash, first_name, last_name) 
-			 VALUES ($1, $2, $3, $4, $5) RETURNING id`
-	_, err = db.Exec(context.Background(), query, userID, email, passwordHash, firstName, lastName)
+	// Step 1: Delete unverified user with same email older than 15 minutes
+	deleteQuery := `
+		DELETE FROM users
+		WHERE email = $1
+		  AND is_verified_email = FALSE
+		  AND created_at < NOW() - INTERVAL '15 minutes'
+	`
+	_, err = db.Exec(context.Background(), deleteQuery, email)
 	if err != nil {
-		// Check if it's a unique constraint violation
+		logger.ErrorLogger.Error("Failed to delete stale unverified user:", err)
+		return nil, fmt.Errorf("failed to clean up stale unverified user: %v", err)
+	}
+
+	// Step 2: Insert the new user
+	insertQuery := `
+		INSERT INTO users (id, email, password_hash, first_name, last_name)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id
+	`
+	_, err = db.Exec(context.Background(), insertQuery, userID, email, passwordHash, firstName, lastName)
+	if err != nil {
+		// Unique constraint check (in case a verified user still exists)
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 			return nil, errors.New("email is already registered")
 		}
@@ -245,28 +268,81 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 
 // LogoutUser removes the refresh token from the database (and Redis if applicable)
 func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
+	ctx := context.Background()
+
 	// Remove from database (if refresh_token column is still used for old sessions or backup)
-	_, err := db.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, userID)
+	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + userID.String()
+	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to clear refresh token from DB for user %s: %v", userID, err)
 		return fmt.Errorf("failed to clear refresh token from DB: %w", err)
 	}
 
-	ctx := context.Background()
-	// Also delete from Redis
-	err = redisclient.GetRedisClient(ctx).Del(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+userID.String()).Err()
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete refresh token from Redis for user %s: %v", userID, err)
-		// Consider if this should be a critical error or just logged
-	}
 	return nil
+}
+
+// CheckUserStatus checks if a user needs to create a new account
+// CheckUserStatus checks if a user needs to create a new account
+func CheckUserStatus(ctx context.Context, db *pgxpool.Pool, email string) (*User, error) {
+	query := `
+        SELECT email, is_verified_email, created_at
+        FROM users
+        WHERE email = $1
+    `
+	rows, err := db.Query(ctx, query, email)
+	if err != nil {
+		logger.ErrorLogger.Errorf("CheckUserStatus: Failed to query user with email %s due to unexpected DB error: %v", email, err)
+		return nil, err // Other database errors
+	}
+	defer rows.Close()
+
+	// Check if any rows were returned (similar to cursor.rowcount)
+	if !rows.Next() {
+		logger.InfoLogger.Infof("CheckUserStatus: No user found with email %s. Email is available for new user creation.", email)
+		return &User{Email: email, Status: "Not found"}, nil // Return User with "Not found" status
+	}
+
+	// Process the single row (similar to Python's for loop, but we expect one row)
+	var user User
+	err = rows.Scan(
+		&user.Email,
+		&user.IsVerifiedEmail,
+		&user.CreatedAt,
+	)
+	if err != nil {
+		logger.ErrorLogger.Errorf("CheckUserStatus: Failed to scan user data for email %s: %v", email, err)
+		return nil, err
+	}
+
+	// Ensure no additional rows (shouldn't happen with unique email constraint)
+	if rows.Next() {
+		logger.ErrorLogger.Errorf("CheckUserStatus: Multiple users found with email %s, expected one.", email)
+		return nil, fmt.Errorf("multiple users found for email %s", email)
+	}
+
+	// User record was found.
+	if user.IsVerifiedEmail {
+		user.Status = "Verified"
+		return &user, nil // User is verified.
+	}
+
+	// User not verified. Check if the 15-minute verification period has expired.
+	if user.CreatedAt.UTC().Before(time.Now().UTC().Add(-15 * time.Minute)) {
+		logger.InfoLogger.Infof("CheckUserStatus: User with email %s found but verification expired.", email)
+		user.Status = "VerificationExpired"
+		return &user, nil // Return User with VerificationExpired status
+	}
+
+	// User found, not verified, and within 15 mins. (Pending)
+	user.Status = "Pending"
+	return &user, nil
 }
 
 // GetUserByEmail retrieves a user by email
 func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User, error) {
 	var user User
 
-	query := `SELECT id, email, first_name, last_name, password_hash, refresh_token, is_verified_email, token_version FROM users WHERE email = $1`
+	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE email = $1`
 
 	err := db.QueryRow(context.Background(), query, email).Scan(
 		&user.ID,
@@ -274,7 +350,6 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 		&user.FirstName,
 		&user.LastName,
 		&user.PasswordHash,
-		&user.RefreshToken,
 		&user.IsVerifiedEmail,
 		&user.TokenVersion,
 	)
@@ -289,14 +364,13 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 // GetUserByID retrieves a user by id
 func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
 	var user User
-	query := `SELECT id, email, first_name, last_name, password_hash, refresh_token, is_verified_email, token_version FROM users WHERE id = $1`
+	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE id = $1`
 	err := db.QueryRow(context.Background(), query, id).Scan(
 		&user.ID,
 		&user.Email,
 		&user.FirstName,
 		&user.LastName,
 		&user.PasswordHash,
-		&user.RefreshToken,
 		&user.IsVerifiedEmail,
 		&user.TokenVersion,
 	)

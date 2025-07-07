@@ -57,6 +57,23 @@ func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path
 	return nil
 }
 
+// RemoveJWTCookie removes a JWT cookie by setting it to expire immediately
+func RemoveJWTCookie(c *gin.Context, name, path string) error {
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     name,
+		Value:    "", // Empty value
+		Path:     path,
+		Expires:  time.Unix(0, 0), // Immediate expiration (Unix epoch)
+		MaxAge:   -1,              // Instruct browser to delete immediately
+		HttpOnly: true,            // Match security settings from SetJWTCookie
+		Secure:   true,            // Required with SameSite=None
+		SameSite: http.SameSiteNoneMode,
+	})
+
+	logger.InfoLogger.Infof("Removed cookie %s with path %s", name, path)
+	return nil
+}
+
 // GenerateRefreshToken creates a JWT token for refresh purposes
 func GenerateRefreshToken(userID uuid.UUID, tokenVersion int, duration time.Duration) (string, error) {
 	logger.InfoLogger.Info("GenerateRefreshToken called on models")

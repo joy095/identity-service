@@ -235,9 +235,7 @@ func ResendOTP(c *gin.Context) {
 	logger.InfoLogger.Info("ResendOTP called (for initial email verification)")
 
 	var request struct {
-		Email     string `json:"email" binding:"required,email"`
-		FirstName string `json:"firstName" binding:"required"`
-		LastName  string `json:"lastName" binding:"required"`
+		Email string `json:"email" binding:"required,email"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -246,9 +244,16 @@ func ResendOTP(c *gin.Context) {
 		return
 	}
 
+	user, err := user_models.GetUserByEmail(ctx, db.DB, request.Email)
+	if user == nil {
+		logger.InfoLogger.Info("ResendOTP: Email not found, sending generic message.")
+		c.JSON(http.StatusOK, gin.H{"message": "A verification email has been sent to your email address."})
+		return
+	}
+
 	// Check if email exists in database (only send if it exists to avoid leaking info)
 	var count int
-	err := db.DB.QueryRow(ctx, "SELECT COUNT(*) FROM users WHERE email = $1", request.Email).Scan(&count)
+	err = db.DB.QueryRow(ctx, "SELECT COUNT(*) FROM users WHERE email = $1", request.Email).Scan(&count)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to check email existence in ResendOTP: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process request"})
@@ -276,7 +281,7 @@ func ResendOTP(c *gin.Context) {
 		return
 	}
 
-	err = SendVerificationOTP(request.Email, request.FirstName, request.LastName, otp)
+	err = SendVerificationOTP(request.Email, user.FirstName, user.LastName, otp)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to send OTP in ResendOTP to %s: %v", request.Email, err)
 		response := gin.H{"error": "Failed to send OTP"}
@@ -475,7 +480,8 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
-	_, err = tx.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, user.ID)
+	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + user.ID.String()
+	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
 		// This is a warning because even if clearing fails, incrementing token_version still revokes.

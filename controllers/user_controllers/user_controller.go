@@ -254,6 +254,49 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 	})
 }
 
+// Check user status
+func (uc *UserController) IsUserRegistered(c *gin.Context) {
+	logger.InfoLogger.Info("IsUserRegistered called")
+
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("Error binding JSON for IsUserRegistered: %w", err))
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Invalid request payload. Please provide a valid email address."})
+		return
+	}
+
+	user, err := user_models.CheckUserStatus(context.Background(), db.DB, req.Email)
+
+	if err != nil {
+		// Handle unexpected database errors only
+		logger.ErrorLogger.Error(fmt.Errorf("Database error checking user status for %s: %w", req.Email, err))
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "An internal server error occurred. Please try again later."})
+		return
+	}
+
+	// Handle user status
+	switch user.Status {
+	case "Not found":
+		logger.InfoLogger.Infof("IsUserRegistered: No user found with email %s. Email is available for new user creation.", req.Email)
+		c.JSON(http.StatusOK, gin.H{"status": "Not found"}) // Use 200 and "status": "Not found"
+	case "Verified":
+		logger.InfoLogger.Infof("IsUserRegistered: User with email %s is verified.", req.Email)
+		c.JSON(http.StatusOK, gin.H{"status": "Verified"})
+	case "Pending":
+		logger.InfoLogger.Infof("IsUserRegistered: User with email %s is pending verification.", req.Email)
+		c.JSON(http.StatusOK, gin.H{"status": "Pending"})
+	case "VerificationExpired":
+		logger.InfoLogger.Infof("IsUserRegistered: User with email %s exists but verification expired.", req.Email)
+		c.JSON(http.StatusOK, gin.H{"status": "Not Verified"})
+	default:
+		logger.ErrorLogger.Errorf("IsUserRegistered: Unexpected user status %s for email %s.", user.Status, req.Email)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "An unexpected error occurred."})
+	}
+}
+
 // Register handles user registration
 func (uc *UserController) Register(c *gin.Context) {
 	logger.InfoLogger.Info("Register controller called")
@@ -577,7 +620,8 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
-	_, err = tx.Exec(context.Background(), `UPDATE users SET refresh_token = NULL WHERE id = $1`, user.ID)
+	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + user.ID.String()
+	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
 		// This is a warning because even if clearing fails, incrementing token_version still revokes.
@@ -714,7 +758,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 func (uc *UserController) Logout(c *gin.Context) {
 	logger.InfoLogger.Info("Logout controller called")
 
-	// Get user ID from the token in the context, as the request body is not reliable for auth
+	// Get user ID from the token in the context
 	userIDFromToken, exists := c.Get("user_id")
 	if !exists {
 		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
@@ -729,6 +773,13 @@ func (uc *UserController) Logout(c *gin.Context) {
 		return
 	}
 
+	// Clear the access token cookie
+	shared_models.RemoveJWTCookie(c, "access_token", "/")
+
+	// Clear the refresh token cookie
+	shared_models.RemoveJWTCookie(c, "refresh_token", "/")
+
+	// Remove refresh token from Redis
 	if err := user_models.LogoutUser(db.DB, userID); err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Failed to logout user %s: %v", userID, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
