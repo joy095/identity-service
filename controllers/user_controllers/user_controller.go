@@ -395,7 +395,6 @@ func (uc *UserController) Login(c *gin.Context) {
 	// Respond with user details (excluding tokens)
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":        user.ID,
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
@@ -843,12 +842,9 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 	// Return user's own profile (can include sensitive info)
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":        user.ID,
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
-			"createdAt": user.CreatedAt,
-			"updatedAt": user.UpdatedAt,
 		},
 	})
 }
