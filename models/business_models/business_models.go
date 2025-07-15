@@ -38,8 +38,7 @@ type Business struct {
 	OwnerID    uuid.UUID `json:"ownerId"`
 	PublicId   *string   `json:"publicId"`
 	// Helper field for primary image URL (computed from Images)
-	PrimaryImageURL *string                                `json:"primaryImageUrl,omitempty"`
-	Images          []*business_image_models.BusinessImage `json:"images,omitempty"`
+	Images []*business_image_models.BusinessImage `json:"images,omitempty"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.

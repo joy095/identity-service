@@ -831,22 +831,29 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 		return
 	}
 
-	userIDStr, ok := userIDFromToken.(uuid.UUID)
+	userIDStr, ok := userIDFromToken.(string)
 	if !ok {
-		logger.ErrorLogger.Error("Invalid user ID type in context")
+		logger.ErrorLogger.Error("Invalid user ID type in context (not a string)")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid UUID format in sub: %v", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
 	// Get user from database
-	user, err := user_models.GetUserByID(db.DB, userIDStr)
+	user, err := user_models.GetUserByID(db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Return user's own profile (can include sensitive info)
+	// Return user's own profile
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
 			"email":     user.Email,
