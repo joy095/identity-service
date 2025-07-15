@@ -10,17 +10,20 @@ import (
 func RegisterBusinessRoutes(router *gin.Engine) {
 	businessController := business_controller.NewBusinessController(db.DB)
 
-	// Public routes
+	// --- Public Routes ---
+	// These routes are accessible without authentication.
 	router.GET("/business", businessController.GetAllBusinesses)
 	router.GET("/business/:publicId", businessController.GetBusiness)
 
-	// Protected routes
+	// --- Protected Routes ---
+	// These routes require a valid authentication token.
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
+		// --- Business Core Routes ---
 		protected.POST("/business", businessController.CreateBusiness)
 		protected.PUT("/business/:publicId", businessController.UpdateBusiness)
-		protected.PUT("/business-image/:id", businessController.ReplaceBusinessImage)
-		protected.DELETE("/business/:id", businessController.DeleteBusiness)
+		// Corrected: Use :publicId to identify the business to delete.
+		protected.DELETE("/business/:publicId", businessController.DeleteBusiness)
 	}
 }

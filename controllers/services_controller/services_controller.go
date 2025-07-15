@@ -15,6 +15,7 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/service_models"
+	"github.com/joy095/identity/models/shared_models"
 )
 
 type ServiceController struct{}
@@ -154,8 +155,20 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 			return
 		}
 
-		authHeader := c.GetHeader("Authorization")
-		req.Header.Set("Authorization", authHeader)
+		// authHeader := c.GetHeader("Authorization")
+		// req.Header.Set("Authorization", authHeader)
+
+		accessToken, err := c.Cookie("access_token")
+		if err != nil || accessToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication token missing in cookie"})
+			return
+		}
+
+		if err := shared_models.SetJWTCookie(c, "access_token", accessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/"); err != nil {
+			logger.ErrorLogger.Errorf("Failed to set access token cookie: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set access token cookie"})
+			return
+		}
 
 		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)

@@ -57,12 +57,12 @@ func ParseJWTToken() gin.HandlerFunc {
 
 		// Validate token and extract claims
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-			// Extract and set user_id
-			if userID, exists := claims["user_id"]; exists {
-				c.Set("user_id", userID)
+			// Extract and set sub
+			if userID, exists := claims["sub"]; exists {
+				c.Set("sub", userID)
 			} else if sub, exists := claims["sub"]; exists {
-				// If user_id doesn't exist, try 'sub' claim
-				c.Set("user_id", sub)
+				// If sub doesn't exist, try 'sub' claim
+				c.Set("sub", sub)
 			} else {
 				logger.ErrorLogger.Error("No user identifier found in token")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
@@ -86,7 +86,7 @@ func ParseJWTToken() gin.HandlerFunc {
 				c.Set("token_type", tokenType)
 			}
 
-			logger.InfoLogger.Infof("Successfully parsed JWT token for user: %v", claims["user_id"])
+			logger.InfoLogger.Infof("Successfully parsed JWT token for user: %v", claims["sub"])
 			c.Next()
 		} else {
 			logger.ErrorLogger.Error("Invalid token claims")
@@ -97,8 +97,8 @@ func ParseJWTToken() gin.HandlerFunc {
 	}
 }
 
-// ExtractUserID extracts the user_id from the JWT token in the request context.
-// This function remains largely the same, as it only needs the user_id.
+// ExtractUserID extracts the sub from the JWT token in the request context.
+// This function remains largely the same, as it only needs the sub.
 func ExtractUserID(c *gin.Context) (string, error) {
 	authHeader := c.GetHeader("Authorization")
 	if authHeader == "" {
@@ -121,9 +121,9 @@ func ExtractUserID(c *gin.Context) (string, error) {
 		return "", errors.New("invalid token claims")
 	}
 
-	userIDFromToken, ok := claims["user_id"].(string)
+	userIDFromToken, ok := claims["sub"].(string)
 	if !ok {
-		return "", errors.New("token does not contain user_id")
+		return "", errors.New("token does not contain sub")
 	}
 
 	return userIDFromToken, nil
