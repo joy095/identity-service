@@ -141,6 +141,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 			s.is_active,
 			s.image_id,
 			s.created_at,
+			s.updated_at,
 			i.object_name
 		FROM
 			services AS s
@@ -161,6 +162,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 		&service.IsActive,
 		&service.ImageID, // Changed to pgtype.UUID to handle NULL
 		&service.CreatedAt,
+		&service.UpdatedAt,
 		&imageObjectName, // Scan the object_name into the new variable
 	)
 

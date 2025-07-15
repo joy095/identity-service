@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -155,7 +154,7 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 		// Enhanced error logging with fixed error type handling
 		logger.ErrorLogger.Errorf("Token validation error: %v", err)
 
-		log.Printf("Token validation error: %v", err)
+		logger.ErrorLogger.Errorf("Token validation error: %v", err)
 
 		return nil, nil, err
 	}
@@ -362,7 +361,7 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 }
 
 // GetUserByID retrieves a user by id
-func GetUserByID(db *pgxpool.Pool, id string) (*User, error) {
+func GetUserByID(db *pgxpool.Pool, id uuid.UUID) (*User, error) {
 	var user User
 	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE id = $1`
 	err := db.QueryRow(context.Background(), query, id).Scan(

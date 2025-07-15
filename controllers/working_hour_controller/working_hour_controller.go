@@ -124,7 +124,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
 
-	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour initialization: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -251,7 +251,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	}
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
 
-	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour bulk update: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -395,7 +395,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Owner User ID '%s' extracted for creating working hour for business %s", ownerUserID, req.BusinessID)
 
 	// Verify that the business exists and belongs to the authenticated user
-	business, err := business_models.GetBusinessByID(whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, req.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour creation: %v", req.BusinessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
@@ -535,7 +535,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
-	business, err := business_models.GetBusinessByID(whc.DB, existingWH.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, existingWH.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour %s ownership check: %v", existingWH.BusinessID, whID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
@@ -638,7 +638,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("Existing working hour %s found for business %s", whID, existingWH.BusinessID)
 
 	// Verify that the business associated with this working hour belongs to the authenticated user
-	business, err := business_models.GetBusinessByID(whc.DB, existingWH.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, existingWH.BusinessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour %s ownership check: %v", existingWH.BusinessID, whID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})

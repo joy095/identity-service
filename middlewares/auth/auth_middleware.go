@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/google/uuid"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/user_models"
@@ -40,17 +41,24 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok || claims["user_id"] == nil {
-			logger.ErrorLogger.Error("Invalid token claims or missing user_id")
+		if !ok || claims["sub"] == nil {
+			logger.ErrorLogger.Error("Invalid token claims or missing sub")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
 			return
 		}
 
 		// Extract user ID and token version
-		userID, ok := claims["user_id"].(string)
+		userIDClaim, ok := claims["sub"].(string)
 		if !ok {
-			logger.ErrorLogger.Error("Invalid user_id (user_id) in token")
+			logger.ErrorLogger.Error("Invalid sub in token")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID in token"})
+			return
+		}
+
+		userID, err := uuid.Parse(userIDClaim) // parse the string into a UUID
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse sub string '%s' into UUID: %v", userIDClaim, err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID format in token"})
 			return
 		}
 
@@ -84,7 +92,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Success
-		c.Set("user_id", user.ID.String())
+		c.Set("sub", user.ID.String())
 		c.Set("authenticated_user", user)
 		logger.InfoLogger.Infof("=== AuthMiddleware SUCCESS - User %s authenticated ===", user.ID)
 		c.Next()

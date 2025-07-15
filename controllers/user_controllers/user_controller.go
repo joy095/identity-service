@@ -34,7 +34,7 @@ func NewUserController() *UserController {
 func (uc *UserController) UpdateProfile(c *gin.Context) {
 	logger.InfoLogger.Info("UpdateProfile function called")
 
-	userIDFromToken, exists := c.Get("user_id")
+	userIDFromToken, exists := c.Get("sub")
 	if !exists {
 		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -59,7 +59,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := user_models.GetUserByID(db.DB, userID.String())
+	currentUser, err := user_models.GetUserByID(db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -108,7 +108,7 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
-	userIDFromToken, exists := c.Get("user_id")
+	userIDFromToken, exists := c.Get("sub")
 	if !exists {
 		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -122,7 +122,7 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := user_models.GetUserByID(db.DB, userID.String())
+	currentUser, err := user_models.GetUserByID(db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -395,7 +395,6 @@ func (uc *UserController) Login(c *gin.Context) {
 	// Respond with user details (excluding tokens)
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":        user.ID,
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
@@ -680,7 +679,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 		Scan(&user.ID, &user.Email, &user.TokenVersion)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.ErrorLogger.Error("User not found", "user_id", userID)
+			logger.ErrorLogger.Error("User not found", "sub", userID)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user"})
 			return
 		}
@@ -702,7 +701,7 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	redisKey := shared_utils.USER_REFRESH_TOKEN_PREFIX + userID.String()
 	storedToken, err := redisclient.GetRedisClient(c).Get(context.Background(), redisKey).Result()
 	if err != nil || storedToken != refreshToken {
-		logger.ErrorLogger.Error("Refresh token mismatch or not found in Redis", "user_id", userID)
+		logger.ErrorLogger.Error("Refresh token mismatch or not found in Redis", "sub", userID)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
 		return
 	}
@@ -759,7 +758,7 @@ func (uc *UserController) Logout(c *gin.Context) {
 	logger.InfoLogger.Info("Logout controller called")
 
 	// Get user ID from the token in the context
-	userIDFromToken, exists := c.Get("user_id")
+	userIDFromToken, exists := c.Get("sub")
 	if !exists {
 		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -796,7 +795,14 @@ func (uc *UserController) GetUserByID(c *gin.Context) {
 
 	id := c.Param("id")
 
-	user, err := user_models.GetUserByID(db.DB, id)
+	userID, err := uuid.Parse(id)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid user ID format: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		return
+	}
+
+	user, err := user_models.GetUserByID(db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -818,14 +824,14 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 	logger.InfoLogger.Info("GetMyProfile called")
 
 	// Get user ID from JWT token (set by AuthMiddleware)
-	userIDFromToken, exists := c.Get("user_id")
+	userIDFromToken, exists := c.Get("sub")
 	if !exists {
 		logger.ErrorLogger.Error("User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
 
-	userIDStr, ok := userIDFromToken.(string)
+	userIDStr, ok := userIDFromToken.(uuid.UUID)
 	if !ok {
 		logger.ErrorLogger.Error("Invalid user ID type in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
@@ -843,12 +849,9 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 	// Return user's own profile (can include sensitive info)
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":        user.ID,
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
-			"createdAt": user.CreatedAt,
-			"updatedAt": user.UpdatedAt,
 		},
 	})
 }

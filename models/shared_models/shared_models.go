@@ -34,7 +34,7 @@ func GenerateUUIDv7() (uuid.UUID, error) {
 
 // Claims represents the JWT claims for your tokens
 type Claims struct {
-	UserID       uuid.UUID `json:"user_id"`
+	UserID       uuid.UUID `json:"sub"`
 	Type         string    `json:"type"`
 	TokenVersion int       `json:"token_version"`
 	jwt.RegisteredClaims
@@ -82,7 +82,6 @@ func GenerateRefreshToken(userID uuid.UUID, tokenVersion int, duration time.Dura
 
 	claims := jwt.MapClaims{
 		"sub":           userID.String(),
-		"user_id":       userID.String(),
 		"iat":           now.Unix(),
 		"exp":           now.Add(duration).Unix(),
 		"nbf":           now.Unix(),
@@ -110,7 +109,6 @@ func GenerateAccessToken(userID uuid.UUID, tokenVersion int, duration time.Durat
 
 	claims := jwt.MapClaims{
 		"sub":           userID.String(),
-		"user_id":       userID.String(),
 		"iat":           now.Unix(),
 		"exp":           now.Add(duration).Unix(),
 		"nbf":           now.Unix(),

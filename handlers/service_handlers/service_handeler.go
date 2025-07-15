@@ -1,4 +1,4 @@
-// handlers/service_handlers/service_handlers.go
+// handlers/service_handlers/service_handler.go
 package service_handlers
 
 import (
@@ -79,7 +79,7 @@ func CreateService(c *gin.Context) {
 		return
 	}
 
-	logger.InfoLogger.Infof("Service '%s' created successfully via test route with image ID: %s", createdService.Name, imageID)
+	logger.InfoLogger.Infof("Service '%s' created successfully image ID: %s", createdService.Name, imageID)
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Service created successfully!",
 		"service": createdService,

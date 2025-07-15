@@ -52,6 +52,7 @@ func main() {
 
 	routes.RegisterUserRoutes(r)
 	routes.RegisterBusinessRoutes(r)
+	routes.RegisterBusinessImageRoutes(r)
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r, db.DB)
 

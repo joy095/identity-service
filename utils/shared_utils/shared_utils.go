@@ -73,15 +73,15 @@ func ClearOTP(ctx context.Context, key string) error {
 
 const charset = "0123456789-abcdefghijklmnopqrstuvwxyz"
 
-func GenerateTinyID(length int) string {
+func GenerateTinyID(length int) (string, error) {
 	result := make([]byte, length)
 	for i := 0; i < length; i++ {
 		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to generate random number: %v", err)
-			return ""
+			return "", fmt.Errorf("failed to generate random number: %w", err)
 		}
 		result[i] = charset[num.Int64()]
 	}
-	return string(result)
+	return string(result), nil
 }
