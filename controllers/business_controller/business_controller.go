@@ -175,6 +175,36 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"business": business})
 }
 
+func (bc *BusinessController) GetNotBusinessByUser(c *gin.Context) {
+	logger.InfoLogger.Info("GetBusinessByUser controller called")
+
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		logger.ErrorLogger.Error(`{"level":"error","message":"User ID not found in context","service":"identity-service"}`)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	business, err := business_models.GetNotBusinessByUserModel(c.Request.Context(), bc.DB, userID)
+	if err != nil {
+		logger.ErrorLogger.Errorf(`{"level":"error","message":"Failed to retrieve business : %v","service":"identity-service"}`, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve business"})
+		return
+	}
+
+	publicId := "nil"
+	if business.PublicId != nil {
+		publicId = *business.PublicId
+	}
+
+	logger.InfoLogger.Infof("Successfully retrieved business %s", publicId)
+
+	// Send response back to client
+	c.JSON(http.StatusOK, gin.H{
+		"business": business,
+	})
+}
+
 func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("UpdateBusiness controller called")
 	publicId := c.Param("publicId")
