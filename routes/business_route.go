@@ -17,13 +17,14 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 
 	// --- Protected Routes ---
 	// These routes require a valid authentication token.
-	protected := router.Group("/")
+	protected := router.Group("/business")
 	protected.Use(auth.AuthMiddleware())
 	{
+		protected.GET("/by-user", businessController.GetNotBusinessByUser)
 		// --- Business Core Routes ---
-		protected.POST("/business", businessController.CreateBusiness)
-		protected.PUT("/business/:publicId", businessController.UpdateBusiness)
+		protected.POST("/", businessController.CreateBusiness)
+		protected.PUT("/:publicId", businessController.UpdateBusiness)
 		// Corrected: Use :publicId to identify the business to delete.
-		protected.DELETE("/business/:publicId", businessController.DeleteBusiness)
+		protected.DELETE("/:publicId", businessController.DeleteBusiness)
 	}
 }

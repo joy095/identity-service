@@ -2,6 +2,7 @@ package business_models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -258,6 +259,83 @@ func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId strin
 	}
 
 	logger.InfoLogger.Infof("Business with public ID %s fetched successfully (including images)", publicId)
+	return business, nil
+}
+
+func GetNotBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) (*Business, error) {
+	logger.InfoLogger.Infof("Attempting to fetch inactive business for user ID: %s", userID)
+
+	business := &Business{}
+	query := `
+		SELECT 
+				b.id,
+				b.name,
+				b.category,
+				b.address,
+				b.city,
+				b.state,
+				b.country,
+				b.postal_code,
+				b.tax_id,
+				b.about,
+				b.location_latitude,
+				b.location_longitude,
+				b.created_at,
+				b.updated_at,
+				b.is_active,
+				b.owner_id,
+				b.public_id
+		FROM
+			businesses AS b
+		WHERE
+			b.owner_id = $1 AND b.is_active = false
+		LIMIT 1;
+	`
+
+	err := db.QueryRow(ctx, query, userID).Scan(
+		&business.ID,
+		&business.Name,
+		&business.Category,
+		&business.Address,
+		&business.City,
+		&business.State,
+		&business.Country,
+		&business.PostalCode,
+		&business.TaxID,
+		&business.About,
+		&business.Latitude,
+		&business.Longitude,
+		&business.CreatedAt,
+		&business.UpdatedAt,
+		&business.IsActive,
+		&business.OwnerID,
+		&business.PublicId,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.ErrorLogger.Errorf("No inactive business found for user ID %s: %v", userID, err)
+			return nil, fmt.Errorf("inactive business not found: %w", err)
+		}
+		logger.ErrorLogger.Errorf("Database error fetching inactive business for user ID %s: %v", userID, err)
+		return nil, fmt.Errorf("database error fetching inactive business: %w", err)
+	}
+
+	// Fetch associated images
+	images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to retrieve images for business ID %s: %v", business.ID, err)
+		business.Images = []*business_image_models.BusinessImage{}
+	} else {
+		business.Images = images
+	}
+
+	publicId := "nil"
+	if business.PublicId != nil {
+		publicId = *business.PublicId
+	}
+	logger.InfoLogger.Infof("Inactive business %s fetched successfully for user ID %s", publicId, userID)
+
 	return business, nil
 }
 
