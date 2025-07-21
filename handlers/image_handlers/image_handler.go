@@ -44,10 +44,8 @@ type BulkUploadResponse struct {
 func processMultiImageResponse(c *gin.Context, resp *http.Response) ([]uuid.UUID, error) {
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		errMessage := "failed to read multi-image response from image service"
-		logger.ErrorLogger.Error(errMessage)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": errMessage})
-		return nil, fmt.Errorf(errMessage)
+		logger.ErrorLogger.Error("failed to read multi-image response from image service: %w", err)
+		return nil, fmt.Errorf("failed to read multi-image response from image service: %w", err)
 	}
 
 	// --- ADD THIS LINE TO SEE THE RAW RESPONSE Go RECEIVED ---
@@ -296,7 +294,6 @@ func prepareSingleMultipartRequest(fileHeader *multipart.FileHeader) (*bytes.Buf
 func prepareMultipleMultipartRequest(files []*multipart.FileHeader) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	defer writer.Close()
 
 	for _, fileHeader := range files {
 		file, err := fileHeader.Open()
@@ -304,18 +301,27 @@ func prepareMultipleMultipartRequest(files []*multipart.FileHeader) (*bytes.Buff
 			logger.ErrorLogger.Errorf("Failed to open uploaded file %s: %v", fileHeader.Filename, err)
 			return nil, "", err
 		}
-		defer file.Close()
 
 		part, err := writer.CreateFormFile("images", fileHeader.Filename)
 		if err != nil {
+			file.Close()
 			logger.ErrorLogger.Errorf("Failed to create form file for %s: %v", fileHeader.Filename, err)
 			return nil, "", err
 		}
 
 		if _, err = io.Copy(part, file); err != nil {
+			file.Close()
 			logger.ErrorLogger.Errorf("Failed to copy file data for %s: %v", fileHeader.Filename, err)
 			return nil, "", err
 		}
+		// Close file immediately after use
+		file.Close()
+	}
+
+	// Close the writer to flush any buffered data
+	if err := writer.Close(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
+		return nil, "", err
 	}
 
 	return body, writer.FormDataContentType(), nil

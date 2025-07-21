@@ -153,6 +153,19 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
+	// Check if new email is already taken
+	existingUser, err := user_models.GetUserByEmail(context.Background(), db.DB, req.NewEmail)
+	if err == nil && existingUser.ID != userID {
+		logger.InfoLogger.Info(fmt.Sprintf("Email %s already taken during update attempt by user %s", req.NewEmail, userID))
+		c.JSON(http.StatusConflict, gin.H{"error": "Email already in use"})
+		return
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		logger.ErrorLogger.Error(fmt.Sprintf("Error checking email availability: %v", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
 	// 4. Generate and send OTP to the new email
 	otp, err := utils.GenerateSecureOTP()
 	if err != nil {

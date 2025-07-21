@@ -22,12 +22,12 @@ type Service struct {
 	Name            string      `json:"name"`
 	Description     string      `json:"description,omitempty"`
 	DurationMinutes int         `json:"durationMinutes"`
-	Price           float64     `json:"price"` // Use float64 for price for convenience, or string for exact decimal handling
+	Price           int64       `json:"price"` // Use int64 for price for convenience, or string for exact decimal handling
 	ImageID         pgtype.UUID `json:"imageId"`
 	IsActive        bool        `json:"isActive"`
 	CreatedAt       time.Time   `json:"createdAt"`
 	UpdatedAt       time.Time   `json:"updatedAt"`
-	ObjectName      *string     `json:"object_name"`
+	ObjectName      *string     `json:"object_name,omitempty"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -35,7 +35,7 @@ func NewService(
 	businessID uuid.UUID,
 	name, description string,
 	durationMinutes int,
-	price float64,
+	price int64,
 ) *Service {
 	now := time.Now()
 	return &Service{
@@ -57,7 +57,7 @@ func NewServiceWithImage(
 	businessID uuid.UUID,
 	name, description string,
 	durationMinutes int,
-	price float64,
+	price int64,
 	imageID uuid.UUID,
 ) *Service {
 	now := time.Now()
@@ -124,7 +124,7 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 }
 
 // GetServiceByIDModel fetches a service record by its ID.
-func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
+func GetServiceByIDModel(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", id)
 
 	service := &Service{}
@@ -152,7 +152,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 		`
 
 	// Make sure the order of arguments in Scan matches the order of columns in SELECT
-	err := db.QueryRow(context.Background(), query, id).Scan(
+	err := db.QueryRow(ctx, query, id).Scan(
 		&service.ID,
 		&service.BusinessID,
 		&service.Name,
@@ -182,7 +182,7 @@ func GetServiceByIDModel(db *pgxpool.Pool, id uuid.UUID) (*Service, error) {
 	return service, nil
 }
 
-func GetAllServicesModel(db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
+func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
 	logger.InfoLogger.Info("Attempting to fetch all services for business ID: " + businessID.String())
 
 	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
@@ -275,7 +275,7 @@ func GetAllServicesModel(db *pgxpool.Pool, businessID uuid.UUID) ([]Service, err
 }
 
 // GetServicesByBusinessID fetches all services for a given business ID.
-func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
+func GetServicesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch services for Business ID: %s", businessID)
 
 	var services []Service
@@ -327,7 +327,7 @@ func GetServicesByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Service,
 }
 
 // UpdateServiceModel updates an existing service record in the database.
-func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
+func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to update service record with ID: %s", service.ID)
 
 	service.UpdatedAt = time.Now() // Update timestamp on modification
@@ -346,7 +346,7 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 			id = $1 AND business_id = $9
 		`
 
-	res, err := db.Exec(context.Background(), query,
+	res, err := db.Exec(ctx, query,
 		service.ID,
 		service.Name,
 		service.Description,
@@ -372,7 +372,7 @@ func UpdateServiceModel(db *pgxpool.Pool, service *Service) (*Service, error) {
 }
 
 // DeleteServiceByIDModel deletes a service record from the database.
-func DeleteServiceByIDModel(db *pgxpool.Pool, serviceID, businessID uuid.UUID) error {
+func DeleteServiceByIDModel(ctx context.Context, db *pgxpool.Pool, serviceID, businessID uuid.UUID) error {
 	logger.InfoLogger.Infof("Attempting to delete service record with ID: %s for Business ID: %s", serviceID, businessID)
 
 	query := `DELETE FROM services WHERE id = $1 AND business_id = $2` // Include business_id for ownership check

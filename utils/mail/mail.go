@@ -330,7 +330,7 @@ func VerifyEmail(c *gin.Context) {
 		return
 	}
 
-	user, err := user_models.GetUserByEmail(context.Background(), db.DB, request.Email)
+	user, err := user_models.GetUserByEmail(c.Request.Context(), db.DB, request.Email)
 	if err != nil || user.Email != request.Email {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User not found or email mismatch"})
 		return
@@ -438,7 +438,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// Get user
-	user, err := user_models.GetUserByEmail(context.Background(), db.DB, request.Email)
+	user, err := user_models.GetUserByEmail(c.Request.Context(), db.DB, request.Email)
 	if err != nil || user.Email != request.Email {
 		logger.ErrorLogger.Errorf("User not found or email mismatch for forgot password: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found or email mismatch"})
@@ -454,16 +454,16 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// --- Start Transaction for Atomicity ---
-	tx, err := db.DB.Begin(context.Background())
+	tx, err := db.DB.Begin(c.Request.Context())
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to begin transaction for password change", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
-	defer tx.Rollback(context.Background()) // Rollback on error
+	defer tx.Rollback(c.Request.Context()) // Rollback on error
 
 	// 1. Update the password in the database
-	_, err = tx.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
+	_, err = tx.Exec(c.Request.Context(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
@@ -471,7 +471,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// 2. Increment the token_version
-	_, err = tx.Exec(context.Background(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
+	_, err = tx.Exec(c.Request.Context(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke old tokens"})
@@ -489,7 +489,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	}
 
 	// --- Commit Transaction ---
-	if err := tx.Commit(context.Background()); err != nil {
+	if err := tx.Commit(c.Request.Context()); err != nil {
 		logger.ErrorLogger.Error("Failed to commit password change transaction", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return

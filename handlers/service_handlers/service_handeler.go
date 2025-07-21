@@ -22,20 +22,20 @@ import (
 )
 
 type CreateServiceRequest struct {
-	BusinessID      string  `form:"businessId" binding:"required"`
-	Name            string  `form:"name" binding:"required"`
-	Description     string  `form:"description,omitempty"`
-	DurationMinutes int     `form:"durationMinutes" binding:"required"`
-	Price           float64 `form:"price" binding:"required"`
-	IsActive        bool    `form:"isActive,omitempty"`
+	BusinessID      string `form:"businessId" binding:"required"`
+	Name            string `form:"name" binding:"required"`
+	Description     string `form:"description,omitempty"`
+	DurationMinutes int    `form:"durationMinutes" binding:"required"`
+	Price           int64  `form:"price" binding:"required"`
+	IsActive        bool   `form:"isActive,omitempty"`
 }
 
 type UpdateServiceRequest struct {
-	Name            *string  `form:"name"`
-	Description     *string  `form:"description"`
-	DurationMinutes *int     `form:"durationMinutes"`
-	Price           *float64 `form:"price"`
-	IsActive        *bool    `form:"isActive"`
+	Name            *string `form:"name"`
+	Description     *string `form:"description"`
+	DurationMinutes *int    `form:"durationMinutes"`
+	Price           *int64  `form:"price"`
+	IsActive        *bool   `form:"isActive"`
 }
 
 type ImageUploadResponse struct {
@@ -57,10 +57,6 @@ func CreateService(c *gin.Context) {
 		logger.ErrorLogger.Errorf("Invalid Business ID format: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid format for businessId. Must be a valid UUID."})
 		return
-	}
-
-	if !req.IsActive {
-		req.IsActive = true
 	}
 
 	authHeader := c.GetHeader("Authorization")
@@ -164,7 +160,10 @@ func sendImageToService(body *bytes.Buffer, contentType string, authHeader strin
 		pythonServerURL = "http://localhost:8082/upload-image/"
 	}
 
-	httpReq, _ := http.NewRequest("POST", pythonServerURL, body)
+	httpReq, err := http.NewRequest("POST", pythonServerURL, body)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Authorization", authHeader)
 
@@ -240,7 +239,7 @@ func UpdateService(c *gin.Context) {
 		return
 	}
 
-	existingService, err := service_models.GetServiceByIDModel(db.DB, serviceID)
+	existingService, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows in result set") {
 			logger.ErrorLogger.Errorf("Service with ID %s not found", serviceIDStr)
@@ -308,7 +307,7 @@ func UpdateService(c *gin.Context) {
 		return
 	}
 
-	updatedService, err := service_models.UpdateServiceModel(db.DB, existingService)
+	updatedService, err := service_models.UpdateServiceModel(c.Request.Context(), db.DB, existingService)
 	if err != nil {
 		HandleServiceCreationError(c, err) // Can reuse the same error handler for conflicts
 		return

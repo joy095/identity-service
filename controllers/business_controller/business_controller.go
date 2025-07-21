@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/joy095/identity/badwords" // <-- IMPORT the shared image handler
+	"github.com/joy095/identity/badwords"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/utils"
@@ -44,12 +44,11 @@ type CreateBusinessRequest struct {
 	City       string  `form:"city" binding:"required,min=2,max=50"`
 	State      string  `form:"state" binding:"required,min=2,max=50"`
 	Country    string  `form:"country" binding:"required,min=2,max=50"`
-	PostalCode string  `form:"postalCode" binding:"required,min=3,max=20"`
+	PostalCode string  `form:"postalCode" binding:"omitempty,min=3,max=20"`
 	TaxID      string  `form:"taxId,omitempty"`
 	About      string  `form:"about,omitempty"`
 	Latitude   float64 `form:"latitude" binding:"omitempty,min=-90,max=90"`
 	Longitude  float64 `form:"longitude" binding:"omitempty,min=-180,max=180"`
-	PublicId   string  `form:"publicId"`
 }
 
 // UpdateBusinessRequest represents the JSON payload for updating a business.
@@ -102,11 +101,11 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process request"})
 		return
 	}
-	PublicId := sanitizedName + "-" + tinyID
+	publicId := sanitizedName + "-" + tinyID
 
 	business, err := business_models.NewBusiness(
 		req.Name, req.Category, req.Address, req.City, req.State, req.Country,
-		req.PostalCode, req.TaxID, req.About, PublicId, req.Latitude, req.Longitude, userID,
+		req.PostalCode, req.TaxID, req.About, publicId, req.Latitude, req.Longitude, userID,
 	)
 	if err != nil {
 		logger.ErrorLogger.WithFields(map[string]interface{}{"error": err.Error()}).Error("Failed to create business model instance")
@@ -175,8 +174,9 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"business": business})
 }
 
-func (bc *BusinessController) GetNotBusinessByUser(c *gin.Context) {
-	logger.InfoLogger.Info("GetBusinessByUser controller called")
+// GetNotActiveBusinessByUser handles the request to get all inactive businesses for the authenticated user.
+func (bc *BusinessController) GetNotActiveBusinessByUser(c *gin.Context) {
+	logger.InfoLogger.Info("GetNotActiveBusinessByUser controller called")
 
 	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
@@ -185,23 +185,20 @@ func (bc *BusinessController) GetNotBusinessByUser(c *gin.Context) {
 		return
 	}
 
-	business, err := business_models.GetNotBusinessByUserModel(c.Request.Context(), bc.DB, userID)
+	// Call the model function to get all inactive businesses
+	businesses, err := business_models.GetNotActiveBusinessByUserModel(c.Request.Context(), bc.DB, userID)
 	if err != nil {
-		logger.ErrorLogger.Errorf(`{"level":"error","message":"Failed to retrieve business : %v","service":"identity-service"}`, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve business"})
+		logger.ErrorLogger.Errorf(`{"level":"error","message":"Failed to retrieve businesses for user: %v","service":"identity-service"}`, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
 		return
 	}
 
-	publicId := "nil"
-	if business.PublicId != nil {
-		publicId = *business.PublicId
-	}
-
-	logger.InfoLogger.Infof("Successfully retrieved business %s", publicId)
+	// Log the number of businesses found
+	logger.InfoLogger.Infof("Successfully retrieved %d inactive businesses for user ID %s", len(businesses), userID)
 
 	// Send response back to client
 	c.JSON(http.StatusOK, gin.H{
-		"business": business,
+		"businesses": businesses, // Changed key from "business" to "businesses" to reflect multiple items
 	})
 }
 
@@ -212,6 +209,17 @@ func (bc *BusinessController) UpdateBusiness(c *gin.Context) {
 	var req UpdateBusinessRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request data: %s", err.Error())})
+		return
+	}
+
+	if req.Name != nil && badwords.ContainsBadWords(*req.Name) ||
+		req.Address != nil && badwords.ContainsBadWords(*req.Address) ||
+		req.About != nil && badwords.ContainsBadWords(*req.About) ||
+		req.City != nil && badwords.ContainsBadWords(*req.City) ||
+		req.State != nil && badwords.ContainsBadWords(*req.State) ||
+		req.Country != nil && badwords.ContainsBadWords(*req.Country) {
+		logger.WarnLogger.Warn("Rejected update request due to inappropriate content")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Request contains inappropriate language"})
 		return
 	}
 
@@ -316,6 +324,14 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 
 	// Delete associated data first (images, services, etc.)
 	err = business_models.DeleteImageAndReferences(c.Request.Context(), bc.DB, existingBusiness.ID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to delete business %s: %v", publicId, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})
+		return
+	}
+
+	// Delete the business
+	err = business_models.DeleteBusiness(c.Request.Context(), bc.DB, existingBusiness.ID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business %s: %v", publicId, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete business"})

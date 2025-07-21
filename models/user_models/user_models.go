@@ -273,7 +273,7 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + userID.String()
 	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to clear refresh token from DB for user %s: %v", userID, err)
+		logger.ErrorLogger.Errorf("Failed to clear refresh token from Redis for user %s: %v", userID, err)
 		return fmt.Errorf("failed to clear refresh token from DB: %w", err)
 	}
 
@@ -343,7 +343,7 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 
 	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE email = $1`
 
-	err := db.QueryRow(context.Background(), query, email).Scan(
+	err := db.QueryRow(ctx, query, email).Scan(
 		&user.ID,
 		&user.Email,
 		&user.FirstName,

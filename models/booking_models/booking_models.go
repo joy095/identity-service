@@ -45,6 +45,7 @@ func NewBooking(businessID, serviceID, slotID, customerID uuid.UUID, status stri
 func CreateBooking(ctx context.Context, db *pgxpool.Pool, booking *Booking) (*Booking, error) {
 	logger.InfoLogger.Infof("Attempting to create booking record for slot ID: %s", booking.SlotID)
 
+	// Ensure booking has an ID and timestamps
 	if booking.ID == uuid.Nil {
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -52,9 +53,11 @@ func CreateBooking(ctx context.Context, db *pgxpool.Pool, booking *Booking) (*Bo
 		}
 		booking.ID = id
 	}
-	now := time.Now()
-	booking.CreatedAt = now
-	booking.UpdatedAt = now
+	if booking.CreatedAt.IsZero() {
+		now := time.Now()
+		booking.CreatedAt = now
+		booking.UpdatedAt = now
+	}
 
 	query := `
 		INSERT INTO bookings (

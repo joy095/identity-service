@@ -56,7 +56,7 @@ func (sc *ServiceController) GetAllServiceByBusiness(c *gin.Context) {
 		return
 	}
 
-	services, err := service_models.GetAllServicesModel(db.DB, businessID)
+	services, err := service_models.GetAllServicesModel(c.Request.Context(), db.DB, businessID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
@@ -90,7 +90,7 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 		return
 	}
 
-	service, err := service_models.GetServiceByIDModel(db.DB, serviceID)
+	service, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
@@ -125,15 +125,15 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 		return
 	}
 
-	service, err := service_models.GetServiceByIDModel(db.DB, serviceID)
+	service, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Service not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
 
 		} else {
 			logger.ErrorLogger.Error("Failed to fetch service: " + err.Error())
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to fetch service"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
 
 		}
 		logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
@@ -152,6 +152,8 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 		req, err := http.NewRequest("DELETE", url, nil)
 		if err != nil {
 			logger.ErrorLogger.Error("Failed to create delete request: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create image deletion request"})
+
 			return
 		}
 
@@ -174,6 +176,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 		resp, err := client.Do(req)
 		if err != nil {
 			logger.ErrorLogger.Error("Failed to delete image: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete image from image service"})
 			return
 		}
 		defer resp.Body.Close()
@@ -185,7 +188,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 			return
 		}
 
-		err = service_models.DeleteServiceByIDModel(db.DB, serviceID, service.BusinessID)
+		err = service_models.DeleteServiceByIDModel(req.Context(), db.DB, serviceID, service.BusinessID)
 		if err != nil {
 			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})

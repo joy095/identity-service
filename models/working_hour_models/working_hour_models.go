@@ -3,6 +3,7 @@ package working_hour_models
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,24 @@ func NewWorkingHour(
 	dayOfWeek, openTime, closeTime string,
 	isClosed bool,
 ) *WorkingHour {
+	// Validate day of week
+	validDays := map[string]bool{
+		"Sunday": true, "Monday": true, "Tuesday": true, "Wednesday": true,
+		"Thursday": true, "Friday": true, "Saturday": true,
+	}
+	if !validDays[dayOfWeek] {
+		logger.ErrorLogger.Errorf("Invalid day of week: %s", dayOfWeek)
+		return nil
+	}
+
+	// Validate time format (HH:MM:SS)
+	timeRegex := regexp.MustCompile(`^([0-1]?[0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])$`)
+	if !isClosed {
+		if !timeRegex.MatchString(openTime) || !timeRegex.MatchString(closeTime) {
+			logger.ErrorLogger.Errorf("Invalid time format. Expected HH:MM:SS")
+			return nil
+		}
+	}
 	now := time.Now()
 	wh := &WorkingHour{
 		ID:         uuid.New(),
@@ -45,7 +64,7 @@ func NewWorkingHour(
 }
 
 // CreateWorkingHour inserts a new working hour slot into the database using the pool.
-func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
+func CreateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s (using pool)", wh.BusinessID, wh.DayOfWeek)
 
 	query := `
@@ -55,10 +74,9 @@ func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 		)
 		VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8
-		) RETURNING id`
+		)`
 
-	var returnedID uuid.UUID
-	if err := db.QueryRow(context.Background(), query,
+	if _, err := db.Exec(ctx, query,
 		wh.ID,
 		wh.BusinessID,
 		wh.DayOfWeek,
@@ -67,7 +85,8 @@ func CreateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 		wh.IsClosed,
 		wh.CreatedAt,
 		wh.UpdatedAt,
-	).Scan(&returnedID); err != nil {
+	); err != nil {
+
 		logger.ErrorLogger.Errorf("Failed to insert working hour for BusinessID: %s, Day: %s into database: %v", wh.BusinessID, wh.DayOfWeek, err)
 		return nil, fmt.Errorf("failed to create working hour: %w", err)
 	}
@@ -207,7 +226,7 @@ func GetWorkingHoursByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Work
 	return whs, nil
 }
 
-// GetWorkingHoursByBusinessID fetches all working hours for a given business ID.
+// GetWorkingHoursByBusinessPublicID fetches all working hours for a given business ID.
 func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to fetch working hours for Business Public ID: %s", publicID)
 
@@ -360,14 +379,14 @@ func UpdateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*Work
 }
 
 // DeleteWorkingHour deletes a working hour record by its ID and business ID.
-func DeleteWorkingHour(db *pgxpool.Pool, id uuid.UUID, businessID uuid.UUID) error {
+func DeleteWorkingHour(ctx context.Context, db *pgxpool.Pool, id uuid.UUID, businessID uuid.UUID) error {
 	logger.InfoLogger.Infof("Attempting to delete working hour ID: %s for BusinessID: %s", id, businessID)
 
 	query := `
 		DELETE FROM working_hours
 		WHERE id = $1 AND business_id = $2` // Added business_id to ensure ownership before delete
 
-	commandTag, err := db.Exec(context.Background(), query, id, businessID)
+	commandTag, err := db.Exec(ctx, query, id, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete working hour ID %s for BusinessID %s from database: %v", id, businessID, err)
 		return fmt.Errorf("failed to delete working hour: %w", err)

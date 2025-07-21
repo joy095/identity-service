@@ -420,7 +420,7 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 	logger.InfoLogger.Debugf("New WorkingHour model created for BusinessID: %s, Day: %s", wh.BusinessID, wh.DayOfWeek)
 
 	// Use the non-transactional CreateWorkingHour
-	createdWH, err := working_hour_models.CreateWorkingHour(whc.DB, wh)
+	createdWH, err := working_hour_models.CreateWorkingHour(c.Request.Context(), whc.DB, wh)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create working hour in database for business %s, day %s: %v", req.BusinessID, req.DayOfWeek, err)
 		// Check for specific errors, e.g., unique constraint violation
@@ -651,7 +651,7 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 		return
 	}
 
-	if err := working_hour_models.DeleteWorkingHour(whc.DB, whID, existingWH.BusinessID); err != nil {
+	if err := working_hour_models.DeleteWorkingHour(c.Request.Context(), whc.DB, whID, existingWH.BusinessID); err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete working hour %s for business %s from database: %v", whID, existingWH.BusinessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete working hour"})
 		return

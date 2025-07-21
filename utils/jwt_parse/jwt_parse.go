@@ -58,11 +58,16 @@ func ParseJWTToken() gin.HandlerFunc {
 		// Validate token and extract claims
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			// Extract and set sub
-			if userID, exists := claims["sub"]; exists {
-				c.Set("sub", userID)
-			} else if sub, exists := claims["sub"]; exists {
-				// If sub doesn't exist, try 'sub' claim
-				c.Set("sub", sub)
+			// Extract and set sub claim
+			if sub, exists := claims["sub"]; exists {
+				if subStr, ok := sub.(string); ok {
+					c.Set("sub", subStr)
+				} else {
+					logger.ErrorLogger.Error("Sub claim is not a string")
+					c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
+					c.Abort()
+					return
+				}
 			} else {
 				logger.ErrorLogger.Error("No user identifier found in token")
 				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})

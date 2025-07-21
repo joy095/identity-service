@@ -20,7 +20,7 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 	protected := router.Group("/business")
 	protected.Use(auth.AuthMiddleware())
 	{
-		protected.GET("/by-user", businessController.GetNotBusinessByUser)
+		protected.GET("/by-user", businessController.GetNotActiveBusinessByUser)
 		// --- Business Core Routes ---
 		protected.POST("/", businessController.CreateBusiness)
 		protected.PUT("/:publicId", businessController.UpdateBusiness)

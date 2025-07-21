@@ -18,7 +18,7 @@ type PaymentTransaction struct {
 	BookingID         uuid.UUID  `json:"booking_id"`
 	RazorpayOrderID   string     `json:"razorpay_order_id"`
 	RazorpayPaymentID string     `json:"razorpay_payment_id"`
-	Amount            float64    `json:"amount"`
+	Amount            int64      `json:"amount"`
 	Currency          string     `json:"currency"`
 	Status            string     `json:"status"`      // e.g., "created", "authorized", "captured", "failed"
 	CapturedAt        *time.Time `json:"captured_at"` // Nullable timestamp
@@ -29,7 +29,7 @@ type PaymentTransaction struct {
 }
 
 // NewPaymentTransaction creates a new PaymentTransaction struct.
-func NewPaymentTransaction(bookingID uuid.UUID, rzpOrderID string, amount float64, currency string) (*PaymentTransaction, error) {
+func NewPaymentTransaction(bookingID uuid.UUID, rzpOrderID string, amount int64, currency string) (*PaymentTransaction, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate UUID for payment transaction: %w", err)

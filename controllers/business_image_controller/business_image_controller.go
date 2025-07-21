@@ -20,6 +20,10 @@ type BusinessImageController struct {
 
 // NewBusinessImageController creates a new instance of BusinessImageController.
 func NewBusinessImageController(db *pgxpool.Pool) *BusinessImageController {
+	if db == nil {
+		panic("database pool cannot be nil")
+	}
+
 	return &BusinessImageController{
 		DB: db,
 	}
@@ -71,8 +75,12 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 			if idx, parseErr := strconv.Atoi(primaryIndexStr); parseErr == nil && idx >= 0 && idx < len(uploadedImageIDs) {
 				primaryImageIndex = idx
 			} else {
-				logger.ErrorLogger.Errorf("Invalid primaryImageIndex provided: %s", primaryIndexStr)
-				// Optionally, return an error here if invalid index is critical
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid primaryImageIndex provided"})
+				// Clean up uploaded images
+				for _, uploadedID := range uploadedImageIDs {
+					image_handlers.DeleteImage(uploadedID, accessToken)
+				}
+				return
 			}
 		}
 		primaryImageID = uploadedImageIDs[primaryImageIndex]
