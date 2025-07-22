@@ -13,6 +13,8 @@ func RegisterBusinessImageRoutes(router *gin.Engine) {
 		return
 	}
 
+	router.GET("/business-image/:publicId", businessImageController.GetAllImages)
+
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	// All these routes operate on images belonging to a specific business (:publicId).

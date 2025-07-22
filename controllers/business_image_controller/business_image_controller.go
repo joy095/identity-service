@@ -30,6 +30,31 @@ func NewBusinessImageController(db *pgxpool.Pool) (*BusinessImageController, err
 	}, nil
 }
 
+// GetAllImages retrieves all images associated with a business.
+func (bc *BusinessImageController) GetAllImages(c *gin.Context) {
+	logger.InfoLogger.Info("GetAllImages controller called")
+
+	publicId := c.Param("publicId")
+
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		return
+	}
+
+	businessImages, err := business_image_models.GetAllImagesModel(c.Request.Context(), bc.db, business.ID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get business images: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve images"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"images": businessImages,
+	})
+}
+
 // AddBusinessImages handles adding multiple images to a business in a single request.
 func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 	logger.InfoLogger.Info("AddBusinessImages controller called")

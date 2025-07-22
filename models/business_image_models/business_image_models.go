@@ -1,11 +1,11 @@
 package business_image_models
 
 import (
-	"slices"
 	"context"
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,7 +22,59 @@ type BusinessImage struct {
 	Position   *int      `json:"position,omitempty"` // Added position field
 	IsPrimary  bool      `json:"isPrimary"`
 	ObjectName *string   `json:"objectName,omitempty"` // From the 'images' table
+	R2URL      *string   `json:"r2Url,omitempty"`      // From the 'images' table
 	CreatedAt  time.Time `json:"createdAt"`            // From the 'images' table (uploaded_at)
+}
+
+// GetAllImagesModel retrieves all images associated with a business.
+func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]*BusinessImage, error) {
+	query := `
+        SELECT
+            bi.image_id,
+            bi.business_id,
+            bi.position,
+            bi.is_primary,
+            i.object_name,
+            i.r2_url,
+            i.uploaded_at
+        FROM
+            business_images AS bi
+        JOIN images AS i ON i.id = bi.image_id
+        WHERE
+            bi.business_id = $1
+        ORDER BY
+            bi.position ASC;
+    `
+	logger.InfoLogger.Infof("Executing query: %s", query)
+
+	rows, err := db.Query(ctx, query, businessID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to execute query: %v", err)
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	var images []*BusinessImage
+
+	for rows.Next() {
+		image := &BusinessImage{}
+		err := rows.Scan(
+			&image.ImageID,
+			&image.BusinessID,
+			&image.Position,
+			&image.IsPrimary,
+			&image.ObjectName,
+			&image.R2URL,
+			&image.CreatedAt,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan row: %v", err)
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		images = append(images, image)
+	}
+
+	return images, nil
 }
 
 // AddBusinessImages adds multiple image associations for a given business.
