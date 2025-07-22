@@ -36,14 +36,14 @@ func (bc *BusinessImageController) GetAllImages(c *gin.Context) {
 
 	publicId := c.Param("publicId")
 
-	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
+	businessId, err := business_models.GetBusinessIdOnly(c.Request.Context(), bc.db, publicId)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
 
-	businessImages, err := business_image_models.GetAllImagesModel(c.Request.Context(), bc.db, business.ID)
+	businessImages, err := business_image_models.GetAllImagesModel(c.Request.Context(), bc.db, businessId)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get business images: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve images"})

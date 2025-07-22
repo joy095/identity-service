@@ -30,13 +30,9 @@ type BusinessImage struct {
 func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]*BusinessImage, error) {
 	query := `
         SELECT
-            bi.image_id,
-            bi.business_id,
             bi.position,
             bi.is_primary,
-            i.object_name,
-            i.r2_url,
-            i.uploaded_at
+            i.object_name
         FROM
             business_images AS bi
         JOIN images AS i ON i.id = bi.image_id
@@ -59,13 +55,9 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 	for rows.Next() {
 		image := &BusinessImage{}
 		err := rows.Scan(
-			&image.ImageID,
-			&image.BusinessID,
 			&image.Position,
 			&image.IsPrimary,
 			&image.ObjectName,
-			&image.R2URL,
-			&image.CreatedAt,
 		)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan row: %v", err)
