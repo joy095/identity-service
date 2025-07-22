@@ -3,7 +3,10 @@ package business_image_models
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,12 +22,62 @@ type BusinessImage struct {
 	Position   *int      `json:"position,omitempty"` // Added position field
 	IsPrimary  bool      `json:"isPrimary"`
 	ObjectName *string   `json:"objectName,omitempty"` // From the 'images' table
+	R2URL      *string   `json:"r2Url,omitempty"`      // From the 'images' table
 	CreatedAt  time.Time `json:"createdAt"`            // From the 'images' table (uploaded_at)
+}
+
+// GetAllImagesModel retrieves all images associated with a business.
+func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]*BusinessImage, error) {
+	query := `
+        SELECT
+            bi.position,
+            bi.is_primary,
+            i.object_name
+        FROM
+            business_images AS bi
+        JOIN images AS i ON i.id = bi.image_id
+        WHERE
+            bi.business_id = $1
+        ORDER BY
+            bi.position ASC;
+    `
+	logger.InfoLogger.Infof("Executing query: %s", query)
+
+	rows, err := db.Query(ctx, query, businessID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to execute query: %v", err)
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	var images []*BusinessImage
+
+	for rows.Next() {
+		image := &BusinessImage{}
+		err := rows.Scan(
+			&image.Position,
+			&image.IsPrimary,
+			&image.ObjectName,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan row: %v", err)
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		images = append(images, image)
+	}
+
+	return images, nil
 }
 
 // AddBusinessImages adds multiple image associations for a given business.
 // It now includes a 'position' for each image.
 func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID, imageIDs []uuid.UUID, primaryImageID uuid.UUID) error {
+	// Validate that primaryImageID exists in imageIDs
+	primaryFound := slices.Contains(imageIDs, primaryImageID)
+	if !primaryFound && len(imageIDs) > 0 {
+		return fmt.Errorf("primaryImageID %s not found in imageIDs", primaryImageID)
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -95,7 +148,9 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 
 		// Set full image URL if object name exists
 		if img.ObjectName != nil && cloudflareImageBaseURL != "" {
-			fullPath := cloudflareImageBaseURL + "/" + *img.ObjectName
+			// Ensure base URL doesn't end with slash and encode object name
+			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
+			fullPath := baseURL + "/" + url.QueryEscape(*img.ObjectName)
 			img.ObjectName = &fullPath
 		}
 

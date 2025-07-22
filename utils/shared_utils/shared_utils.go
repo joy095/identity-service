@@ -20,6 +20,7 @@ const (
 	EMAIL_CHANGE_CONFIRM_EXP_HOURS = 24      // Confirmation link valid for 24 hours
 	NEW_EMAIL_OTP_EXP_MINUTES      = 10      // OTP for new email valid for 10 minutes
 	REFRESH_TOKEN_EXP_HOURS        = 30 * 24 // Refresh token valid for 30 days
+	MAX_REFRESH_TOKENS_PER_USER    = 5
 )
 
 const (
@@ -28,7 +29,7 @@ const (
 	EMAIL_CHANGE_NEW_OTP_PREFIX   = "email_change_new_otp:" // For verifying the new email
 	PASSWORD_RESET_OTP_PREFIX     = "password_reset_otp:"
 
-	USER_REFRESH_TOKEN_PREFIX = "user_refresh_token:"
+	REFRESH_TOKEN_PREFIX = "refresh_token:"
 )
 
 // ErrOTPNotFound is returned when an OTP is not found or expired.
@@ -74,6 +75,12 @@ func ClearOTP(ctx context.Context, key string) error {
 const charset = "0123456789-abcdefghijklmnopqrstuvwxyz"
 
 func GenerateTinyID(length int) (string, error) {
+	if length <= 0 {
+		return "", fmt.Errorf("length must be positive")
+	}
+	if length > 1000 {
+		return "", fmt.Errorf("length too large")
+	}
 	result := make([]byte, length)
 	for i := 0; i < length; i++ {
 		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))

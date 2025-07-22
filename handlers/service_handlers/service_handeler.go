@@ -22,20 +22,20 @@ import (
 )
 
 type CreateServiceRequest struct {
-	BusinessID      string  `form:"businessId" binding:"required"`
-	Name            string  `form:"name" binding:"required"`
-	Description     string  `form:"description,omitempty"`
-	DurationMinutes int     `form:"durationMinutes" binding:"required"`
-	Price           float64 `form:"price" binding:"required"`
-	IsActive        bool    `form:"isActive,omitempty"`
+	BusinessID      string `form:"businessId" binding:"required"`
+	Name            string `form:"name" binding:"required"`
+	Description     string `form:"description,omitempty"`
+	DurationMinutes int    `form:"durationMinutes" binding:"required"`
+	Price           int64  `form:"price" binding:"required"`
+	IsActive        bool   `form:"isActive,omitempty"`
 }
 
 type UpdateServiceRequest struct {
-	Name            *string  `form:"name"`
-	Description     *string  `form:"description"`
-	DurationMinutes *int     `form:"durationMinutes"`
-	Price           *float64 `form:"price"`
-	IsActive        *bool    `form:"isActive"`
+	Name            *string `form:"name"`
+	Description     *string `form:"description"`
+	DurationMinutes *int    `form:"durationMinutes"`
+	Price           *int64  `form:"price"`
+	IsActive        *bool   `form:"isActive"`
 }
 
 type ImageUploadResponse struct {
@@ -57,10 +57,6 @@ func CreateService(c *gin.Context) {
 		logger.ErrorLogger.Errorf("Invalid Business ID format: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid format for businessId. Must be a valid UUID."})
 		return
-	}
-
-	if !req.IsActive {
-		req.IsActive = true
 	}
 
 	authHeader := c.GetHeader("Authorization")
@@ -152,7 +148,10 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 		logger.ErrorLogger.Errorf("Failed to copy file content: %v", err)
 		return nil, ""
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
+		return nil, ""
+	}
 
 	return body, writer.FormDataContentType()
 }
@@ -164,7 +163,10 @@ func sendImageToService(body *bytes.Buffer, contentType string, authHeader strin
 		pythonServerURL = "http://localhost:8082/upload-image/"
 	}
 
-	httpReq, _ := http.NewRequest("POST", pythonServerURL, body)
+	httpReq, err := http.NewRequest("POST", pythonServerURL, body)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
+	}
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Authorization", authHeader)
 
@@ -185,7 +187,11 @@ func updateImageToService(body *bytes.Buffer, contentType, authHeader string, im
 		pythonServerURL = "http://localhost:8082/replace-image/" + imageID.String()
 	}
 
-	httpReq, _ := http.NewRequest("PUT", pythonServerURL, body)
+	httpReq, err := http.NewRequest("PUT", pythonServerURL, body)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Authorization", authHeader)
 
@@ -240,7 +246,7 @@ func UpdateService(c *gin.Context) {
 		return
 	}
 
-	existingService, err := service_models.GetServiceByIDModel(db.DB, serviceID)
+	existingService, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
 	if err != nil {
 		if strings.Contains(err.Error(), "no rows in result set") {
 			logger.ErrorLogger.Errorf("Service with ID %s not found", serviceIDStr)
@@ -268,16 +274,9 @@ func UpdateService(c *gin.Context) {
 		existingService.IsActive = *req.IsActive
 	}
 
-	_, err = c.FormFile("image")
+	fileHeader, err := c.FormFile("image")
 	if err == nil {
 		// New image provided, upload it and update the ID
-		// Open new image file from form
-		fileHeader, err := c.FormFile("image")
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to get new image: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read image file."})
-			return
-		}
 
 		file, err := fileHeader.Open()
 		if err != nil {
@@ -308,7 +307,7 @@ func UpdateService(c *gin.Context) {
 		return
 	}
 
-	updatedService, err := service_models.UpdateServiceModel(db.DB, existingService)
+	updatedService, err := service_models.UpdateServiceModel(c.Request.Context(), db.DB, existingService)
 	if err != nil {
 		HandleServiceCreationError(c, err) // Can reuse the same error handler for conflicts
 		return

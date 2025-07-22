@@ -39,7 +39,8 @@ type Business struct {
 	OwnerID    uuid.UUID `json:"ownerId"`
 	PublicId   *string   `json:"publicId"`
 	// Helper field for primary image URL (computed from Images)
-	Images []*business_image_models.BusinessImage `json:"images,omitempty"`
+	Images             []*business_image_models.BusinessImage `json:"images,omitempty"`
+	PrimaryImageObject *string
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
@@ -51,7 +52,13 @@ func NewBusiness(
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate UUID: %w", err)
 	}
+
 	now := time.Now()
+	var publicIdPtr *string
+	if publicId != "" {
+		publicIdPtr = &publicId
+	}
+
 	return &Business{
 		ID:         id,
 		Name:       name,
@@ -67,9 +74,9 @@ func NewBusiness(
 		Longitude:  long,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-		IsActive:   true,
+		IsActive:   false,
 		OwnerID:    ownerUserID,
-		PublicId:   &publicId,
+		PublicId:   publicIdPtr,
 	}, nil
 }
 
@@ -179,12 +186,37 @@ func GetBusinessByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*Busi
 	)
 
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("Business with ID %s not found", id)
+			return nil, fmt.Errorf("business not found")
+		}
 		logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", id, err)
-		return nil, fmt.Errorf("business not found or database error: %w", err)
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	logger.InfoLogger.Infof("Business with ID %s fetched successfully", id)
 	return business, nil
+}
+
+// GetBusinessByPublicId fetches a business record by its public ID (external use).
+func GetBusinessIdOnly(ctx context.Context, db *pgxpool.Pool, publicId string) (uuid.UUID, error) {
+	logger.InfoLogger.Infof("Attempting to fetch business with public ID: %s", publicId)
+
+	var businessID uuid.UUID
+	query := `SELECT id FROM businesses WHERE public_id = $1`
+
+	err := db.QueryRow(ctx, query, publicId).Scan(&businessID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("Business with public ID %s not found", publicId)
+			return uuid.Nil, fmt.Errorf("business not found") // Return uuid.Nil for not found
+		}
+		logger.ErrorLogger.Errorf("Failed to fetch business with public ID %s: %v", publicId, err)
+		return uuid.Nil, fmt.Errorf("database error fetching business: %w", err) // Generic database error
+	}
+
+	logger.InfoLogger.Infof("Successfully fetched business ID: %s for public ID: %s", businessID, publicId)
+	return businessID, nil
 }
 
 // GetBusinessByPublicId fetches a business record by its public ID (client-facing).
@@ -262,81 +294,94 @@ func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId strin
 	return business, nil
 }
 
-func GetNotBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) (*Business, error) {
-	logger.InfoLogger.Infof("Attempting to fetch inactive business for user ID: %s", userID)
+// GetNotActiveBusinessByUserModel fetches all inactive businesses for a given user ID.
+func GetNotActiveBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) ([]*Business, error) {
+	logger.InfoLogger.Infof("Attempting to fetch all inactive businesses for user ID: %s", userID)
 
-	business := &Business{}
+	var businesses []*Business
 	query := `
-		SELECT 
-				b.id,
-				b.name,
-				b.category,
-				b.address,
-				b.city,
-				b.state,
-				b.country,
-				b.postal_code,
-				b.tax_id,
-				b.about,
-				b.location_latitude,
-				b.location_longitude,
-				b.created_at,
-				b.updated_at,
-				b.is_active,
-				b.owner_id,
-				b.public_id
-		FROM
-			businesses AS b
-		WHERE
-			b.owner_id = $1 AND b.is_active = false
-		LIMIT 1;
-	`
+        SELECT
+            b.id,
+            b.name,
+            b.category,
+            b.address,
+            b.city,
+            b.state,
+            b.country,
+            b.postal_code,
+            b.tax_id,
+            b.about,
+            b.location_latitude,
+            b.location_longitude,
+            b.created_at,
+            b.updated_at,
+            b.is_active,
+            b.owner_id,
+            b.public_id
+        FROM
+            businesses AS b
+        WHERE
+            b.owner_id = $1 AND b.is_active = false;
+    `
 
-	err := db.QueryRow(ctx, query, userID).Scan(
-		&business.ID,
-		&business.Name,
-		&business.Category,
-		&business.Address,
-		&business.City,
-		&business.State,
-		&business.Country,
-		&business.PostalCode,
-		&business.TaxID,
-		&business.About,
-		&business.Latitude,
-		&business.Longitude,
-		&business.CreatedAt,
-		&business.UpdatedAt,
-		&business.IsActive,
-		&business.OwnerID,
-		&business.PublicId,
-	)
-
+	rows, err := db.Query(ctx, query, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			logger.ErrorLogger.Errorf("No inactive business found for user ID %s: %v", userID, err)
-			return nil, fmt.Errorf("inactive business not found: %w", err)
+		logger.ErrorLogger.Errorf("Database error querying inactive businesses for user ID %s: %v", userID, err)
+		return nil, fmt.Errorf("database error querying inactive businesses: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		business := &Business{}
+		err := rows.Scan(
+			&business.ID,
+			&business.Name,
+			&business.Category,
+			&business.Address,
+			&business.City,
+			&business.State,
+			&business.Country,
+			&business.PostalCode,
+			&business.TaxID,
+			&business.About,
+			&business.Latitude,
+			&business.Longitude,
+			&business.CreatedAt,
+			&business.UpdatedAt,
+			&business.IsActive,
+			&business.OwnerID,
+			&business.PublicId,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Error scanning business row for user ID %s: %v", userID, err)
+			return nil, fmt.Errorf("error scanning business row: %w", err)
 		}
-		logger.ErrorLogger.Errorf("Database error fetching inactive business for user ID %s: %v", userID, err)
-		return nil, fmt.Errorf("database error fetching inactive business: %w", err)
+
+		// Fetch associated images for each business
+		images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to retrieve images for business ID %s: %v", business.ID, err)
+			business.Images = []*business_image_models.BusinessImage{} // Ensure Images is an empty slice on error
+		} else {
+			business.Images = images
+		}
+
+		businesses = append(businesses, business)
 	}
 
-	// Fetch associated images
-	images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to retrieve images for business ID %s: %v", business.ID, err)
-		business.Images = []*business_image_models.BusinessImage{}
-	} else {
-		business.Images = images
+	if err := rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error after iterating through rows for user ID %s: %v", userID, err)
+		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 
-	publicId := "nil"
-	if business.PublicId != nil {
-		publicId = *business.PublicId
+	if len(businesses) == 0 {
+		logger.InfoLogger.Infof("No inactive businesses found for user ID %s", userID)
+		return []*Business{}, nil // Return an empty slice if no rows are found
 	}
-	logger.InfoLogger.Infof("Inactive business %s fetched successfully for user ID %s", publicId, userID)
 
-	return business, nil
+	logger.InfoLogger.Infof("Successfully fetched %d inactive businesses for user ID %s", len(businesses), userID)
+
+	return businesses, nil
 }
 
 // UpdateBusiness updates an existing business record in the database.
@@ -420,6 +465,31 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 	return tx.Commit(ctx)
 }
 
+func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) error {
+	logger.InfoLogger.Infof("Attempting to delete business with ID: %s", businessID)
+
+	query := `
+        DELETE FROM businesses
+        WHERE id = $1
+        RETURNING id
+    `
+
+	var deletedID uuid.UUID
+	err := db.QueryRow(ctx, query, businessID).Scan(&deletedID)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.ErrorLogger.Errorf("Business with ID %s not found for deletion", businessID)
+			return fmt.Errorf("business not found")
+		}
+		logger.ErrorLogger.Errorf("Database error deleting business with ID %s: %v", businessID, err)
+		return fmt.Errorf("database error: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Successfully deleted business with ID: %s", businessID)
+	return nil
+}
+
 // GetAllBusinesses fetches all business records from the database, with optional pagination.
 func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) ([]*Business, error) {
 	logger.InfoLogger.Info("Attempting to fetch businesses from database with pagination")
@@ -428,27 +498,36 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 
 	baseQuery := `
         SELECT
-            b.id,
-            b.name,
-            b.category,
-            b.address,
-            b.city,
-            b.state,
-            b.country,
-            b.postal_code,
-            b.tax_id,
-            b.about,
-            b.location_latitude,
-            b.location_longitude,
-            b.created_at,
-            b.updated_at,
-            b.is_active,
-            b.owner_id,
-			b.public_id
-        FROM
-            businesses AS b
-        ORDER BY
-            b.created_at DESC`
+			b.id,
+			b.name,
+			b.category,
+			b.address,
+			b.city,
+			b.state,
+			b.country,
+			b.postal_code,
+			b.tax_id,
+			b.about,
+			b.location_latitude,
+			b.location_longitude,
+			b.created_at,
+			b.updated_at,
+			b.is_active,
+			b.owner_id,
+			b.public_id,
+			img.object_name AS primary_image_object_name
+		FROM
+			businesses AS b
+		LEFT JOIN LATERAL (
+			SELECT i.object_name
+			FROM business_images AS bi
+			JOIN images AS i ON i.id = bi.image_id
+			WHERE bi.business_id = b.id AND bi.is_primary = true
+			LIMIT 1
+		) AS img ON true
+		WHERE b.is_active = true
+		ORDER BY b.created_at DESC
+`
 
 	query := baseQuery
 	args := []interface{}{}
@@ -494,6 +573,7 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.IsActive,
 			&business.OwnerID,
 			&business.PublicId,
+			&business.PrimaryImageObject,
 		)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)

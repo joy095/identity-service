@@ -8,7 +8,12 @@ import (
 )
 
 func RegisterBusinessImageRoutes(router *gin.Engine) {
-	businessImageController := business_image_controller.NewBusinessImageController(db.DB)
+	businessImageController, err := business_image_controller.NewBusinessImageController(db.DB)
+	if err != nil {
+		return
+	}
+
+	router.GET("/business-image/:publicId", businessImageController.GetAllImages)
 
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())

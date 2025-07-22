@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"time"
 
@@ -152,6 +151,11 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 
 	logger.InfoLogger.Infof("Initiating slot booking for slot %s, service %s, customer %s", req.SlotID, req.ServiceID, req.CustomerID)
 
+	if req.BusinessID == uuid.Nil || req.ServiceID == uuid.Nil ||
+		req.SlotID == uuid.Nil || req.CustomerID == uuid.Nil {
+		return nil, "", fmt.Errorf("invalid input: all IDs are required")
+	}
+
 	// 1. Check and Reserve Slot in Redis
 	err := s.CheckAndReserveSlot(ctx, req)
 	if err != nil {
@@ -160,7 +164,7 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	}
 
 	// 2. Get Service Details to determine price
-	service, err := service_models.GetServiceByIDModel(s.DB, req.ServiceID)
+	service, err := service_models.GetServiceByIDModel(ctx, s.DB, req.ServiceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", req.ServiceID, err)
 		return nil, "", fmt.Errorf("invalid service selected: %w", err)
@@ -185,7 +189,10 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	logger.InfoLogger.Infof("Pending booking %s created for slot %s", createdBooking.ID, req.SlotID)
 
 	// 4. Initiate Razorpay Payment Order
-	amountInPaise := int(math.Round(service.Price * 100))
+	amountInPaise := service.Price * 100
+	if service.Price <= 0 {
+		return nil, "", fmt.Errorf("invalid service price: %d", service.Price)
+	}
 
 	currency := os.Getenv("PAYMENT_CURRENCY")
 	if currency == "" {
@@ -291,7 +298,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 				return fmt.Errorf("invalid booking ID format in notes")
 			}
 
-			paymentTx, err = payment_transaction_models.NewPaymentTransaction(bookingID, paymentEntity.OrderID, float64(paymentEntity.Amount)/100, paymentEntity.Currency)
+			paymentTx, err = payment_transaction_models.NewPaymentTransaction(bookingID, paymentEntity.OrderID, int64(paymentEntity.Amount/100), paymentEntity.Currency)
 			if err != nil {
 				logger.ErrorLogger.Errorf("Failed to create new payment transaction object for webhook: %v", err)
 				return fmt.Errorf("internal error handling payment: %w", err)
@@ -316,8 +323,8 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 	paymentTx.RazorpayPaymentID = paymentEntity.ID
 	paymentTx.Status = paymentEntity.Status
 	// Validate amount matches original transaction
-	if float64(paymentEntity.Amount)/100 != paymentTx.Amount {
-		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", paymentTx.Amount, float64(paymentEntity.Amount)/100)
+	if int64(paymentEntity.Amount)/100 != paymentTx.Amount {
+		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", paymentTx.Amount, int64(paymentEntity.Amount)/100)
 		return fmt.Errorf("payment amount mismatch")
 	}
 	paymentTx.PaymentMethod = paymentEntity.Method

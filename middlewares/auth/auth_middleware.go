@@ -70,7 +70,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Step 3: Fetch user and compare token version
-		user, err := user_models.GetUserByID(db.DB, userID)
+		user, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 		if err != nil {
 			logger.ErrorLogger.Errorf("User not found: %v", err)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
@@ -84,7 +84,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		}
 
 		// Optional: Email verification check
-		isVerified, err := user_models.IsEmailVerified(db.DB, user.ID)
+		isVerified, err := user_models.IsEmailVerified(c.Request.Context(), db.DB, user.ID)
 		if err != nil || !isVerified {
 			logger.ErrorLogger.Errorf("Email verification failed for user %s", user.ID)
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Email not verified"})

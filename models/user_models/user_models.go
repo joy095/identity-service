@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -151,8 +152,6 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 	})
 
 	if err != nil {
-		// Enhanced error logging with fixed error type handling
-		logger.ErrorLogger.Errorf("Token validation error: %v", err)
 
 		logger.ErrorLogger.Errorf("Token validation error: %v", err)
 
@@ -221,12 +220,12 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 	return user, nil
 }
 
-// LoginUser authenticates a user and generates JWT + Refresh Token
+// LoginUser authenticates a user and generates JWT + Refresh Token (with Redis list support)
 func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string, error) {
 	logger.InfoLogger.Info("LoginUser called on models")
 
 	ctx := context.Background()
-	user, err := GetUserByEmail(ctx, db, email) // Retrieve user by email
+	user, err := GetUserByEmail(ctx, db, email)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Login failed for email %s: %v", email, err)
 		return nil, "", "", errors.New("invalid credentials")
@@ -240,20 +239,38 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 
 	currentTokenVersion := user.TokenVersion
 
-	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, time.Minute*60) // Access Token for 1 hour
+	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, shared_models.ACCESS_TOKEN_EXPIRY)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to generate access token for user %s: %v", user.ID, err)
 		return nil, "", "", errors.New("failed to generate access token")
 	}
 
-	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, currentTokenVersion, time.Hour*24*30) // Stronger Refresh Token for 30 days
+	// Generate Refresh Token
+	refreshToken, jti, err := shared_models.GenerateRefreshTokenWithJTI(user.ID, currentTokenVersion, shared_models.REFRESH_TOKEN_EXPIRY)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to generate refresh token for user %s: %v", user.ID, err)
 		return nil, "", "", errors.New("failed to generate refresh token")
 	}
 
-	// Store refresh token in Redis using user ID
-	err = redisclient.GetRedisClient(ctx).Set(ctx, shared_utils.USER_REFRESH_TOKEN_PREFIX+user.ID.String(), refreshToken, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS).Err()
+	// Store refresh token in Redis
+	type RefreshTokenEntry struct {
+		Token string `json:"token"`
+		JTI   string `json:"jti"`
+	}
+	entry := RefreshTokenEntry{
+		Token: refreshToken,
+		JTI:   jti,
+	}
+
+	entryBytes, _ := json.Marshal(entry)
+
+	rdb := redisclient.GetRedisClient(ctx)
+	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
+
+	pipe := rdb.Pipeline()
+	pipe.LPush(ctx, key, entryBytes)                                      // Add new token
+	pipe.Expire(ctx, key, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS) // Reset expiration
+	_, err = pipe.Exec(ctx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to store refresh token in Redis for user %s: %v", user.ID, err)
 		return nil, "", "", fmt.Errorf("failed to store refresh token in Redis: %v", err)
@@ -270,17 +287,16 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 	ctx := context.Background()
 
 	// Remove from database (if refresh_token column is still used for old sessions or backup)
-	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + userID.String()
+	key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
 	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to clear refresh token from DB for user %s: %v", userID, err)
-		return fmt.Errorf("failed to clear refresh token from DB: %w", err)
+		logger.ErrorLogger.Errorf("Failed to clear refresh token from Redis for user %s: %v", userID, err)
+		return fmt.Errorf("failed to clear refresh token from Redis: %w", err)
 	}
 
 	return nil
 }
 
-// CheckUserStatus checks if a user needs to create a new account
 // CheckUserStatus checks if a user needs to create a new account
 func CheckUserStatus(ctx context.Context, db *pgxpool.Pool, email string) (*User, error) {
 	query := `
@@ -343,7 +359,7 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 
 	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE email = $1`
 
-	err := db.QueryRow(context.Background(), query, email).Scan(
+	err := db.QueryRow(ctx, query, email).Scan(
 		&user.ID,
 		&user.Email,
 		&user.FirstName,
@@ -361,10 +377,10 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 }
 
 // GetUserByID retrieves a user by id
-func GetUserByID(db *pgxpool.Pool, id uuid.UUID) (*User, error) {
+func GetUserByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*User, error) {
 	var user User
 	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE id = $1`
-	err := db.QueryRow(context.Background(), query, id).Scan(
+	err := db.QueryRow(ctx, query, id).Scan(
 		&user.ID,
 		&user.Email,
 		&user.FirstName,
@@ -379,9 +395,9 @@ func GetUserByID(db *pgxpool.Pool, id uuid.UUID) (*User, error) {
 	return &user, nil
 }
 
-func IncrementUserTokenVersion(db *pgxpool.Pool, userID uuid.UUID) error {
+func IncrementUserTokenVersion(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) error {
 	query := `UPDATE users SET token_version = token_version + 1 WHERE id = $1`
-	_, err := db.Exec(context.Background(), query, userID)
+	_, err := db.Exec(ctx, query, userID)
 	return err
 }
 
@@ -426,12 +442,12 @@ func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]int
 }
 
 // IsEmailVerified checks if a user's email is verified
-func IsEmailVerified(db *pgxpool.Pool, userID uuid.UUID) (bool, error) {
+func IsEmailVerified(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) (bool, error) {
 	logger.InfoLogger.Info("IsEmailVerified called on models")
 
 	var isVerified bool
 	query := `SELECT is_verified_email FROM users WHERE id = $1`
-	err := db.QueryRow(context.Background(), query, userID).Scan(&isVerified)
+	err := db.QueryRow(ctx, query, userID).Scan(&isVerified)
 	if err != nil {
 		logger.ErrorLogger.Errorf("failed to check email verification status: %v", err)
 		return false, err
@@ -440,8 +456,8 @@ func IsEmailVerified(db *pgxpool.Pool, userID uuid.UUID) (bool, error) {
 	return isVerified, nil
 }
 
-func DeleteUser(db *pgxpool.Pool, userID uuid.UUID) error {
+func DeleteUser(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) error {
 	query := `DELETE FROM users WHERE id = $1`
-	_, err := db.Exec(context.Background(), query, userID)
+	_, err := db.Exec(ctx, query, userID)
 	return err
 }

@@ -21,6 +21,6 @@ func RegisterServicesRoutes(router *gin.Engine) {
 	{
 		protected.DELETE("/service/:id", middleware.CombinedRateLimiter("service/:id", "5-30s", "20-5m"), serviceController.DeleteService)
 		protected.POST("/create-service", middleware.CombinedRateLimiter("create-service", "5-30s", "20-5m"), service_handlers.CreateService)
-		protected.POST("/update-service/:id", middleware.CombinedRateLimiter("update-service/:id", "5-30s", "20-5m"), service_handlers.UpdateService)
+		protected.PATCH("/update-service/:id", middleware.CombinedRateLimiter("update-service/:id", "5-30s", "20-5m"), service_handlers.UpdateService)
 	}
 }

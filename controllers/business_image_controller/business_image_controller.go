@@ -1,6 +1,7 @@
 package business_image_controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -15,14 +16,43 @@ import (
 )
 
 type BusinessImageController struct {
-	DB *pgxpool.Pool
+	db *pgxpool.Pool
 }
 
 // NewBusinessImageController creates a new instance of BusinessImageController.
-func NewBusinessImageController(db *pgxpool.Pool) *BusinessImageController {
-	return &BusinessImageController{
-		DB: db,
+func NewBusinessImageController(db *pgxpool.Pool) (*BusinessImageController, error) {
+	if db == nil {
+		return nil, errors.New("database pool cannot be nil")
 	}
+
+	return &BusinessImageController{
+		db: db,
+	}, nil
+}
+
+// GetAllImages retrieves all images associated with a business.
+func (bc *BusinessImageController) GetAllImages(c *gin.Context) {
+	logger.InfoLogger.Info("GetAllImages controller called")
+
+	publicId := c.Param("publicId")
+
+	businessId, err := business_models.GetBusinessIdOnly(c.Request.Context(), bc.db, publicId)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		return
+	}
+
+	businessImages, err := business_image_models.GetAllImagesModel(c.Request.Context(), bc.db, businessId)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get business images: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve images"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"images": businessImages,
+	})
 }
 
 // AddBusinessImages handles adding multiple images to a business in a single request.
@@ -36,7 +66,7 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 		return
 	}
 
-	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.DB, publicId)
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
@@ -71,8 +101,12 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 			if idx, parseErr := strconv.Atoi(primaryIndexStr); parseErr == nil && idx >= 0 && idx < len(uploadedImageIDs) {
 				primaryImageIndex = idx
 			} else {
-				logger.ErrorLogger.Errorf("Invalid primaryImageIndex provided: %s", primaryIndexStr)
-				// Optionally, return an error here if invalid index is critical
+				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid primaryImageIndex provided"})
+				// Clean up uploaded images
+				for _, uploadedID := range uploadedImageIDs {
+					image_handlers.DeleteImage(uploadedID, accessToken)
+				}
+				return
 			}
 		}
 		primaryImageID = uploadedImageIDs[primaryImageIndex]
@@ -80,7 +114,7 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 
 	// Note: AddBusinessImages now replaces all existing images for the business.
 	// If you want to append, the model function needs adjustment.
-	err = business_image_models.AddBusinessImages(c.Request.Context(), bc.DB, business.ID, uploadedImageIDs, primaryImageID)
+	err = business_image_models.AddBusinessImages(c.Request.Context(), bc.db, business.ID, uploadedImageIDs, primaryImageID)
 	if err != nil {
 		// Clean up uploaded images on database error
 		for _, uploadedID := range uploadedImageIDs {
@@ -119,7 +153,7 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 		return
 	}
 
-	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.DB, publicId)
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
@@ -156,7 +190,7 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 	}
 
 	// Start a transaction for database operations
-	tx, err := bc.DB.Begin(c.Request.Context())
+	tx, err := bc.db.Begin(c.Request.Context())
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to begin transaction for image replacement: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to replace image"})
@@ -230,7 +264,7 @@ func (bc *BusinessImageController) DeleteBusinessImage(c *gin.Context) {
 		return
 	}
 
-	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.DB, publicId)
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
@@ -262,7 +296,7 @@ func (bc *BusinessImageController) DeleteBusinessImage(c *gin.Context) {
 	}
 
 	// Call the model function which handles both relationship deletion and conditional image service deletion
-	err = business_image_models.DeleteBusinessImage(c.Request.Context(), bc.DB, business.ID, imageID)
+	err = business_image_models.DeleteBusinessImage(c.Request.Context(), bc.db, business.ID, imageID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete business image relationship or orphaned image: %v", err)
 		if err.Error() == "business image relationship not found" {
@@ -295,7 +329,7 @@ func (bc *BusinessImageController) SetPrimaryBusinessImage(c *gin.Context) {
 		return
 	}
 
-	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.DB, publicId)
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
@@ -318,7 +352,7 @@ func (bc *BusinessImageController) SetPrimaryBusinessImage(c *gin.Context) {
 		return
 	}
 
-	err = business_image_models.SetPrimaryImage(c.Request.Context(), bc.DB, business.ID, imageID)
+	err = business_image_models.SetPrimaryImage(c.Request.Context(), bc.db, business.ID, imageID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to set primary image for business %s, image %s: %v", business.ID, imageID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set primary image"})
