@@ -267,7 +267,6 @@ func HandleFileError(c *gin.Context, err error, fieldName string) {
 func prepareSingleMultipartRequest(fileHeader *multipart.FileHeader) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	defer writer.Close()
 
 	file, err := fileHeader.Open()
 	if err != nil {
@@ -284,6 +283,11 @@ func prepareSingleMultipartRequest(fileHeader *multipart.FileHeader) (*bytes.Buf
 
 	if _, err = io.Copy(part, file); err != nil {
 		logger.ErrorLogger.Errorf("Failed to copy file data for %s: %v", fileHeader.Filename, err)
+		return nil, "", err
+	}
+
+	if err := writer.Close(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
 		return nil, "", err
 	}
 

@@ -27,7 +27,7 @@ type Service struct {
 	IsActive        bool        `json:"isActive"`
 	CreatedAt       time.Time   `json:"createdAt"`
 	UpdatedAt       time.Time   `json:"updatedAt"`
-	ObjectName      *string     `json:"object_name,omitempty"`
+	ObjectName      *string     `json:"objectName,omitempty"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
@@ -211,7 +211,7 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 			s.business_id = $1
 		ORDER BY s.name ASC`
 
-	rows, err := db.Query(context.Background(), query, businessID)
+	rows, err := db.Query(ctx, query, businessID)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to execute query to fetch services: " + err.Error())
 		return nil, fmt.Errorf("failed to fetch services from database: %w", err)
@@ -377,7 +377,7 @@ func DeleteServiceByIDModel(ctx context.Context, db *pgxpool.Pool, serviceID, bu
 
 	query := `DELETE FROM services WHERE id = $1 AND business_id = $2` // Include business_id for ownership check
 
-	res, err := db.Exec(context.Background(), query, serviceID, businessID)
+	res, err := db.Exec(ctx, query, serviceID, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete service %s for business %s from database: %v", serviceID, businessID, err)
 		return fmt.Errorf("failed to delete service: %w", err)

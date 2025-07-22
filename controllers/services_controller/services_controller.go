@@ -136,7 +136,6 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
 
 		}
-		logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
 		return
 	}
 
@@ -156,9 +155,6 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 
 			return
 		}
-
-		// authHeader := c.GetHeader("Authorization")
-		// req.Header.Set("Authorization", authHeader)
 
 		accessToken, err := c.Cookie("access_token")
 		if err != nil || accessToken == "" {
@@ -188,7 +184,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 			return
 		}
 
-		err = service_models.DeleteServiceByIDModel(req.Context(), db.DB, serviceID, service.BusinessID)
+		err = service_models.DeleteServiceByIDModel(c.Request.Context(), db.DB, serviceID, service.BusinessID)
 		if err != nil {
 			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})

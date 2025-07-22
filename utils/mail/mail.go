@@ -354,7 +354,7 @@ func VerifyEmail(c *gin.Context) {
 		return
 	}
 
-	refreshToken, err := shared_models.GenerateRefreshToken(user.ID, user.TokenVersion, 30*24*time.Hour)
+	refreshToken, _, err := shared_models.GenerateRefreshTokenWithJTI(user.ID, user.TokenVersion, shared_models.REFRESH_TOKEN_EXPIRY)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Refresh token generation failed"})
 		return
@@ -373,7 +373,7 @@ func VerifyEmail(c *gin.Context) {
 	// Store refresh token in Redis
 	err = redisclient.GetRedisClient(c).Set(
 		ctx,
-		shared_utils.USER_REFRESH_TOKEN_PREFIX+user.ID.String(),
+		shared_utils.REFRESH_TOKEN_PREFIX+user.ID.String(),
 		refreshToken,
 		time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS,
 	).Err()
@@ -480,7 +480,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
-	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + user.ID.String()
+	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
 	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))

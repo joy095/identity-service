@@ -1,9 +1,12 @@
 package business_image_models
 
 import (
+	"slices"
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,6 +28,12 @@ type BusinessImage struct {
 // AddBusinessImages adds multiple image associations for a given business.
 // It now includes a 'position' for each image.
 func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID, imageIDs []uuid.UUID, primaryImageID uuid.UUID) error {
+	// Validate that primaryImageID exists in imageIDs
+	primaryFound := slices.Contains(imageIDs, primaryImageID)
+	if !primaryFound && len(imageIDs) > 0 {
+		return fmt.Errorf("primaryImageID %s not found in imageIDs", primaryImageID)
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -95,7 +104,9 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 
 		// Set full image URL if object name exists
 		if img.ObjectName != nil && cloudflareImageBaseURL != "" {
-			fullPath := cloudflareImageBaseURL + "/" + *img.ObjectName
+			// Ensure base URL doesn't end with slash and encode object name
+			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
+			fullPath := baseURL + "/" + url.QueryEscape(*img.ObjectName)
 			img.ObjectName = &fullPath
 		}
 

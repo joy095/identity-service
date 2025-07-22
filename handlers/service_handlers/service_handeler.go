@@ -148,7 +148,10 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 		logger.ErrorLogger.Errorf("Failed to copy file content: %v", err)
 		return nil, ""
 	}
-	writer.Close()
+	if err := writer.Close(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
+		return nil, ""
+	}
 
 	return body, writer.FormDataContentType()
 }
@@ -184,7 +187,11 @@ func updateImageToService(body *bytes.Buffer, contentType, authHeader string, im
 		pythonServerURL = "http://localhost:8082/replace-image/" + imageID.String()
 	}
 
-	httpReq, _ := http.NewRequest("PUT", pythonServerURL, body)
+	httpReq, err := http.NewRequest("PUT", pythonServerURL, body)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
 	httpReq.Header.Set("Content-Type", contentType)
 	httpReq.Header.Set("Authorization", authHeader)
 
@@ -267,16 +274,9 @@ func UpdateService(c *gin.Context) {
 		existingService.IsActive = *req.IsActive
 	}
 
-	_, err = c.FormFile("image")
+	fileHeader, err := c.FormFile("image")
 	if err == nil {
 		// New image provided, upload it and update the ID
-		// Open new image file from form
-		fileHeader, err := c.FormFile("image")
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to get new image: %v", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to read image file."})
-			return
-		}
 
 		file, err := fileHeader.Open()
 		if err != nil {

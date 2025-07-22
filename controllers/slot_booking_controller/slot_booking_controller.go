@@ -151,6 +151,11 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 
 	logger.InfoLogger.Infof("Initiating slot booking for slot %s, service %s, customer %s", req.SlotID, req.ServiceID, req.CustomerID)
 
+	if req.BusinessID == uuid.Nil || req.ServiceID == uuid.Nil ||
+		req.SlotID == uuid.Nil || req.CustomerID == uuid.Nil {
+		return nil, "", fmt.Errorf("invalid input: all IDs are required")
+	}
+
 	// 1. Check and Reserve Slot in Redis
 	err := s.CheckAndReserveSlot(ctx, req)
 	if err != nil {
@@ -185,6 +190,9 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 
 	// 4. Initiate Razorpay Payment Order
 	amountInPaise := service.Price * 100
+	if service.Price <= 0 {
+		return nil, "", fmt.Errorf("invalid service price: %d", service.Price)
+	}
 
 	currency := os.Getenv("PAYMENT_CURRENCY")
 	if currency == "" {

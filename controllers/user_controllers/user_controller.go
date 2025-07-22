@@ -2,10 +2,12 @@ package user_controllers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
@@ -59,7 +61,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := user_models.GetUserByID(db.DB, userID)
+	currentUser, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -122,7 +124,7 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
-	currentUser, err := user_models.GetUserByID(db.DB, userID)
+	currentUser, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("User not found for ID %s: %v", userID, err))
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -215,49 +217,53 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 
 	req.Email = strings.ToLower(strings.Trim(req.Email, " "))
 
-	ctx := context.Background()
-	user, err := user_models.GetUserByEmail(ctx, db.DB, req.Email) // Assume GetUserByEmail exists
+	// Get user ID from JWT token
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s")
-			// For security, always return a generic success message even if email isn't found
-			// to avoid user enumeration.
-			c.JSON(http.StatusOK, gin.H{"message": "If the email is registered, an OTP has been sent for password reset."})
-			return
-		}
-		logger.ErrorLogger.Error(fmt.Errorf("database error fetching user by email: %w", err))
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
-	otp, err := utils.GenerateSecureOTP()
+	// Retrieve and verify OTP
+	storedOTP, err := shared_utils.RetrieveOTP(context.Background(), shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Email)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for user %s: %w", err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
-		return
-	}
-
-	if err := shared_utils.StoreOTP(context.Background(), shared_utils.EMAIL_VERIFICATION_OTP_PREFIX+req.Email, otp); err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to store registration OTP for username %s: %w", err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store OTP for verification"})
-		return
-	}
-
-	go func() {
-		sendErr := mail.SendEmailChangeNewOTP(req.Email, user.FirstName, user.LastName, otp)
-		if sendErr != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, sendErr))
-		} else {
-			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email))
+		if errors.Is(err, mail.ErrOTPNotFound) {
+			logger.InfoLogger.Info(fmt.Sprintf("Email change OTP not found or expired for new email: %s", req.Email))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired OTP"})
+			return
 		}
-	}()
+		logger.ErrorLogger.Error(fmt.Errorf("error retrieving email change OTP: %w", err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// Verify OTP
+	if utils.HashOTP(req.OTP) != storedOTP {
+		logger.InfoLogger.Info(fmt.Sprintf("Invalid email change OTP for new email: %s", req.Email))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid OTP"})
+		return
+	}
 
 	// Update user's email
-	_, err = db.DB.Exec(ctx, "UPDATE users SET email = $1, is_verified_email = TRUE WHERE id = $2", req.Email, user.ID)
+	ctx := context.Background()
+	_, err = db.DB.Exec(ctx, "UPDATE users SET email = $1, is_verified_email = TRUE WHERE id = $2", req.Email, userID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update email for user %s: %v", user.ID, err)
+		logger.ErrorLogger.Errorf("Failed to update email for user %s: %v", userID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email"})
 		return
+	}
+
+	// Clear OTP after successful verification
+	if err := shared_utils.ClearOTP(context.Background(), shared_utils.EMAIL_CHANGE_NEW_OTP_PREFIX+req.Email); err != nil {
+		logger.ErrorLogger.Error(fmt.Errorf("failed to clear email change OTP: %w", err))
 	}
 
 	logger.InfoLogger.Info("Email change OTP verified and email updated successfully")
@@ -632,7 +638,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
-	key := shared_utils.USER_REFRESH_TOKEN_PREFIX + user.ID.String()
+	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
 	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
 	if err != nil {
 		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
@@ -655,7 +661,6 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 func (uc *UserController) RefreshToken(c *gin.Context) {
 	logger.InfoLogger.Info("RefreshToken function called")
 
-	// Extract refresh token from secure cookie
 	refreshToken, err := c.Cookie("refresh_token")
 	if err != nil || refreshToken == "" {
 		logger.ErrorLogger.Error("No refresh token provided in cookie")
@@ -663,63 +668,71 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	// Parse token and fetch token_version from DB inside ParseToken callback
+	// Parse token to extract claims
 	claims, err := shared_models.ParseToken(refreshToken, func(userID uuid.UUID) (int, error) {
 		var tokenVersion int
 		err := db.DB.QueryRow(context.Background(),
 			`SELECT token_version FROM users WHERE id = $1`, userID).Scan(&tokenVersion)
 		return tokenVersion, err
 	})
-	if err != nil {
+	if err != nil || claims.Type != "refresh" {
 		logger.ErrorLogger.Error("Invalid or expired refresh token", "error", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired refresh token"})
 		return
 	}
 
-	if claims.Type != "refresh" {
-		logger.ErrorLogger.Error("Token type is not refresh")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token type"})
-		return
-	}
-
 	userID := claims.UserID
-	claimedVersion := claims.TokenVersion
 
-	// Get user from DB and compare token version
+	// Fetch user from DB
 	var user user_models.User
 	err = db.DB.QueryRow(context.Background(),
 		`SELECT id, email, token_version FROM users WHERE id = $1`, userID).
 		Scan(&user.ID, &user.Email, &user.TokenVersion)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			logger.ErrorLogger.Error("User not found", "sub", userID)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user"})
-			return
-		}
-		logger.ErrorLogger.Error("Database error while fetching user", "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		logger.ErrorLogger.Error("User not found or DB error", "error", err)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user"})
 		return
 	}
 
-	// Compare token version
-	if claimedVersion != user.TokenVersion {
-		logger.ErrorLogger.Error("Token version mismatch",
-			"stored_version", user.TokenVersion,
-			"token_version", claimedVersion)
+	if claims.TokenVersion != user.TokenVersion {
+		logger.ErrorLogger.Error("Token version mismatch", "stored", user.TokenVersion, "claimed", claims.TokenVersion)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Token revoked, please log in again"})
 		return
 	}
 
-	// Check Redis if the refresh token is valid
-	redisKey := shared_utils.USER_REFRESH_TOKEN_PREFIX + userID.String()
-	storedToken, err := redisclient.GetRedisClient(c).Get(context.Background(), redisKey).Result()
-	if err != nil || storedToken != refreshToken {
-		logger.ErrorLogger.Error("Refresh token mismatch or not found in Redis", "sub", userID)
+	// Check if the token JTI exists in Redis list
+	rdb := redisclient.GetRedisClient(c)
+	redisKey := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
+
+	listItems, err := rdb.LRange(context.Background(), redisKey, 0, -1).Result()
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to read refresh token list from Redis", "error", err)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
 		return
 	}
 
-	// Generate new access & refresh tokens
+	found := false
+	for _, item := range listItems {
+		var entry struct {
+			Token string `json:"token"`
+			JTI   string `json:"jti"`
+		}
+		if err := json.Unmarshal([]byte(item), &entry); err != nil {
+			continue
+		}
+		if entry.Token == refreshToken && entry.JTI == claims.ID {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		logger.ErrorLogger.Errorf("Refresh token not found or invalid for user %s", userID)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
+		return
+	}
+
+	// Generate new tokens
 	newAccessToken, err := shared_models.GenerateAccessToken(userID, user.TokenVersion, shared_models.ACCESS_TOKEN_EXPIRY)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate access token", "error", err)
@@ -727,50 +740,45 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 		return
 	}
 
-	newRefreshToken, err := shared_models.GenerateRefreshToken(userID, user.TokenVersion, shared_models.REFRESH_TOKEN_EXPIRY)
+	newRefreshToken, newJTI, err := shared_models.GenerateRefreshTokenWithJTI(userID, user.TokenVersion, shared_models.REFRESH_TOKEN_EXPIRY)
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to generate refresh token", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
 		return
 	}
 
-	// Update Redis with new refresh token (replaces old)
-	err = redisclient.GetRedisClient(c).Set(
-		context.Background(),
-		redisKey,
-		newRefreshToken,
-		shared_models.REFRESH_TOKEN_EXPIRY,
-	).Err()
+	// Add new refresh token to Redis
+	entry := struct {
+		Token string `json:"token"`
+		JTI   string `json:"jti"`
+	}{
+		Token: newRefreshToken,
+		JTI:   newJTI,
+	}
+	entryBytes, _ := json.Marshal(entry)
+
+	pipe := rdb.Pipeline()
+	pipe.LPush(context.Background(), redisKey, entryBytes)
+	pipe.Expire(context.Background(), redisKey, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS)
+	_, err = pipe.Exec(context.Background())
 	if err != nil {
 		logger.ErrorLogger.Error("Failed to store new refresh token in Redis", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store refresh token"})
 		return
 	}
 
-	// Set new tokens in secure HttpOnly cookies
-	if err := shared_models.SetJWTCookie(c, "access_token", newAccessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/"); err != nil {
-		logger.ErrorLogger.Errorf("Failed to set access token cookie: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set access token cookie"})
-		return
-	}
-	if err := shared_models.SetJWTCookie(c, "refresh_token", newRefreshToken, shared_models.REFRESH_TOKEN_EXPIRY, "/"); err != nil {
-		logger.ErrorLogger.Errorf("Failed to set refresh token cookie: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set refresh token cookie"})
-		return
-	}
+	// Set cookies
+	_ = shared_models.SetJWTCookie(c, "access_token", newAccessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/")
+	_ = shared_models.SetJWTCookie(c, "refresh_token", newRefreshToken, shared_models.REFRESH_TOKEN_EXPIRY, "/")
 
-	logger.InfoLogger.Infof("Tokens refreshed successfully for user %s", userID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"message": "Tokens refreshed successfully",
-	})
+	logger.InfoLogger.Infof("Tokens refreshed for user %s", userID)
+	c.JSON(http.StatusOK, gin.H{"message": "Tokens refreshed successfully"})
 }
 
 // Logout handles user logout
 func (uc *UserController) Logout(c *gin.Context) {
 	logger.InfoLogger.Info("Logout controller called")
 
-	// Get user ID from the token in the context
 	userIDFromToken, exists := c.Get("sub")
 	if !exists {
 		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
@@ -785,20 +793,38 @@ func (uc *UserController) Logout(c *gin.Context) {
 		return
 	}
 
-	// Clear the access token cookie
-	shared_models.RemoveJWTCookie(c, "access_token", "/")
-
-	// Clear the refresh token cookie
-	shared_models.RemoveJWTCookie(c, "refresh_token", "/")
-
-	// Remove refresh token from Redis
-	if err := user_models.LogoutUser(db.DB, userID); err != nil {
-		logger.ErrorLogger.Error(fmt.Sprintf("Failed to logout user %s: %v", userID, err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to logout"})
-		return
+	refreshToken, err := c.Cookie("refresh_token")
+	if err != nil || refreshToken == "" {
+		logger.ErrorLogger.Warn("No refresh token found in cookie during logout")
 	}
 
-	logger.InfoLogger.Info(fmt.Sprintf("Successfully logged out user: %s", userID))
+	// Remove specific token from Redis list
+	if refreshToken != "" {
+		rdb := redisclient.GetRedisClient(c)
+		key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
+
+		// Remove all matching entries (usually one) from Redis list
+		listItems, _ := rdb.LRange(context.Background(), key, 0, -1).Result()
+		for _, item := range listItems {
+			var entry struct {
+				Token string `json:"token"`
+				JTI   string `json:"jti"`
+			}
+			if err := json.Unmarshal([]byte(item), &entry); err != nil {
+				continue
+			}
+			if entry.Token == refreshToken {
+				rdb.LRem(context.Background(), key, 0, item)
+				break
+			}
+		}
+	}
+
+	// Clear cookies
+	shared_models.RemoveJWTCookie(c, "access_token", "/")
+	shared_models.RemoveJWTCookie(c, "refresh_token", "/")
+
+	logger.InfoLogger.Infof("Successfully logged out user: %s", userID)
 	c.JSON(http.StatusOK, gin.H{"message": "Successfully logged out"})
 }
 
@@ -815,7 +841,7 @@ func (uc *UserController) GetUserByID(c *gin.Context) {
 		return
 	}
 
-	user, err := user_models.GetUserByID(db.DB, userID)
+	user, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
@@ -859,7 +885,7 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 	}
 
 	// Get user from database
-	user, err := user_models.GetUserByID(db.DB, userID)
+	user, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("User not found: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})

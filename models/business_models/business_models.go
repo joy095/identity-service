@@ -185,8 +185,12 @@ func GetBusinessByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*Busi
 	)
 
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("Business with ID %s not found", id)
+			return nil, fmt.Errorf("business not found")
+		}
 		logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", id, err)
-		return nil, fmt.Errorf("business not found or database error: %w", err)
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 
 	logger.InfoLogger.Infof("Business with ID %s fetched successfully", id)

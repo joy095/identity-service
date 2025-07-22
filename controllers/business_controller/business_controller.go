@@ -180,7 +180,7 @@ func (bc *BusinessController) GetNotActiveBusinessByUser(c *gin.Context) {
 
 	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Error(`{"level":"error","message":"User ID not found in context","service":"identity-service"}`)
+		logger.ErrorLogger.Error("User ID not found in context")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
@@ -188,7 +188,7 @@ func (bc *BusinessController) GetNotActiveBusinessByUser(c *gin.Context) {
 	// Call the model function to get all inactive businesses
 	businesses, err := business_models.GetNotActiveBusinessByUserModel(c.Request.Context(), bc.DB, userID)
 	if err != nil {
-		logger.ErrorLogger.Errorf(`{"level":"error","message":"Failed to retrieve businesses for user: %v","service":"identity-service"}`, err)
+		logger.ErrorLogger.Errorf("Failed to retrieve businesses for user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
 		return
 	}

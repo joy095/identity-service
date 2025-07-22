@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/utils" // Ensure utils package contains GetJWTSecret() and GetJWTRefreshSecret()
+	"github.com/joy095/identity/utils/shared_utils"
 )
 
 // Define constants for booking status (no change)
@@ -38,6 +39,41 @@ type Claims struct {
 	Type         string    `json:"type"`
 	TokenVersion int       `json:"token_version"`
 	jwt.RegisteredClaims
+}
+
+// GenerateRefreshTokenWithJTI generates a refresh token with embedded jti
+func GenerateRefreshTokenWithJTI(userID uuid.UUID, tokenVersion int, duration time.Duration) (string, string, error) {
+	logger.InfoLogger.Infof("GenerateRefreshTokenWithJTI called for user %s", userID)
+
+	now := time.Now()
+
+	// Generate a short, URL-safe JTI
+	jti, err := shared_utils.GenerateTinyID(12)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to generate jti: %w", err)
+	}
+
+	claims := jwt.MapClaims{
+		"sub":           userID.String(),
+		"iat":           now.Unix(),
+		"exp":           now.Add(duration).Unix(),
+		"nbf":           now.Unix(),
+		"jti":           jti,
+		"iss":           "identity-service",
+		"type":          "refresh",
+		"token_version": tokenVersion,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	jwtRefreshSecret := utils.GetJWTRefreshSecret()
+
+	tokenString, err := token.SignedString(jwtRefreshSecret)
+	if err != nil {
+		logger.ErrorLogger.Errorf("failed to sign refresh token: %v", err)
+		return "", "", fmt.Errorf("failed to sign refresh token: %w", err)
+	}
+
+	return tokenString, jti, nil
 }
 
 // SetJWTCookie sets a JWT cookie with secure attributes
@@ -74,45 +110,22 @@ func RemoveJWTCookie(c *gin.Context, name, path string) error {
 	return nil
 }
 
-// GenerateRefreshToken creates a JWT token for refresh purposes
-func GenerateRefreshToken(userID uuid.UUID, tokenVersion int, duration time.Duration) (string, error) {
-	logger.InfoLogger.Info("GenerateRefreshToken called on models")
-
-	now := time.Now()
-
-	claims := jwt.MapClaims{
-		"sub":           userID.String(),
-		"iat":           now.Unix(),
-		"exp":           now.Add(duration).Unix(),
-		"nbf":           now.Unix(),
-		"jti":           uuid.NewString(),
-		"iss":           "identity-service",
-		"type":          "refresh",
-		"token_version": tokenVersion,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	jwtRefreshSecret := utils.GetJWTRefreshSecret()
-
-	tokenString, err := token.SignedString(jwtRefreshSecret)
-	if err != nil {
-		logger.ErrorLogger.Errorf("failed to sign refresh token: %v", err)
-		return "", fmt.Errorf("failed to sign refresh token: %w", err)
-	}
-
-	return tokenString, nil
-}
-
 // GenerateAccessToken creates a JWT token for access purposes
 func GenerateAccessToken(userID uuid.UUID, tokenVersion int, duration time.Duration) (string, error) {
 	now := time.Now()
 
+	// Generate a short, URL-safe JTI
+	jti, err := shared_utils.GenerateTinyID(12)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate jti: %w", err)
+	}
+
 	claims := jwt.MapClaims{
 		"sub":           userID.String(),
 		"iat":           now.Unix(),
 		"exp":           now.Add(duration).Unix(),
 		"nbf":           now.Unix(),
-		"jti":           uuid.NewString(),
+		"jti":           jti,
 		"iss":           "identity-service",
 		"type":          "access",
 		"token_version": tokenVersion,

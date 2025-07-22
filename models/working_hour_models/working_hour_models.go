@@ -29,7 +29,7 @@ func NewWorkingHour(
 	businessID uuid.UUID,
 	dayOfWeek, openTime, closeTime string,
 	isClosed bool,
-) *WorkingHour {
+) (*WorkingHour, error) {
 	// Validate day of week
 	validDays := map[string]bool{
 		"Sunday": true, "Monday": true, "Tuesday": true, "Wednesday": true,
@@ -37,7 +37,7 @@ func NewWorkingHour(
 	}
 	if !validDays[dayOfWeek] {
 		logger.ErrorLogger.Errorf("Invalid day of week: %s", dayOfWeek)
-		return nil
+		return nil, fmt.Errorf("invalid day of week: %s", dayOfWeek)
 	}
 
 	// Validate time format (HH:MM:SS)
@@ -45,7 +45,7 @@ func NewWorkingHour(
 	if !isClosed {
 		if !timeRegex.MatchString(openTime) || !timeRegex.MatchString(closeTime) {
 			logger.ErrorLogger.Errorf("Invalid time format. Expected HH:MM:SS")
-			return nil
+			return nil, fmt.Errorf("invalid time format for openTime or closeTime, expected HH:MM:SS")
 		}
 	}
 	now := time.Now()
@@ -60,7 +60,7 @@ func NewWorkingHour(
 		UpdatedAt:  now,
 	}
 	logger.DebugLogger.Debugf("Created new WorkingHour model for BusinessID: %s, Day: %s", businessID, dayOfWeek)
-	return wh
+	return wh, nil
 }
 
 // CreateWorkingHour inserts a new working hour slot into the database using the pool.
@@ -130,7 +130,7 @@ func CreateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*Work
 }
 
 // GetWorkingHourByID fetches a working hour record by its ID.
-func GetWorkingHourByID(db *pgxpool.Pool, id uuid.UUID) (*WorkingHour, error) {
+func GetWorkingHourByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to fetch working hour with ID: %s", id)
 
 	wh := &WorkingHour{}
@@ -143,7 +143,7 @@ func GetWorkingHourByID(db *pgxpool.Pool, id uuid.UUID) (*WorkingHour, error) {
 		WHERE
 			id = $1`
 
-	err := db.QueryRow(context.Background(), query, id).Scan(
+	err := db.QueryRow(ctx, query, id).Scan(
 		&wh.ID,
 		&wh.BusinessID,
 		&wh.DayOfWeek,
@@ -168,7 +168,7 @@ func GetWorkingHourByID(db *pgxpool.Pool, id uuid.UUID) (*WorkingHour, error) {
 }
 
 // GetWorkingHoursByBusinessID fetches all working hours for a given business ID.
-func GetWorkingHoursByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]WorkingHour, error) {
+func GetWorkingHoursByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to fetch working hours for Business ID: %s", businessID)
 
 	var whs []WorkingHour
@@ -191,7 +191,7 @@ func GetWorkingHoursByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Work
 				WHEN 'Saturday' THEN 7
 			END` // Order by day of week
 
-	rows, err := db.Query(context.Background(), query, businessID)
+	rows, err := db.Query(ctx, query, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to query working hours for business %s: %v", businessID, err)
 		return nil, fmt.Errorf("failed to fetch working hours: %w", err)
@@ -227,7 +227,7 @@ func GetWorkingHoursByBusinessID(db *pgxpool.Pool, businessID uuid.UUID) ([]Work
 }
 
 // GetWorkingHoursByBusinessPublicID fetches all working hours for a given business ID.
-func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]WorkingHour, error) {
+func GetWorkingHoursByBusinessPublicID(ctx context.Context, db *pgxpool.Pool, publicID string) ([]WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to fetch working hours for Business Public ID: %s", publicID)
 
 	var whs []WorkingHour
@@ -243,7 +243,7 @@ func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]Wor
 			w.updated_at
 		FROM
 			working_hours w
-		LEFT JOIN
+		INNER JOIN
 			businesses b ON w.business_id = b.id
 		WHERE
 			b.public_id = $1
@@ -259,7 +259,7 @@ func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]Wor
 			END
 	`
 
-	rows, err := db.Query(context.Background(), query, publicID)
+	rows, err := db.Query(ctx, query, publicID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to query working hours for business public ID %s: %v", publicID, err)
 		return nil, fmt.Errorf("failed to fetch working hours: %w", err)
@@ -295,7 +295,7 @@ func GetWorkingHoursByBusinessPublicID(db *pgxpool.Pool, publicID string) ([]Wor
 }
 
 // UpdateWorkingHour updates an existing working hour record using the pool.
-func UpdateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
+func UpdateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to update working hour ID: %s for BusinessID: %s, Day: %s (using pool)", wh.ID, wh.BusinessID, wh.DayOfWeek)
 
 	wh.UpdatedAt = time.Now() // Update the UpdatedAt timestamp
@@ -312,7 +312,7 @@ func UpdateWorkingHour(db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) 
 		RETURNING updated_at` // Return updated_at to confirm
 
 	var updatedTime time.Time
-	err := db.QueryRow(context.Background(), query,
+	err := db.QueryRow(ctx, query,
 		wh.DayOfWeek,
 		wh.OpenTime,
 		wh.CloseTime,
