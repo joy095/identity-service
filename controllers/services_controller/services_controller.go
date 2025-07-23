@@ -26,12 +26,12 @@ func NewServiceController() *ServiceController {
 }
 
 type CreateServiceRequest struct {
-	BusinessID      string  `form:"businessId" binding:"required"`
-	Name            string  `form:"name" binding:"required"`
-	Description     string  `form:"description,omitempty"`
-	DurationMinutes int     `form:"durationMinutes" binding:"required"`
-	Price           float64 `form:"price" binding:"required"`
-	IsActive        bool    `form:"isActive,omitempty"`
+	BusinessID  string  `form:"businessId" binding:"required"`
+	Name        string  `form:"name" binding:"required"`
+	Description string  `form:"description,omitempty"`
+	duration    int     `form:"duration" binding:"required"`
+	Price       float64 `form:"price" binding:"required"`
+	IsActive    bool    `form:"isActive,omitempty"`
 }
 
 type ImageUploadResponse struct {

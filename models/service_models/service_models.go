@@ -17,38 +17,38 @@ import (
 
 // Service represents a service offered by a business.
 type Service struct {
-	ID              uuid.UUID   `json:"id"`
-	BusinessID      uuid.UUID   `json:"businessId"`
-	Name            string      `json:"name"`
-	Description     string      `json:"description,omitempty"`
-	DurationMinutes int         `json:"durationMinutes"`
-	Price           int64       `json:"price"` // Use int64 for price for convenience, or string for exact decimal handling
-	ImageID         pgtype.UUID `json:"imageId"`
-	IsActive        bool        `json:"isActive"`
-	CreatedAt       time.Time   `json:"createdAt"`
-	UpdatedAt       time.Time   `json:"updatedAt"`
-	ObjectName      *string     `json:"objectName,omitempty"`
+	ID          uuid.UUID   `json:"id"`
+	BusinessID  uuid.UUID   `json:"businessId"`
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Duration    int         `json:"duration"`
+	Price       int64       `json:"price"` // Use int64 for price for convenience, or string for exact decimal handling
+	ImageID     pgtype.UUID `json:"imageId"`
+	IsActive    bool        `json:"isActive"`
+	CreatedAt   time.Time   `json:"createdAt"`
+	UpdatedAt   time.Time   `json:"updatedAt"`
+	ObjectName  *string     `json:"objectName,omitempty"`
 }
 
 // NewService creates a new Service instance with default values and generated ID/timestamps.
 func NewService(
 	businessID uuid.UUID,
 	name, description string,
-	durationMinutes int,
+	duration int,
 	price int64,
 ) *Service {
 	now := time.Now()
 	return &Service{
-		ID:              uuid.New(),
-		BusinessID:      businessID,
-		Name:            name,
-		Description:     description,
-		DurationMinutes: durationMinutes,
-		Price:           price,
-		ImageID:         pgtype.UUID{Valid: false}, // Explicitly initialize as invalid/NULL
-		IsActive:        true,                      // Services are active by default
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:          uuid.New(),
+		BusinessID:  businessID,
+		Name:        name,
+		Description: description,
+		Duration:    duration,
+		Price:       price,
+		ImageID:     pgtype.UUID{Valid: false}, // Explicitly initialize as invalid/NULL
+		IsActive:    true,                      // Services are active by default
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 
@@ -56,22 +56,22 @@ func NewService(
 func NewServiceWithImage(
 	businessID uuid.UUID,
 	name, description string,
-	durationMinutes int,
+	duration int,
 	price int64,
 	imageID uuid.UUID,
 ) *Service {
 	now := time.Now()
 	return &Service{
-		ID:              uuid.New(),
-		BusinessID:      businessID,
-		Name:            name,
-		Description:     description,
-		DurationMinutes: durationMinutes,
-		Price:           price,
-		ImageID:         pgtype.UUID{Bytes: imageID, Valid: true}, // Set valid image ID
-		IsActive:        true,                                     // Services are active by default
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:          uuid.New(),
+		BusinessID:  businessID,
+		Name:        name,
+		Description: description,
+		Duration:    duration,
+		Price:       price,
+		ImageID:     pgtype.UUID{Bytes: imageID, Valid: true}, // Set valid image ID
+		IsActive:    true,                                     // Services are active by default
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 
@@ -100,7 +100,7 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 		service.BusinessID,
 		service.Name,
 		service.Description,
-		service.DurationMinutes,
+		service.Duration,
 		service.Price,
 		service.ImageID,
 		service.IsActive,
@@ -157,7 +157,7 @@ func GetServiceByIDModel(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*
 		&service.BusinessID,
 		&service.Name,
 		&service.Description,
-		&service.DurationMinutes,
+		&service.Duration,
 		&service.Price,
 		&service.IsActive,
 		&service.ImageID, // Changed to pgtype.UUID to handle NULL
@@ -229,7 +229,7 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 			&service.BusinessID,
 			&service.Name,
 			&service.Description,
-			&service.DurationMinutes,
+			&service.Duration,
 			&service.Price,
 			&imageID,
 			&service.IsActive,
@@ -303,7 +303,7 @@ func GetServicesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID u
 			&service.BusinessID,
 			&service.Name,
 			&service.Description,
-			&service.DurationMinutes,
+			&service.Duration,
 			&service.Price,
 			&service.ImageID, // pgtype.UUID handles NULL automatically
 			&service.IsActive,
@@ -350,7 +350,7 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 		service.ID,
 		service.Name,
 		service.Description,
-		service.DurationMinutes,
+		service.Duration,
 		service.Price,
 		service.ImageID,
 		service.IsActive,
