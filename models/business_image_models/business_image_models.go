@@ -3,7 +3,6 @@ package business_image_models
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -111,18 +110,18 @@ func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 // including their object names and uploaded_at from the 'images' table.
 func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]*BusinessImage, error) {
 	query := `
-		SELECT 
-			bi.business_id, 
-			bi.image_id, 
-			bi.is_primary, 
-			bi.position,          -- Added position to SELECT
-			i.uploaded_at, 
-			i.object_name
-		FROM business_images bi
-		LEFT JOIN images i ON bi.image_id = i.id
-		WHERE bi.business_id = $1
-		ORDER BY bi.is_primary DESC, bi.position ASC, i.uploaded_at ASC -- Order by position if present
-	`
+        SELECT 
+            bi.business_id, 
+            bi.image_id, 
+            bi.is_primary, 
+            bi.position,
+            i.uploaded_at, 
+            i.object_name
+        FROM business_images bi
+        LEFT JOIN images i ON bi.image_id = i.id
+        WHERE bi.business_id = $1
+        ORDER BY bi.is_primary DESC, bi.position ASC, i.uploaded_at ASC -- Order by position if present
+    `
 	rows, err := db.Query(ctx, query, businessID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query business images: %w", err)
@@ -138,7 +137,7 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 			&img.BusinessID,
 			&img.ImageID,
 			&img.IsPrimary,
-			&img.Position, // Scan position
+			&img.Position,
 			&img.CreatedAt,
 			&img.ObjectName,
 		)
@@ -150,7 +149,7 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 		if img.ObjectName != nil && cloudflareImageBaseURL != "" {
 			// Ensure base URL doesn't end with slash and encode object name
 			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
-			fullPath := baseURL + "/" + url.QueryEscape(*img.ObjectName)
+			fullPath := baseURL + "/" + *img.ObjectName
 			img.ObjectName = &fullPath
 		}
 

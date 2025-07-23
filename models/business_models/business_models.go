@@ -21,26 +21,24 @@ type Location struct {
 
 // Business represents a business entity in your system.
 type Business struct {
-	ID         uuid.UUID `json:"id"`
-	Name       string    `json:"name"`
-	Category   string    `json:"category"`
-	Address    string    `json:"address"`
-	City       string    `json:"city,omitempty"`
-	State      string    `json:"state,omitempty"`
-	Country    string    `json:"country"`
-	PostalCode string    `json:"postalCode,omitempty"`
-	TaxID      string    `json:"taxId,omitempty"`
-	About      string    `json:"about,omitempty"`
-	Latitude   float64   `form:"latitude,omitempty"`
-	Longitude  float64   `form:"longitude,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-	IsActive   bool      `json:"isActive"`
-	OwnerID    uuid.UUID `json:"ownerId"`
-	PublicId   *string   `json:"publicId"`
-	// Helper field for primary image URL (computed from Images)
-	Images             []*business_image_models.BusinessImage `json:"images,omitempty"`
-	PrimaryImageObject *string
+	ID         uuid.UUID                              `json:"id"`
+	Name       string                                 `json:"name"`
+	Category   string                                 `json:"category"`
+	Address    string                                 `json:"address"`
+	City       string                                 `json:"city,omitempty"`
+	State      string                                 `json:"state,omitempty"`
+	Country    string                                 `json:"country"`
+	PostalCode string                                 `json:"postalCode,omitempty"`
+	TaxID      string                                 `json:"taxId,omitempty"`
+	About      string                                 `json:"about,omitempty"`
+	Latitude   float64                                `form:"latitude,omitempty"`
+	Longitude  float64                                `form:"longitude,omitempty"`
+	CreatedAt  time.Time                              `json:"createdAt"`
+	UpdatedAt  time.Time                              `json:"updatedAt"`
+	IsActive   bool                                   `json:"isActive"`
+	OwnerID    uuid.UUID                              `json:"ownerId"`
+	PublicId   *string                                `json:"publicId"`
+	Images     []*business_image_models.BusinessImage `json:"images,omitempty"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
@@ -496,38 +494,31 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 
 	businesses := []*Business{}
 
+	// Removed the LEFT JOIN LATERAL for primary_image_object_name
+	// as it's no longer required by the Business struct for this query.
 	baseQuery := `
         SELECT
-			b.id,
-			b.name,
-			b.category,
-			b.address,
-			b.city,
-			b.state,
-			b.country,
-			b.postal_code,
-			b.tax_id,
-			b.about,
-			b.location_latitude,
-			b.location_longitude,
-			b.created_at,
-			b.updated_at,
-			b.is_active,
-			b.owner_id,
-			b.public_id,
-			img.object_name AS primary_image_object_name
-		FROM
-			businesses AS b
-		LEFT JOIN LATERAL (
-			SELECT i.object_name
-			FROM business_images AS bi
-			JOIN images AS i ON i.id = bi.image_id
-			WHERE bi.business_id = b.id AND bi.is_primary = true
-			LIMIT 1
-		) AS img ON true
-		WHERE b.is_active = true
-		ORDER BY b.created_at DESC
-`
+            b.id,
+            b.name,
+            b.category,
+            b.address,
+            b.city,
+            b.state,
+            b.country,
+            b.postal_code,
+            b.tax_id,
+            b.about,
+            b.location_latitude,
+            b.location_longitude,
+            b.created_at,
+            b.updated_at,
+            b.is_active,
+            b.owner_id,
+            b.public_id
+        FROM
+            businesses AS b
+        WHERE b.is_active = true
+        ORDER BY b.created_at DESC`
 
 	query := baseQuery
 	args := []interface{}{}
@@ -573,12 +564,15 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.IsActive,
 			&business.OwnerID,
 			&business.PublicId,
-			&business.PrimaryImageObject,
 		)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
 			return nil, fmt.Errorf("failed to scan business data: %w", err)
 		}
+
+		// The business.Images slice remains unpopulated by this query.
+		// If you need images, you'd fetch them in a separate query or
+		// use more advanced SQL aggregation for eager loading.
 
 		businesses = append(businesses, business)
 	}

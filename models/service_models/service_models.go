@@ -182,10 +182,15 @@ func GetServiceByIDModel(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*
 	return service, nil
 }
 
+// GetAllServicesModel fetches all services for a given business ID.
 func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
-	logger.InfoLogger.Info("Attempting to fetch all services for business ID: " + businessID.String())
+	const operation = "GetAllServicesModel"
+	logger.InfoLogger.Printf("%s: Attempting to fetch services for business ID: %s", operation, businessID)
 
 	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
+	if cloudflareImageBaseURL == "" {
+		logger.DebugLogger.Warningf("%s: CLOUDFLARE_IMAGE_URL environment variable not set", operation)
+	}
 
 	query := `
 		SELECT
@@ -199,32 +204,31 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 			s.is_active,
 			s.created_at,
 			s.updated_at,
-			CASE
-				WHEN s.image_id IS NOT NULL THEN i.object_name
-				ELSE NULL
-			END AS object_name
+			i.object_name
 		FROM
 			services AS s
-		LEFT JOIN
-			images AS i ON s.image_id = i.id
+		LEFT JOIN images AS i ON s.image_id = i.id
 		WHERE
 			s.business_id = $1
-		ORDER BY s.name ASC`
+		ORDER BY s.name ASC
+	`
 
 	rows, err := db.Query(ctx, query, businessID)
 	if err != nil {
-		logger.ErrorLogger.Error("Failed to execute query to fetch services: " + err.Error())
-		return nil, fmt.Errorf("failed to fetch services from database: %w", err)
+		logger.ErrorLogger.Printf("%s: Failed to execute query: %v", operation, err)
+		return nil, fmt.Errorf("%s: failed to fetch services: %w", operation, err)
 	}
 	defer rows.Close()
 
 	var services []Service
 	for rows.Next() {
 		var service Service
-		var imageID pgtype.UUID    // For scanning nullable UUID
-		var objectName pgtype.Text // For scanning nullable string
+		var (
+			imageID    pgtype.UUID
+			objectName pgtype.Text
+		)
 
-		err := rows.Scan(
+		if err := rows.Scan(
 			&service.ID,
 			&service.BusinessID,
 			&service.Name,
@@ -235,43 +239,36 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 			&service.IsActive,
 			&service.CreatedAt,
 			&service.UpdatedAt,
-			&objectName, // Scan into pgtype.Text
-		)
-		if err != nil {
-			logger.ErrorLogger.Error("Failed to scan service row: " + err.Error())
-			return nil, fmt.Errorf("failed to scan service row: %w", err)
+			&objectName,
+		); err != nil {
+			logger.ErrorLogger.Printf("%s: Failed to scan row: %v", operation, err)
+			return nil, fmt.Errorf("%s: failed to scan service row: %w", operation, err)
 		}
 
-		// Handle nullable ImageID
-		if imageID.Valid {
-			service.ImageID = pgtype.UUID{Bytes: imageID.Bytes, Valid: true}
-		} else {
-			service.ImageID = pgtype.UUID{Valid: false}
-		}
-
-		// Handle nullable ObjectName and construct full URL
-		if objectName.Valid {
-			fullPath := cloudflareImageBaseURL + "/" + objectName.String
-			service.ObjectName = &fullPath
-		} else {
-			// If object_name is NULL, set to an empty string pointer or nil, based on your preference
-			// Setting to nil is generally cleaner if it represents "no image"
-			service.ObjectName = nil
-			// Or if you prefer an empty string:
-			// emptyStr := ""
-			// service.ObjectName = &emptyStr
-		}
+		// Handle image fields
+		service.ImageID = imageID
+		service.ObjectName = buildImageURL(objectName, cloudflareImageBaseURL)
 
 		services = append(services, service)
 	}
 
-	if err = rows.Err(); err != nil {
-		logger.ErrorLogger.Error("Error after iterating through service rows: " + err.Error())
-		return nil, fmt.Errorf("error during service row iteration: %w", err)
+	if err := rows.Err(); err != nil {
+		logger.ErrorLogger.Printf("%s: Row iteration error: %v", operation, err)
+		return nil, fmt.Errorf("%s: error during row iteration: %w", operation, err)
 	}
 
-	logger.InfoLogger.Info("Successfully fetched services for business ID: " + businessID.String())
+	logger.InfoLogger.Printf("%s: Successfully fetched %d services for business ID: %s",
+		operation, len(services), businessID)
 	return services, nil
+}
+
+// buildImageURL constructs the full image URL if objectName is valid
+func buildImageURL(objectName pgtype.Text, baseURL string) *string {
+	if !objectName.Valid || baseURL == "" {
+		return nil
+	}
+	fullPath := strings.TrimRight(baseURL, "/") + "/" + objectName.String
+	return &fullPath
 }
 
 // GetServicesByBusinessID fetches all services for a given business ID.
