@@ -2,6 +2,7 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/services_controller"
 	"github.com/joy095/identity/handlers/service_handlers"
 	middleware "github.com/joy095/identity/middlewares"
@@ -9,10 +10,14 @@ import (
 )
 
 func RegisterServicesRoutes(router *gin.Engine) {
-	serviceController := services_controller.NewServiceController()
+
+	serviceController, err := services_controller.NewServiceController(db.DB)
+	if err != nil {
+		return
+	}
 
 	// This is a public route, no auth needed
-	router.GET("/services/:businessId", serviceController.GetAllServiceByBusiness) // Get all services for a business with businessId
+	router.GET("/services/:publicId", serviceController.GetAllServiceByBusiness) // Get all services for a business with publicId
 	router.GET("/service/:id", serviceController.GetServiceByID)
 
 	// All routes within this group are protected by the auth middleware

@@ -18,24 +18,25 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/models/service_models"
 )
 
 type CreateServiceRequest struct {
-	BusinessID      string `form:"businessId" binding:"required"`
-	Name            string `form:"name" binding:"required"`
-	Description     string `form:"description,omitempty"`
-	DurationMinutes int    `form:"durationMinutes" binding:"required"`
-	Price           int64  `form:"price" binding:"required"`
-	IsActive        bool   `form:"isActive,omitempty"`
+	PublicId    string `form:"publicId" binding:"required"`
+	Name        string `form:"name" binding:"required"`
+	Description string `form:"description,omitempty"`
+	Duration    int    `form:"duration" binding:"required"`
+	Price       int64  `form:"price" binding:"required"`
+	IsActive    bool   `form:"isActive,omitempty"`
 }
 
 type UpdateServiceRequest struct {
-	Name            *string `form:"name"`
-	Description     *string `form:"description"`
-	DurationMinutes *int    `form:"durationMinutes"`
-	Price           *int64  `form:"price"`
-	IsActive        *bool   `form:"isActive"`
+	Name        *string `form:"name"`
+	Description *string `form:"description"`
+	Duration    *int    `form:"duration"`
+	Price       *int64  `form:"price"`
+	IsActive    *bool   `form:"isActive"`
 }
 
 type ImageUploadResponse struct {
@@ -52,20 +53,30 @@ func CreateService(c *gin.Context) {
 		return
 	}
 
-	businessUUID, err := uuid.Parse(req.BusinessID)
+	publicId := req.PublicId
+
+	bc := db.DB // Ensure bc is properly initialized
+	businessUUID, err := business_models.GetBusinessIdOnly(c.Request.Context(), bc, publicId)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid Business ID format: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid format for businessId. Must be a valid UUID."})
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %s, %s", publicId, err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
 
-	authHeader := c.GetHeader("Authorization")
-	imageID, err := HandleImageUpload(c, authHeader)
+	// Log the business ID
+	logger.InfoLogger.Infof("Creating service for business ID: %s", businessUUID)
+
+	accessToken, err := c.Cookie("access_token")
+	if err != nil || accessToken == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication token missing in cookie"})
+		return
+	}
+	imageID, err := HandleImageUpload(c, accessToken)
 	if err != nil {
 		return
 	}
 
-	service := service_models.NewService(businessUUID, req.Name, req.Description, req.DurationMinutes, req.Price)
+	service := service_models.NewService(businessUUID, req.Name, req.Description, req.Duration, req.Price)
 	service.IsActive = req.IsActive
 	service.ImageID = pgtype.UUID{Bytes: imageID, Valid: true}
 
@@ -75,7 +86,8 @@ func CreateService(c *gin.Context) {
 		return
 	}
 
-	logger.InfoLogger.Infof("Service '%s' created successfully image ID: %s", createdService.Name, imageID)
+	logger.InfoLogger.Infof("Service '%s' created successfully for business ID: %s with image ID: %s",
+		createdService.Name, businessUUID, imageID)
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Service created successfully!",
 		"service": createdService,
@@ -168,7 +180,10 @@ func sendImageToService(body *bytes.Buffer, contentType string, authHeader strin
 		return uuid.Nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", contentType)
-	httpReq.Header.Set("Authorization", authHeader)
+	httpReq.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: authHeader,
+	})
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)
@@ -193,7 +208,10 @@ func updateImageToService(body *bytes.Buffer, contentType, authHeader string, im
 	}
 
 	httpReq.Header.Set("Content-Type", contentType)
-	httpReq.Header.Set("Authorization", authHeader)
+	httpReq.AddCookie(&http.Cookie{
+		Name:  "access_token",
+		Value: authHeader,
+	})
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)
@@ -264,8 +282,8 @@ func UpdateService(c *gin.Context) {
 	if req.Description != nil {
 		existingService.Description = *req.Description
 	}
-	if req.DurationMinutes != nil {
-		existingService.DurationMinutes = *req.DurationMinutes
+	if req.Duration != nil {
+		existingService.Duration = *req.Duration
 	}
 	if req.Price != nil {
 		existingService.Price = *req.Price
@@ -290,9 +308,13 @@ func UpdateService(c *gin.Context) {
 
 		// Use the existing image ID
 		imageID := existingService.ImageID.Bytes
-		authHeader := c.GetHeader("Authorization")
+		accessToken, err := c.Cookie("access_token")
+		if err != nil || accessToken == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication token missing in cookie"})
+			return
+		}
 
-		_, updateErr := updateImageToService(body, contentType, authHeader, imageID) //
+		_, updateErr := updateImageToService(body, contentType, accessToken, imageID) //
 		if updateErr != nil {
 			logger.ErrorLogger.Errorf("Failed to update image for service %s: %v", serviceID, updateErr)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "Image update failed: " + updateErr.Error()})

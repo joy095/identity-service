@@ -12,26 +12,34 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/models/service_models"
 	"github.com/joy095/identity/models/shared_models"
 )
 
-type ServiceController struct{}
+type ServiceController struct{ db *pgxpool.Pool }
 
 // NewServiceController creates and returns a new instance of ServiceController
-func NewServiceController() *ServiceController {
-	return &ServiceController{}
+func NewServiceController(db *pgxpool.Pool) (*ServiceController, error) {
+	if db == nil {
+		return nil, errors.New("database pool cannot be nil")
+	}
+
+	return &ServiceController{
+		db: db,
+	}, nil
 }
 
 type CreateServiceRequest struct {
-	BusinessID      string  `form:"businessId" binding:"required"`
-	Name            string  `form:"name" binding:"required"`
-	Description     string  `form:"description,omitempty"`
-	DurationMinutes int     `form:"durationMinutes" binding:"required"`
-	Price           float64 `form:"price" binding:"required"`
-	IsActive        bool    `form:"isActive,omitempty"`
+	BusinessID  string  `form:"businessId" binding:"required"`
+	Name        string  `form:"name" binding:"required"`
+	Description string  `form:"description,omitempty"`
+	Duration    int     `form:"duration" binding:"required"`
+	Price       float64 `form:"price" binding:"required"`
+	IsActive    bool    `form:"isActive,omitempty"`
 }
 
 type ImageUploadResponse struct {
@@ -41,22 +49,16 @@ type ImageUploadResponse struct {
 func (sc *ServiceController) GetAllServiceByBusiness(c *gin.Context) {
 	logger.InfoLogger.Info("GetAllServiceByBusiness controller called")
 
-	businessIDStr := strings.TrimSpace(c.Param("businessId"))
+	publicId := c.Param("publicId")
 
-	if businessIDStr == "" {
-		logger.ErrorLogger.Error("Business ID is required")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Business ID is required"})
-		return
-	}
-
-	businessID, err := uuid.Parse(businessIDStr)
+	businessId, err := business_models.GetBusinessIdOnly(c.Request.Context(), sc.db, publicId)
 	if err != nil {
-		logger.ErrorLogger.Error("Invalid business ID format: " + err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
 
-	services, err := service_models.GetAllServicesModel(c.Request.Context(), db.DB, businessID)
+	services, err := service_models.GetAllServicesModel(c.Request.Context(), db.DB, businessId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
