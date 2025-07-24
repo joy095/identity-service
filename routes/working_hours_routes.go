@@ -12,29 +12,27 @@ func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
 
 	workingHourController := working_hour_controller.NewWorkingHourController(db)
 
-	public := router.Group("/working-hour-business/:businessPublicId")
-
+	public := router.Group("/public-working-hour")
 	{
-		public.GET("/working-hours", workingHourController.GetWorkingHoursByBusinessID)
+		// Use :businessPublicId to be explicit about the parameter type
+		public.GET("/:businessPublicId", workingHourController.GetWorkingHoursByBusinessID)
 	}
 
-	// Apply authentication middleware to all working hour routes
 	protected := router.Group("/")
-	protected.Use(auth.AuthMiddleware()) // Apply AuthMiddleware here
-
-	businessGroup := protected.Group("/working-hour-business/:businessId")
-	{
-		// New endpoint for initializing working hours with defaults and overrides
-		businessGroup.POST("/working-hours/initialize", workingHourController.InitializeWorkingHours)
-		businessGroup.POST("/working-hours/bulk", workingHourController.BulkUpsertWorkingHours)
-	}
+	protected.Use(auth.AuthMiddleware())
 
 	workingGroup := protected.Group("/working-hour")
 	{
-		workingGroup.POST("/", workingHourController.CreateWorkingHour) // Can still create individual entries
+		// Use :businessId in the path and remove businessId from the JSON body expectation
+		// The handler will extract businessId from the path parameter
+		workingGroup.POST("/initialize/:businessId", workingHourController.InitializeWorkingHours)
+		workingGroup.POST("/bulk/:businessId", workingHourController.BulkUpsertWorkingHours)
+
+		// Keep individual create endpoint - businessId comes from JSON body
+		workingGroup.POST("/", workingHourController.CreateWorkingHour)
+		// Keep individual CRUD endpoints - :id refers to working hour ID
 		workingGroup.GET("/:id", workingHourController.GetWorkingHourByID)
 		workingGroup.PUT("/:id", workingHourController.UpdateWorkingHour)
 		workingGroup.DELETE("/:id", workingHourController.DeleteWorkingHour)
 	}
-
 }

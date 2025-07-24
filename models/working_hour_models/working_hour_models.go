@@ -63,69 +63,113 @@ func NewWorkingHour(
 	return wh, nil
 }
 
-// CreateWorkingHour inserts a new working hour slot into the database using the pool.
-func CreateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
-	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s (using pool)", wh.BusinessID, wh.DayOfWeek)
-
+func createWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingHour) (*WorkingHour, error) {
+	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s", wh.BusinessID, wh.DayOfWeek)
 	query := `
-		INSERT INTO working_hours (
-			id, business_id, day_of_week, open_time, close_time,
-			is_closed, created_at, updated_at
-		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
-		)`
+        INSERT INTO working_hours (
+            id, business_id, day_of_week, open_time, close_time,
+            is_closed, created_at, updated_at
+        )
+        VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8
+        ) RETURNING id` // Always use RETURNING for consistency if needed, or just rely on success/failure
 
-	if _, err := db.Exec(ctx, query,
-		wh.ID,
-		wh.BusinessID,
-		wh.DayOfWeek,
-		wh.OpenTime,
-		wh.CloseTime,
-		wh.IsClosed,
-		wh.CreatedAt,
-		wh.UpdatedAt,
-	); err != nil {
+	var err error
+	switch conn := dbConn.(type) {
+	case *pgxpool.Pool:
+		_, err = conn.Exec(ctx, query, wh.ID, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt)
+	case pgx.Tx:
+		var returnedID uuid.UUID
+		err = conn.QueryRow(ctx, query, wh.ID, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&returnedID)
+		// Optionally assign returnedID if needed locally, but wh.ID is already set
+	default:
+		return nil, fmt.Errorf("unsupported database connection type")
+	}
 
+	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert working hour for BusinessID: %s, Day: %s into database: %v", wh.BusinessID, wh.DayOfWeek, err)
 		return nil, fmt.Errorf("failed to create working hour: %w", err)
 	}
-
-	logger.InfoLogger.Infof("Working hour with ID %s created successfully for BusinessID: %s, Day: %s (using pool)", wh.ID, wh.BusinessID, wh.DayOfWeek)
+	logger.InfoLogger.Infof("Working hour with ID %s created successfully for BusinessID: %s, Day: %s", wh.ID, wh.BusinessID, wh.DayOfWeek)
 	return wh, nil
 }
 
-// CreateWorkingHourTx inserts a new working hour slot into the database using a transaction.
-func CreateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*WorkingHour, error) {
-	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s (using transaction)", wh.BusinessID, wh.DayOfWeek)
-
-	query := `
-		INSERT INTO working_hours (
-			id, business_id, day_of_week, open_time, close_time,
-			is_closed, created_at, updated_at
-		)
-		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8
-		) RETURNING id`
-
-	var returnedID uuid.UUID
-	err := tx.QueryRow(ctx, query,
-		wh.ID,
-		wh.BusinessID,
-		wh.DayOfWeek,
-		wh.OpenTime,
-		wh.CloseTime,
-		wh.IsClosed,
-		wh.CreatedAt,
-		wh.UpdatedAt,
-	).Scan(&returnedID)
-
+// CreateWorkingHour inserts a new working hour slot into the database using the pool.
+// It manages its own short transaction.
+func CreateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
+	tx, err := db.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to insert working hour for BusinessID: %s, Day: %s into database (tx): %v", wh.BusinessID, wh.DayOfWeek, err)
-		return nil, fmt.Errorf("failed to create working hour (tx): %w", err)
+		logger.ErrorLogger.Errorf("Failed to begin transaction for CreateWorkingHour (BusinessID: %s): %v", wh.BusinessID, err)
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback(ctx) // Rollback on any error from this function
+		}
+	}()
+
+	createdWH, err := createWorkingHourCore(ctx, tx, wh)
+	if err != nil {
+		// Defer will handle rollback
+		return nil, err
 	}
 
-	logger.InfoLogger.Infof("Working hour with ID %s created successfully for BusinessID: %s, Day: %s (using transaction)", wh.ID, wh.BusinessID, wh.DayOfWeek)
+	if err = tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("Failed to commit transaction for CreateWorkingHour (BusinessID: %s): %v", wh.BusinessID, err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return createdWH, nil
+}
+
+// CreateWorkingHourTx inserts a new working hour slot into the database using a transaction.
+// This function now calls the core logic.
+func CreateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*WorkingHour, error) {
+	return createWorkingHourCore(ctx, tx, wh)
+}
+
+// updateWorkingHourCore contains the core logic for updating a working hour.
+func updateWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingHour) (*WorkingHour, error) {
+	logger.InfoLogger.Infof("Attempting to update working hour ID: %s for BusinessID: %s, Day: %s", wh.ID, wh.BusinessID, wh.DayOfWeek)
+	wh.UpdatedAt = time.Now() // Update the UpdatedAt timestamp
+	query := `
+        UPDATE working_hours
+        SET
+            day_of_week = $1,
+            open_time = $2,
+            close_time = $3,
+            is_closed = $4,
+            updated_at = $5
+        WHERE
+            id = $6 AND business_id = $7
+        RETURNING updated_at` // Return updated_at to confirm
+
+	var updatedTime time.Time
+	var err error
+
+	switch conn := dbConn.(type) {
+	case *pgxpool.Pool:
+		err = conn.QueryRow(ctx, query,
+			wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.UpdatedAt,
+			wh.ID, wh.BusinessID).Scan(&updatedTime)
+	case pgx.Tx:
+		err = conn.QueryRow(ctx, query,
+			wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.UpdatedAt,
+			wh.ID, wh.BusinessID).Scan(&updatedTime)
+	default:
+		return nil, fmt.Errorf("unsupported database connection type")
+	}
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Warnf("No row found to update for working hour ID %s for business %s.", wh.ID, wh.BusinessID)
+			return nil, fmt.Errorf("working hour not found or not associated with business")
+		}
+		logger.ErrorLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database: %v", wh.ID, wh.BusinessID, err)
+		return nil, fmt.Errorf("failed to update working hour: %w", err)
+	}
+	wh.UpdatedAt = updatedTime // Ensure the returned updated_at is set
+	logger.InfoLogger.Infof("Working hour ID %s updated successfully for BusinessID: %s, Day: %s", wh.ID, wh.BusinessID, wh.DayOfWeek)
 	return wh, nil
 }
 
@@ -295,108 +339,55 @@ func GetWorkingHoursByBusinessPublicID(ctx context.Context, db *pgxpool.Pool, pu
 }
 
 // UpdateWorkingHour updates an existing working hour record using the pool.
+// It manages its own short transaction.
 func UpdateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (*WorkingHour, error) {
-	logger.InfoLogger.Infof("Attempting to update working hour ID: %s for BusinessID: %s, Day: %s (using pool)", wh.ID, wh.BusinessID, wh.DayOfWeek)
-
-	wh.UpdatedAt = time.Now() // Update the UpdatedAt timestamp
-	query := `
-		UPDATE working_hours
-		SET
-			day_of_week = $1,
-			open_time = $2,
-			close_time = $3,
-			is_closed = $4,
-			updated_at = $5
-		WHERE
-			id = $6 AND business_id = $7
-		RETURNING updated_at` // Return updated_at to confirm
-
-	var updatedTime time.Time
-	err := db.QueryRow(ctx, query,
-		wh.DayOfWeek,
-		wh.OpenTime,
-		wh.CloseTime,
-		wh.IsClosed,
-		wh.UpdatedAt,
-		wh.ID,
-		wh.BusinessID,
-	).Scan(&updatedTime)
-
+	tx, err := db.Begin(ctx)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			logger.InfoLogger.Warnf("No row found to update for working hour ID %s for business %s.", wh.ID, wh.BusinessID)
-			return nil, fmt.Errorf("working hour not found or not associated with business")
+		logger.ErrorLogger.Errorf("Failed to begin transaction for UpdateWorkingHour (ID: %s): %v", wh.ID, err)
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback(ctx) // Rollback on any error from this function
 		}
-		logger.ErrorLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database: %v", wh.ID, wh.BusinessID, err)
-		return nil, fmt.Errorf("failed to update working hour: %w", err)
+	}()
+
+	updatedWH, err := updateWorkingHourCore(ctx, tx, wh)
+	if err != nil {
+		// Defer will handle rollback
+		return nil, err
 	}
 
-	wh.UpdatedAt = updatedTime // Ensure the returned updated_at is set
-	logger.InfoLogger.Infof("Working hour ID %s updated successfully for BusinessID: %s, Day: %s (using pool)", wh.ID, wh.BusinessID, wh.DayOfWeek)
-	return wh, nil
+	if err = tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("Failed to commit transaction for UpdateWorkingHour (ID: %s): %v", wh.ID, err)
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return updatedWH, nil
 }
 
 // UpdateWorkingHourTx updates an existing working hour record using a transaction.
+// This function now calls the core logic.
 func UpdateWorkingHourTx(ctx context.Context, tx pgx.Tx, wh *WorkingHour) (*WorkingHour, error) {
-	logger.InfoLogger.Infof("Attempting to update working hour ID: %s for BusinessID: %s, Day: %s (using transaction)", wh.ID, wh.BusinessID, wh.DayOfWeek)
-
-	wh.UpdatedAt = time.Now() // Update the UpdatedAt timestamp
-	query := `
-		UPDATE working_hours
-		SET
-			day_of_week = $1,
-			open_time = $2,
-			close_time = $3,
-			is_closed = $4,
-			updated_at = $5
-		WHERE
-			id = $6 AND business_id = $7
-		RETURNING updated_at`
-
-	var updatedTime time.Time
-	err := tx.QueryRow(ctx, query,
-		wh.DayOfWeek,
-		wh.OpenTime,
-		wh.CloseTime,
-		wh.IsClosed,
-		wh.UpdatedAt,
-		wh.ID,
-		wh.BusinessID,
-	).Scan(&updatedTime)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			logger.InfoLogger.Warnf("No row found to update for working hour ID %s for business %s in transaction.", wh.ID, wh.BusinessID)
-			return nil, fmt.Errorf("working hour not found or not associated with business (tx)")
-		}
-		logger.ErrorLogger.Errorf("Failed to update working hour ID %s for BusinessID %s in database (tx): %v", wh.ID, wh.BusinessID, err)
-		return nil, fmt.Errorf("failed to update working hour (tx): %w", err)
-	}
-
-	wh.UpdatedAt = updatedTime
-	logger.InfoLogger.Infof("Working hour ID %s updated successfully for BusinessID: %s, Day: %s (using transaction)", wh.ID, wh.BusinessID, wh.DayOfWeek)
-	return wh, nil
+	return updateWorkingHourCore(ctx, tx, wh)
 }
 
 // DeleteWorkingHour deletes a working hour record by its ID and business ID.
+// (No significant duplication here, logic is straightforward)
 func DeleteWorkingHour(ctx context.Context, db *pgxpool.Pool, id uuid.UUID, businessID uuid.UUID) error {
 	logger.InfoLogger.Infof("Attempting to delete working hour ID: %s for BusinessID: %s", id, businessID)
-
 	query := `
-		DELETE FROM working_hours
-		WHERE id = $1 AND business_id = $2` // Added business_id to ensure ownership before delete
-
+        DELETE FROM working_hours
+        WHERE id = $1 AND business_id = $2` // Added business_id to ensure ownership before delete
 	commandTag, err := db.Exec(ctx, query, id, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to delete working hour ID %s for BusinessID %s from database: %v", id, businessID, err)
 		return fmt.Errorf("failed to delete working hour: %w", err)
 	}
-
 	if commandTag.RowsAffected() == 0 {
 		logger.InfoLogger.Warnf("No working hour found with ID %s and BusinessID %s for deletion.", id, businessID)
 		return fmt.Errorf("working hour not found or not associated with business")
 	}
-
 	logger.InfoLogger.Infof("Working hour ID %s for BusinessID %s deleted successfully.", id, businessID)
 	return nil
 }

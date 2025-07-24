@@ -1,3 +1,5 @@
+// working_hour_controller/working_hour_controller.go
+
 package working_hour_controller
 
 import (
@@ -59,14 +61,16 @@ type DayWorkingHourRequest struct {
 }
 
 // BulkUpdateWorkingHoursRequest represents the expected JSON payload for bulk updating/upserting working hour slots.
+// BusinessID is now taken from the path parameter.
 type BulkUpdateWorkingHoursRequest struct {
-	BusinessID uuid.UUID               `json:"businessId" binding:"required"`
-	Days       []DayWorkingHourRequest `json:"days" binding:"required,min=1"` // Changed to use DayWorkingHourRequest
+	// BusinessID uuid.UUID `json:"businessId" binding:"required"` // Removed
+	Days []DayWorkingHourRequest `json:"days" binding:"required,min=1"`
 }
 
 // InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
+// BusinessID is now taken from the path parameter.
 type InitializeWorkingHoursRequest struct {
-	BusinessID         uuid.UUID               `json:"businessId" binding:"required"`
+	// BusinessID uuid.UUID `json:"businessId" binding:"required"` // Removed
 	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
 	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
 	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
@@ -79,7 +83,6 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 		logger.InfoLogger.Debug("Working hour is closed, skipping time validation.")
 		return nil // No time validation needed if the slot is closed
 	}
-
 	openTime, err := time.Parse("15:04:05", openTimeStr)
 	if err != nil {
 		logger.WarnLogger.Warnf("Invalid open time format '%s': %v", openTimeStr, err)
@@ -90,7 +93,6 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 		logger.WarnLogger.Warnf("Invalid close time format '%s': %v", closeTimeStr, err)
 		return fmt.Errorf("invalid close time format: %w", err)
 	}
-
 	if closeTime.Before(openTime) || closeTime.Equal(openTime) {
 		logger.WarnLogger.Warnf("Close time '%s' is not after open time '%s'", closeTimeStr, openTimeStr)
 		return fmt.Errorf("close time must be after open time")
@@ -99,10 +101,19 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 	return nil
 }
 
-// InitializeWorkingHours sets up default working hours (Mon-Fri 09:00-17:00, closed weekends)
-// and allows for immediate overrides.
+// InitializeWorkingHours sets up default working hours.
+// BusinessID is taken from the path parameter :businessId.
 func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Info("InitializeWorkingHours controller called")
+
+	businessIDStr := c.Param("businessId") // Extract from path
+	businessID, err := uuid.Parse(businessIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid business ID format in path '%s': %v", businessIDStr, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format in URL"})
+		return
+	}
+	logger.InfoLogger.Debugf("InitializeWorkingHours request received for BusinessID (from path): %s", businessID)
 
 	var req InitializeWorkingHoursRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -110,7 +121,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request data: %s", err.Error())})
 		return
 	}
-	logger.InfoLogger.Debugf("InitializeWorkingHours request received for BusinessID: %s", req.BusinessID)
+	// Note: req.BusinessID is no longer part of the struct, so we use businessID from path
 
 	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
@@ -122,35 +133,33 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 		}
 		return
 	}
-	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
+	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, businessID)
 
-	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, businessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour initialization: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour initialization: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
 		return
 	}
 	logger.InfoLogger.Debugf("Business '%s' found for initialization, owner is '%s'", business.ID, business.OwnerID)
-
 	if business.OwnerID != ownerUserID {
-		logger.WarnLogger.Warnf("User %s attempted to initialize working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
+		logger.WarnLogger.Warnf("User %s attempted to initialize working hour for unowned business %s (owner: %s)", ownerUserID, businessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to set working hours for this business"})
 		return
 	}
 
 	// Check if working hours already exist for this business
-	existingHours, err := working_hour_models.GetWorkingHoursByBusinessID(c.Request.Context(), whc.DB, req.BusinessID)
+	existingHours, err := working_hour_models.GetWorkingHoursByBusinessID(c.Request.Context(), whc.DB, businessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to check existing working hours for business %s: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to check existing working hours for business %s: %v", businessID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check existing working hours"})
 		return
 	}
 	if len(existingHours) > 0 {
-		logger.InfoLogger.Infof("Working hours already exist for business %s; initialization aborted.", req.BusinessID)
-		c.JSON(http.StatusConflict, gin.H{"error": "Working hours already exist for this business. Use POST /business/:business_id/working-hours/bulk to update existing entries or add new ones."})
+		logger.InfoLogger.Infof("Working hours already exist for business %s; initialization aborted.", businessID)
+		c.JSON(http.StatusConflict, gin.H{"error": "Working hours already exist for this business. Use POST /working-hour/bulk/:businessId to update existing entries or add new ones."})
 		return
 	}
-	logger.InfoLogger.Debugf("No existing working hours found for business %s, proceeding with initialization.", req.BusinessID)
 
 	// Set default open and close times
 	defaultOpenTime := DEFAULT_OPEN_TIME
@@ -176,7 +185,8 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 		if day == "Saturday" || day == "Sunday" {
 			isClosedDefault = true // Weekends closed by default if initialized
 		}
-		wh, err := working_hour_models.NewWorkingHour(req.BusinessID, day, defaultOpenTime, defaultCloseTime, isClosedDefault)
+		// Use businessID from path parameter here
+		wh, err := working_hour_models.NewWorkingHour(businessID, day, defaultOpenTime, defaultCloseTime, isClosedDefault)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to create working hour for %s: %v", day, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create working hour for %s", day)})
@@ -193,7 +203,8 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Validation failed for override %s: %s", override.DayOfWeek, err.Error())})
 			return
 		}
-		wh, err := working_hour_models.NewWorkingHour(req.BusinessID, override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
+		// Use businessID from path parameter here
+		wh, err := working_hour_models.NewWorkingHour(businessID, override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to create working hour override for %s: %v", override.DayOfWeek, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create working hour override for %s", override.DayOfWeek)})
@@ -205,7 +216,7 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 
 	tx, err := whc.DB.Begin(c.Request.Context())
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to begin transaction for working hour initialization for business %s: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to begin transaction for working hour initialization for business %s: %v", businessID, err) // Use businessID
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize working hours"})
 		return
 	}
@@ -226,22 +237,33 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c.Request.Context()); err != nil {
-		logger.ErrorLogger.Errorf("Failed to commit transaction for working hour initialization for business %s: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to commit transaction for working hour initialization for business %s: %v", businessID, err) // Use businessID
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to initialize working hours"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Working hours initialized successfully for business %s with %d entries.", req.BusinessID, len(createdHours))
+	logger.InfoLogger.Infof("Working hours initialized successfully for business %s with %d entries.", businessID, len(createdHours)) // Use businessID
 	c.JSON(http.StatusCreated, gin.H{
 		"message":      "Working hours initialized successfully!",
+		"businessId":   businessID, // Include business ID in response
 		"workingHours": createdHours,
 	})
 }
 
 // BulkUpsertWorkingHours handles the bulk creation or update of working hours for a business.
-// This function will now be primarily used for subsequent updates after initialization.
+// BusinessID is taken from the path parameter :businessId.
 func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Info("BulkUpsertWorkingHours controller called")
+
+	businessIDStr := c.Param("businessId") // Extract from path
+	businessID, err := uuid.Parse(businessIDStr)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid business ID format in path '%s': %v", businessIDStr, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format in URL"})
+		return
+	}
+	// Log message corrected to use businessID instead of req.BusinessID (which doesn't exist anymore)
+	logger.InfoLogger.Debugf("BulkUpsertWorkingHours request received for BusinessID (from path): %s", businessID)
 
 	var req BulkUpdateWorkingHoursRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -249,7 +271,7 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request data: %s", err.Error())})
 		return
 	}
-	logger.InfoLogger.Debugf("BulkUpsertWorkingHours request received for BusinessID: %s with %d entries.", req.BusinessID, len(req.Days))
+	// Note: req.BusinessID is no longer part of the struct, so we use businessID from path
 
 	ownerUserID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
@@ -261,24 +283,24 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 		}
 		return
 	}
-	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, req.BusinessID)
+	logger.InfoLogger.Debugf("Owner User ID '%s' extracted from context for business %s", ownerUserID, businessID)
 
-	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, req.BusinessID)
+	business, err := business_models.GetBusinessByID(c.Request.Context(), whc.DB, businessID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour bulk update: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to fetch business %s for working hour bulk update: %v", businessID, err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
 		return
 	}
 	logger.InfoLogger.Debugf("Business '%s' found for bulk update, owner is '%s'", business.ID, business.OwnerID)
-
 	if business.OwnerID != ownerUserID {
-		logger.WarnLogger.Warnf("User %s attempted to bulk update working hours for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
+		logger.WarnLogger.Warnf("User %s attempted to bulk update working hours for unowned business %s (owner: %s)", ownerUserID, businessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update working hours for this business"})
 		return
 	}
+
 	tx, err := whc.DB.Begin(c.Request.Context())
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to begin transaction for bulk working hour update for business %s: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to begin transaction for bulk working hour update for business %s: %v", businessID, err) // Use businessID
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update working hours"})
 		return
 	}
@@ -286,9 +308,10 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Debug("Database transaction started for bulk working hour update.")
 
 	// Fetch existing hours inside the transaction to prevent race conditions
-	query := `SELECT id, business_id, day_of_week, open_time, close_time, is_closed, created_at, updated_at 
-	          FROM working_hours WHERE business_id = $1`
-	rows, err := tx.Query(c.Request.Context(), query, req.BusinessID)
+	// Use businessID from path parameter in the query
+	query := `SELECT id, business_id, day_of_week, open_time, close_time, is_closed, created_at, updated_at
+              FROM working_hours WHERE business_id = $1`
+	rows, err := tx.Query(c.Request.Context(), query, businessID) // Use businessID
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to fetch existing working hours in transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve existing working hours"})
@@ -316,8 +339,8 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 		}
 		existingMap[wh.DayOfWeek] = wh
 	}
-
-	logger.InfoLogger.Debugf("Found %d existing working hour entries for business %s.", len(existingMap), req.BusinessID)
+	// Use businessID in log message
+	logger.InfoLogger.Debugf("Found %d existing working hour entries for business %s.", len(existingMap), businessID)
 
 	var results []working_hour_models.WorkingHour
 	for _, dayReq := range req.Days {
@@ -331,12 +354,14 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 
 		if existing, ok := existingMap[dayReq.DayOfWeek]; ok {
 			// Day exists, perform UPDATE
-			logger.InfoLogger.Debugf("Updating existing working hour for %s (ID: %s) for business %s.", dayReq.DayOfWeek, existing.ID, req.BusinessID)
+			// Use businessID in log message
+			logger.InfoLogger.Debugf("Updating existing working hour for %s (ID: %s) for business %s.", dayReq.DayOfWeek, existing.ID, businessID)
 			existing.DayOfWeek = dayReq.DayOfWeek
 			existing.OpenTime = dayReq.OpenTime
 			existing.CloseTime = dayReq.CloseTime
 			existing.IsClosed = dayReq.IsClosed
 			existing.UpdatedAt = time.Now()
+
 			// Update in transaction context
 			updatedHour, err := working_hour_models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing) // Use UpdateWorkingHourTx
 			if err != nil {
@@ -349,14 +374,18 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 			logger.InfoLogger.Debugf("Successfully updated working hour for %s (ID: %s) in transaction.", dayReq.DayOfWeek, updatedHour.ID)
 		} else {
 			// Day does not exist, perform INSERT
-			logger.InfoLogger.Debugf("Creating new working hour for %s for business %s.", dayReq.DayOfWeek, req.BusinessID)
-			newHour, err := working_hour_models.NewWorkingHour(req.BusinessID, dayReq.DayOfWeek, dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed)
+			// Use businessID in log message
+			logger.InfoLogger.Debugf("Creating new working hour for %s for business %s.", dayReq.DayOfWeek, businessID)
+
+			// Create new working hour instance, use businessID from path
+			newHour, err := working_hour_models.NewWorkingHour(businessID, dayReq.DayOfWeek, dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed)
 			if err != nil {
 				tx.Rollback(c.Request.Context())
 				logger.ErrorLogger.Errorf("Failed to create new working hour instance for %s: %v", dayReq.DayOfWeek, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create working hours for %s", dayReq.DayOfWeek)})
 				return
 			}
+
 			// Create in transaction context
 			createdHour, err := working_hour_models.CreateWorkingHourTx(c.Request.Context(), tx, newHour) // Use CreateWorkingHourTx
 			if err != nil {
@@ -371,12 +400,18 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	}
 
 	if err := tx.Commit(c.Request.Context()); err != nil {
-		logger.ErrorLogger.Errorf("Failed to commit transaction for bulk working hour update for business %s: %v", req.BusinessID, err)
+		logger.ErrorLogger.Errorf("Failed to commit transaction for bulk working hour update for business %s: %v", businessID, err) // Use businessID
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update working hours"})
 		return
 	}
-	logger.InfoLogger.Infof("Bulk working hours update/create completed successfully for business %s. %d entries processed.", req.BusinessID, len(results))
-	c.JSON(http.StatusOK, gin.H{"message": "Working hours updated successfully", "workingHours": results})
+
+	// Use businessID in success log message
+	logger.InfoLogger.Infof("Bulk working hours update/create completed successfully for business %s. %d entries processed.", businessID, len(results))
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Working hours updated successfully",
+		"businessId":   businessID, // Include business ID in response
+		"workingHours": results,
+	})
 }
 
 // CreateWorkingHour handles the HTTP request to create a new working hour slot.
@@ -419,8 +454,8 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Associated business not found"})
 		return
 	}
-	logger.InfoLogger.Debugf("Business '%s' found for working hour creation, owner is '%s'", business.ID, business.OwnerID)
 
+	// Check authorization
 	if business.OwnerID != ownerUserID {
 		logger.WarnLogger.Warnf("User %s attempted to create working hour for unowned business %s (owner: %s)", ownerUserID, req.BusinessID, business.OwnerID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to set working hours for this business"})
@@ -458,7 +493,6 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 		}
 		return
 	}
-
 	logger.InfoLogger.Infof("Working hour %s created successfully for business %s by user %s", createdWH.ID, req.BusinessID, ownerUserID)
 	c.JSON(http.StatusCreated, gin.H{
 		"message":     "Working hour created successfully!",
@@ -489,25 +523,22 @@ func (whc *WorkingHourController) GetWorkingHourByID(c *gin.Context) {
 		}
 		return
 	}
-
 	logger.InfoLogger.Infof("Working hour %s fetched successfully.", whID)
 	c.JSON(http.StatusOK, gin.H{"workingHour": wh})
 }
 
-// GetWorkingHoursByBusinessID handles fetching all working hours for a specific business.
+// GetWorkingHoursByBusinessID handles fetching all working hours for a specific business using its public ID.
 func (whc *WorkingHourController) GetWorkingHoursByBusinessID(c *gin.Context) {
 	logger.InfoLogger.Info("GetWorkingHoursByBusinessID controller called")
 
-	businessID := c.Param("businessPublicId") // Business Public URL
-
-	whs, err := working_hour_models.GetWorkingHoursByBusinessPublicID(c.Request.Context(), whc.DB, businessID)
+	businessPublicID := c.Param("businessPublicId") // Business Public URL
+	whs, err := working_hour_models.GetWorkingHoursByBusinessPublicID(c.Request.Context(), whc.DB, businessPublicID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch working hours for business %s: %v", businessID, err)
+		logger.ErrorLogger.Errorf("Failed to fetch working hours for business public ID %s: %v", businessPublicID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch working hours"})
 		return
 	}
-
-	logger.InfoLogger.Infof("Fetched %d working hours for business %s.", len(whs), businessID)
+	logger.InfoLogger.Infof("Fetched %d working hours for business public ID %s.", len(whs), businessPublicID)
 	c.JSON(http.StatusOK, gin.H{"workingHours": whs})
 }
 
@@ -564,7 +595,6 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
 		return
 	}
-
 	if business.OwnerID != ownerUserID {
 		logger.WarnLogger.Warnf("User %s attempted to update working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to update this working hour"})
@@ -613,7 +643,6 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update working hour"})
 		return
 	}
-
 	logger.InfoLogger.Infof("Working hour %s updated successfully by user %s", whID, ownerUserID)
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "Working hour updated successfully!",
@@ -667,7 +696,6 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: business lookup failed"})
 		return
 	}
-
 	if business.OwnerID != ownerUserID {
 		logger.WarnLogger.Warnf("User %s attempted to delete working hour %s for unowned business %s (owner: %s)", ownerUserID, whID, existingWH.BusinessID)
 		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to delete this working hour"})
@@ -679,7 +707,6 @@ func (whc *WorkingHourController) DeleteWorkingHour(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete working hour"})
 		return
 	}
-
 	logger.InfoLogger.Infof("Working hour %s deleted successfully by user %s", whID, ownerUserID)
 	c.JSON(http.StatusOK, gin.H{"message": "Working hour deleted successfully"})
 }
