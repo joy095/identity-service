@@ -25,8 +25,8 @@ func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
 	{
 		// Use :businessId in the path and remove businessId from the JSON body expectation
 		// The handler will extract businessId from the path parameter
-		workingGroup.POST("/initialize/:businessId", workingHourController.InitializeWorkingHours)
-		workingGroup.POST("/bulk/:businessId", workingHourController.BulkUpsertWorkingHours)
+		workingGroup.POST("/initialize/:businessPublicId", workingHourController.InitializeWorkingHours)
+		workingGroup.POST("/bulk/:businessPublicId", workingHourController.BulkUpsertWorkingHours)
 
 		// Keep individual create endpoint - businessId comes from JSON body
 		workingGroup.POST("/", workingHourController.CreateWorkingHour)

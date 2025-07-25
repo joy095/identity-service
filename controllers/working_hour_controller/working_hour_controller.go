@@ -106,14 +106,14 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Info("InitializeWorkingHours controller called")
 
-	businessIDStr := c.Param("businessId") // Extract from path
-	businessID, err := uuid.Parse(businessIDStr)
+	publicID := c.Param("businessPublicId") // Extract from path
+
+	businessID, err := business_models.GetBusinessIdOnly(c.Request.Context(), whc.DB, publicID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format in path '%s': %v", businessIDStr, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format in URL"})
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
-	logger.InfoLogger.Debugf("InitializeWorkingHours request received for BusinessID (from path): %s", businessID)
 
 	var req InitializeWorkingHoursRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -255,13 +255,15 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 	logger.InfoLogger.Info("BulkUpsertWorkingHours controller called")
 
-	businessIDStr := c.Param("businessId") // Extract from path
-	businessID, err := uuid.Parse(businessIDStr)
+	publicID := c.Param("businessPublicId") // Extract from path
+
+	businessID, err := business_models.GetBusinessIdOnly(c.Request.Context(), whc.DB, publicID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid business ID format in path '%s': %v", businessIDStr, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format in URL"})
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
 		return
 	}
+
 	// Log message corrected to use businessID instead of req.BusinessID (which doesn't exist anymore)
 	logger.InfoLogger.Debugf("BulkUpsertWorkingHours request received for BusinessID (from path): %s", businessID)
 
