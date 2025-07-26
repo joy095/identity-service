@@ -494,11 +494,9 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 
 	businesses := []*Business{}
 
-	// Removed the LEFT JOIN LATERAL for primary_image_object_name
-	// as it's no longer required by the Business struct for this query.
 	baseQuery := `
         SELECT
-            b.id,
+			b.id,
             b.name,
             b.category,
             b.address,
@@ -506,14 +504,9 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
             b.state,
             b.country,
             b.postal_code,
-            b.tax_id,
             b.about,
             b.location_latitude,
             b.location_longitude,
-            b.created_at,
-            b.updated_at,
-            b.is_active,
-            b.owner_id,
             b.public_id
         FROM
             businesses AS b
@@ -555,14 +548,9 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			&business.State,
 			&business.Country,
 			&business.PostalCode,
-			&business.TaxID,
 			&business.About,
 			&business.Latitude,
 			&business.Longitude,
-			&business.CreatedAt,
-			&business.UpdatedAt,
-			&business.IsActive,
-			&business.OwnerID,
 			&business.PublicId,
 		)
 		if err != nil {
@@ -570,9 +558,22 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 			return nil, fmt.Errorf("failed to scan business data: %w", err)
 		}
 
-		// The business.Images slice remains unpopulated by this query.
-		// If you need images, you'd fetch them in a separate query or
-		// use more advanced SQL aggregation for eager loading.
+		// Get images for the business
+		images, err := business_image_models.GetAllImagesModel(ctx, db, business.ID)
+		if err == nil {
+			for _, img := range images {
+				business.Images = append(business.Images, &business_image_models.BusinessImage{
+					Position:  img["position"].(*int),
+					IsPrimary: img["isPrimary"].(bool),
+					ObjectName: func() *string {
+						if v, ok := img["objectName"].(*string); ok {
+							return v
+						}
+						return nil
+					}(),
+				})
+			}
+		}
 
 		businesses = append(businesses, business)
 	}

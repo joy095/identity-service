@@ -26,20 +26,20 @@ type BusinessImage struct {
 }
 
 // GetAllImagesModel retrieves all images associated with a business.
-func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]*BusinessImage, error) {
+func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]map[string]interface{}, error) {
 	query := `
-        SELECT
-            bi.position,
-            bi.is_primary,
-            i.object_name
-        FROM
-            business_images AS bi
-        JOIN images AS i ON i.id = bi.image_id
-        WHERE
-            bi.business_id = $1
-        ORDER BY
-            bi.position ASC;
-    `
+		SELECT
+			bi.position,
+			bi.is_primary,
+			i.object_name
+		FROM
+			business_images AS bi
+		JOIN images AS i ON i.id = bi.image_id
+		WHERE
+			bi.business_id = $1
+		ORDER BY
+			bi.position ASC;
+	`
 	logger.InfoLogger.Infof("Executing query: %s", query)
 
 	rows, err := db.Query(ctx, query, businessID)
@@ -49,20 +49,38 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 	}
 	defer rows.Close()
 
-	var images []*BusinessImage
+	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
 
+	var images []map[string]interface{}
 	for rows.Next() {
-		image := &BusinessImage{}
-		err := rows.Scan(
-			&image.Position,
-			&image.IsPrimary,
-			&image.ObjectName,
-		)
+		var position *int
+		var isPrimary bool
+		var objectName *string
+
+		err := rows.Scan(&position, &isPrimary, &objectName)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan row: %v", err)
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
+
+		// Set full image URL if object name exists
+		if objectName != nil && cloudflareImageBaseURL != "" {
+			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
+			fullPath := baseURL + "/" + *objectName
+			objectName = &fullPath
+		}
+
+		image := map[string]interface{}{
+			"position":   position,
+			"isPrimary":  isPrimary,
+			"objectName": objectName,
+		}
 		images = append(images, image)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error after scanning rows: %v", err)
+		return nil, fmt.Errorf("error after scanning rows: %w", err)
 	}
 
 	return images, nil
