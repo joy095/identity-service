@@ -2,8 +2,8 @@ package business_image_controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,6 +17,10 @@ import (
 
 type BusinessImageController struct {
 	db *pgxpool.Pool
+}
+
+type ReorderRequest struct {
+	Order []string `json:"order"` // List of image UUIDs (as strings) in the desired new order
 }
 
 // NewBusinessImageController creates a new instance of BusinessImageController.
@@ -94,32 +98,13 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 		return
 	}
 
-	var primaryImageID uuid.UUID
-	if len(uploadedImageIDs) > 0 {
-		primaryImageIndex := 0 // Default to first image
-		if primaryIndexStr := c.PostForm("primaryImageIndex"); primaryIndexStr != "" {
-			if idx, parseErr := strconv.Atoi(primaryIndexStr); parseErr == nil && idx >= 0 && idx < len(uploadedImageIDs) {
-				primaryImageIndex = idx
-			} else {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid primaryImageIndex provided"})
-				// Clean up uploaded images
-				for _, uploadedID := range uploadedImageIDs {
-					image_handlers.DeleteImage(uploadedID, accessToken)
-				}
-				return
-			}
-		}
-		primaryImageID = uploadedImageIDs[primaryImageIndex]
-	}
-
 	// Note: AddBusinessImages now replaces all existing images for the business.
 	// If you want to append, the model function needs adjustment.
-	err = business_image_models.AddBusinessImages(c.Request.Context(), bc.db, business.ID, uploadedImageIDs, primaryImageID)
+	// The primary image is determined by position (position = 1).
+	err = business_image_models.AddBusinessImages(c.Request.Context(), bc.db, business.ID, uploadedImageIDs)
 	if err != nil {
 		// Clean up uploaded images on database error
 		for _, uploadedID := range uploadedImageIDs {
-			// This might also try to delete the primary image if it failed to set primary.
-			// Consider if you want this cleanup to be more robust or handled differently.
 			image_handlers.DeleteImage(uploadedID, accessToken) // Error from this is logged inside
 		}
 		logger.ErrorLogger.Errorf("Failed to associate images with business %s: %v", business.ID, err)
@@ -219,11 +204,11 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 		tempPos := 1 // Default to 1 if not specified
 		newPosition = &tempPos
 	}
-
+	// Ensure the query matches the number of values
 	_, err = tx.Exec(c.Request.Context(), `
-		INSERT INTO business_images (business_id, image_id, is_primary, position)
-		VALUES ($1, $2, $3, $4)
-	`, business.ID, newImageID, oldImage.IsPrimary, newPosition)
+    INSERT INTO business_images (business_id, image_id, position) -- Remove is_primary column
+    VALUES ($1, $2, $3) -- Match placeholders to values
+`, business.ID, newImageID, newPosition) // Pass 3 values
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to associate new image (new image ID: %s) with business: %v", newImageID, err)
 		// Clean up the new image if DB insertion fails
@@ -251,6 +236,21 @@ func (bc *BusinessImageController) DeleteBusinessImage(c *gin.Context) {
 	logger.InfoLogger.Info("DeleteBusinessImage controller called")
 	publicId := c.Param("publicId")
 	imageIDStr := c.Param("imageId")
+
+	// Validate parameters
+	if publicId == "" {
+		logger.ErrorLogger.Error("publicId is missing")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "publicId is required"})
+		return
+	}
+
+	if imageIDStr == "" || imageIDStr == "undefined" {
+		logger.ErrorLogger.Error("imageId is missing or undefined")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "imageId is required"})
+		return
+	}
+
+	logger.DebugLogger.Infof("DeleteBusinessImage - publicId: %s, imageId: %s", publicId, imageIDStr)
 
 	imageID, err := uuid.Parse(imageIDStr)
 	if err != nil {
@@ -361,4 +361,76 @@ func (bc *BusinessImageController) SetPrimaryBusinessImage(c *gin.Context) {
 
 	logger.InfoLogger.Infof("Image %s set as primary for business %s", imageID, publicId)
 	c.JSON(http.StatusOK, gin.H{"message": "Primary image set successfully!", "imageId": imageID})
+}
+
+// ReorderBusinessImages update the ordering for the current images
+func (bc *BusinessImageController) ReorderBusinessImages(c *gin.Context) {
+	logger.InfoLogger.Info("ReorderBusinessImages controller called")
+	publicId := c.Param("publicId")
+
+	// --- 1. Authentication & Authorization ---
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	business, err := business_models.GetBusinessByPublicId(c.Request.Context(), bc.db, publicId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		return
+	}
+
+	if business.OwnerID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not authorized to modify this business"})
+		return
+	}
+
+	// --- 2. Parse Request Body ---
+	var req ReorderRequest
+	if err := c.ShouldBindJSON(&req); err != nil { // Use ShouldBindJSON for JSON
+		logger.ErrorLogger.Errorf("Failed to parse reorder request body for business %s: %v", business.ID, err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		return
+	}
+
+	if len(req.Order) == 0 {
+		logger.InfoLogger.Infof("Empty order list provided for business %s reorder", business.ID)
+		// Not necessarily an error, just nothing to do. Return success.
+		c.JSON(http.StatusOK, gin.H{
+			"message": "No images specified for reordering. Order unchanged.",
+		})
+		return
+	}
+
+	// --- 3. Convert String IDs to UUIDs ---
+	imageIDsInOrder := make([]uuid.UUID, 0, len(req.Order))
+	for _, idStr := range req.Order {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			logger.WarnLogger.Warnf("Invalid UUID format in reorder list for business %s: %s", business.ID, idStr)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid image ID format: %s", idStr)})
+			return
+		}
+		imageIDsInOrder = append(imageIDsInOrder, id)
+	}
+
+	// --- 4. Call Model Function ---
+	// Use the context from Gin
+	ctx := c.Request.Context()
+	err = business_image_models.ReorderBusinessImages(ctx, bc.db, business.ID, imageIDsInOrder)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to reorder images for business %s: %v", business.ID, err)
+		// Determine error type if needed for specific status codes (e.g., 404 if image not found)
+		// For simplicity, returning 500 for any model error
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reorder images", "details": err.Error()})
+		return
+	}
+
+	// --- 5. Respond ---
+	logger.InfoLogger.Infof("Successfully reordered %d images for business %s", len(imageIDsInOrder), business.ID)
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("Successfully reordered %d images", len(imageIDsInOrder)),
+		// "order":   req.Order, // Optional: echo back the order
+	})
 }

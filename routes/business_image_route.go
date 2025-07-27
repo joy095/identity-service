@@ -28,5 +28,7 @@ func RegisterBusinessImageRoutes(router *gin.Engine) {
 		businessImages.DELETE("/:imageId", businessImageController.DeleteBusinessImage)
 		// Set a specific image as the primary one for the business.
 		businessImages.PATCH("/:imageId/primary", businessImageController.SetPrimaryBusinessImage)
+		// Set the ordering for the current images
+		businessImages.POST("/reorder", businessImageController.ReorderBusinessImages)
 	}
 }

@@ -490,13 +490,13 @@ func DeleteBusiness(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID)
 
 // GetAllBusinesses fetches all business records from the database, with optional pagination.
 func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) ([]*Business, error) {
-	logger.InfoLogger.Info("Attempting to fetch businesses from database with pagination")
+    logger.InfoLogger.Info("Attempting to fetch businesses from database with pagination")
 
-	businesses := []*Business{}
+    businesses := []*Business{}
 
-	baseQuery := `
+    baseQuery := `
         SELECT
-			b.id,
+            b.id,
             b.name,
             b.category,
             b.address,
@@ -513,76 +513,76 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
         WHERE b.is_active = true
         ORDER BY b.created_at DESC`
 
-	query := baseQuery
-	args := []interface{}{}
-	placeholderNum := 1
+    query := baseQuery
+    args := []interface{}{}
+    placeholderNum := 1
 
-	if limit > 0 {
-		query += fmt.Sprintf(" LIMIT $%d", placeholderNum)
-		args = append(args, limit)
-		placeholderNum++
-	}
-	if offset > 0 {
-		query += fmt.Sprintf(" OFFSET $%d", placeholderNum)
-		args = append(args, offset)
-		placeholderNum++
-	}
+    if limit > 0 {
+        query += fmt.Sprintf(" LIMIT $%d", placeholderNum)
+        args = append(args, limit)
+        placeholderNum++
+    }
+    if offset > 0 {
+        query += fmt.Sprintf(" OFFSET $%d", placeholderNum)
+        args = append(args, offset)
+        placeholderNum++
+    }
 
-	logger.InfoLogger.Infof("Executing query: %s with args: %v", query, args)
+    logger.InfoLogger.Infof("Executing query: %s with args: %v", query, args)
 
-	rows, err := db.Query(ctx, query, args...)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to query businesses: %v", err)
-		return nil, fmt.Errorf("failed to retrieve businesses: %w", err)
-	}
-	defer rows.Close()
+    rows, err := db.Query(ctx, query, args...)
+    if err != nil {
+        logger.ErrorLogger.Errorf("Failed to query businesses: %v", err)
+        return nil, fmt.Errorf("failed to retrieve businesses: %w", err)
+    }
+    defer rows.Close()
 
-	for rows.Next() {
-		business := &Business{}
-		err := rows.Scan(
-			&business.ID,
-			&business.Name,
-			&business.Category,
-			&business.Address,
-			&business.City,
-			&business.State,
-			&business.Country,
-			&business.PostalCode,
-			&business.About,
-			&business.Latitude,
-			&business.Longitude,
-			&business.PublicId,
-		)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
-			return nil, fmt.Errorf("failed to scan business data: %w", err)
-		}
+    for rows.Next() {
+        business := &Business{}
+        err := rows.Scan(
+            &business.ID,
+            &business.Name,
+            &business.Category,
+            &business.Address,
+            &business.City,
+            &business.State,
+            &business.Country,
+            &business.PostalCode,
+            &business.About,
+            &business.Latitude,
+            &business.Longitude,
+            &business.PublicId,
+        )
+        if err != nil {
+            logger.ErrorLogger.Errorf("Failed to scan business row: %v", err)
+            return nil, fmt.Errorf("failed to scan business data: %w", err)
+        }
 
-		// Get images for the business
-		images, err := business_image_models.GetAllImagesModel(ctx, db, business.ID)
-		if err == nil {
-			for _, img := range images {
-				business.Images = append(business.Images, &business_image_models.BusinessImage{
-					Position:  img["position"].(*int),
-					IsPrimary: img["isPrimary"].(bool),
-					ObjectName: func() *string {
-						if v, ok := img["objectName"].(*string); ok {
-							return v
-						}
-						return nil
-					}(),
-				})
-			}
-		}
+        // Get full BusinessImage structs for the business using GetImagesByBusinessID
+        // This function returns []*BusinessImage which includes ImageID and other struct fields
+        images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
+        if err != nil {
+            // Log the error but don't fail fetching the business list
+            logger.ErrorLogger.Warnf("Failed to get images for business %s: %v", business.ID, err)
+            // business.Images will remain nil or empty
+        } else {
+            // Assign the retrieved images directly
+            // The BusinessImage struct returned by GetImagesByBusinessID will have IsPrimary
+            // populated from the database query. If you've also removed it from the
+            // BusinessImage struct definition used by GetImagesByBusinessID, you would need
+            // to adjust that function's scanning logic as well (similar to how GetAllImagesModel was adjusted).
+            // Assuming GetImagesByBusinessID still populates IsPrimary correctly based on DB is_primary column:
+            business.Images = images
+        }
 
-		businesses = append(businesses, business)
-	}
+        businesses = append(businesses, business)
+    }
 
-	if err = rows.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Error after iterating rows for businesses: %v", err)
-		return nil, fmt.Errorf("error during business row iteration: %w", err)
-	}
+    if err = rows.Err(); err != nil {
+        logger.ErrorLogger.Errorf("Error after iterating rows for businesses: %v", err)
+        return nil, fmt.Errorf("error during business row iteration: %w", err)
+    }
 
-	logger.InfoLogger.Infof("Fetched %d businesses successfully", len(businesses))
-	return businesses, nil
+    logger.InfoLogger.Infof("Fetched %d businesses successfully", len(businesses))
+    return businesses, nil
 }
