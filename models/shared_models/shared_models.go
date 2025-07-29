@@ -3,6 +3,8 @@ package shared_models
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,36 +80,58 @@ func GenerateRefreshTokenWithJTI(userID uuid.UUID, tokenVersion int, duration ti
 
 // SetJWTCookie sets a JWT cookie with secure attributes
 func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path string) error {
+	// Check if we're in local development
+	isLocal := isLocalEnvironment()
+
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     path,
 		Expires:  time.Now().Add(expiry),
 		MaxAge:   int(expiry.Seconds()),
-		HttpOnly: true, // Prevent JS access
-		Secure:   true, //  Required with SameSite=None
-		SameSite: http.SameSiteNoneMode,
+		HttpOnly: true,
+		Secure:   !isLocal, // Secure only in production/cloud
+		SameSite: getSameSiteMode(isLocal),
 	})
 
-	logger.InfoLogger.Infof("Set cookie %s with path %s and expiry %v", name, path, expiry)
+	logger.InfoLogger.Infof("Set cookie %s with path %s and expiry %v (local: %t)", name, path, expiry, isLocal)
 	return nil
 }
 
 // RemoveJWTCookie removes a JWT cookie by setting it to expire immediately
 func RemoveJWTCookie(c *gin.Context, name, path string) error {
+	// Check if we're in local development
+	isLocal := isLocalEnvironment()
+
 	http.SetCookie(c.Writer, &http.Cookie{
 		Name:     name,
 		Value:    "", // Empty value
 		Path:     path,
 		Expires:  time.Unix(0, 0), // Immediate expiration (Unix epoch)
 		MaxAge:   -1,              // Instruct browser to delete immediately
-		HttpOnly: true,            // Match security settings from SetJWTCookie
-		Secure:   true,            // Required with SameSite=None
-		SameSite: http.SameSiteNoneMode,
+		HttpOnly: true,
+		Secure:   !isLocal, // Secure only in production/cloud
+		SameSite: getSameSiteMode(isLocal),
 	})
 
-	logger.InfoLogger.Infof("Removed cookie %s with path %s", name, path)
+	logger.InfoLogger.Infof("Removed cookie %s with path %s (local: %t)", name, path, isLocal)
 	return nil
+}
+
+// isLocalEnvironment checks if we're running in local development
+func isLocalEnvironment() bool {
+	env := strings.ToLower(os.Getenv("ENV"))
+	return env == "local" || env == "development" || env == "dev" || env == ""
+}
+
+// getSameSiteMode returns the appropriate SameSite mode based on environment
+func getSameSiteMode(isLocal bool) http.SameSite {
+	if isLocal {
+		// For local development, use Lax mode which works better over HTTP
+		return http.SameSiteLaxMode
+	}
+	// For production/cloud, use None mode (requires Secure=true)
+	return http.SameSiteNoneMode
 }
 
 // GenerateAccessToken creates a JWT token for access purposes
