@@ -78,60 +78,81 @@ func GenerateRefreshTokenWithJTI(userID uuid.UUID, tokenVersion int, duration ti
 	return tokenString, jti, nil
 }
 
-// SetJWTCookie sets a JWT cookie with secure attributes
+// SetJWTCookie sets a JWT cookie with secure attributes for cross-domain usage
 func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path string) error {
-	// Check if we're in local development
-	isLocal := isLocalEnvironment()
+	// Determine if we should use secure cookies
+	useSecure := shouldUseSecureCookies()
 
-	http.SetCookie(c.Writer, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     path,
 		Expires:  time.Now().Add(expiry),
 		MaxAge:   int(expiry.Seconds()),
 		HttpOnly: true,
-		Secure:   !isLocal, // Secure only in production/cloud
-		SameSite: getSameSiteMode(isLocal),
-	})
+		Secure:   useSecure,
+		SameSite: http.SameSiteNoneMode,
+	}
 
-	logger.InfoLogger.Infof("Set cookie %s with path %s and expiry %v (local: %t)", name, path, expiry, isLocal)
+	// Add domain only if explicitly configured
+	if domain := getCookieDomain(); domain != "" {
+		cookie.Domain = domain
+	}
+
+	http.SetCookie(c.Writer, cookie)
+
+	logger.InfoLogger.Infof("Set cookie %s with path %s, secure %t, sameSite None, domain %s",
+		name, path, useSecure, getCookieDomain())
 	return nil
 }
 
 // RemoveJWTCookie removes a JWT cookie by setting it to expire immediately
 func RemoveJWTCookie(c *gin.Context, name, path string) error {
-	// Check if we're in local development
-	isLocal := isLocalEnvironment()
+	// Determine if we should use secure cookies
+	useSecure := shouldUseSecureCookies()
 
-	http.SetCookie(c.Writer, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     name,
-		Value:    "", // Empty value
+		Value:    "",
 		Path:     path,
-		Expires:  time.Unix(0, 0), // Immediate expiration (Unix epoch)
-		MaxAge:   -1,              // Instruct browser to delete immediately
+		Expires:  time.Unix(0, 0),
+		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   !isLocal, // Secure only in production/cloud
-		SameSite: getSameSiteMode(isLocal),
-	})
+		Secure:   useSecure,
+		SameSite: http.SameSiteNoneMode,
+	}
 
-	logger.InfoLogger.Infof("Removed cookie %s with path %s (local: %t)", name, path, isLocal)
+	// Add domain only if explicitly configured
+	if domain := getCookieDomain(); domain != "" {
+		cookie.Domain = domain
+	}
+
+	http.SetCookie(c.Writer, cookie)
+
+	logger.InfoLogger.Infof("Removed cookie %s with path %s, secure %t, sameSite None, domain %s",
+		name, path, useSecure, getCookieDomain())
 	return nil
 }
 
-// isLocalEnvironment checks if we're running in local development
-func isLocalEnvironment() bool {
+// shouldUseSecureCookies determines if cookies should be secure
+func shouldUseSecureCookies() bool {
+	// Check explicit environment variable
+	if secure := os.Getenv("COOKIE_SECURE"); secure != "" {
+		return strings.ToLower(secure) == "true"
+	}
+
+	// Default behavior: secure in production, can be secure in development
 	env := strings.ToLower(os.Getenv("ENV"))
-	return env == "local" || env == "development" || env == "dev" || env == ""
+	return env == "production" || env == "prod" || env == "staging"
 }
 
-// getSameSiteMode returns the appropriate SameSite mode based on environment
-func getSameSiteMode(isLocal bool) http.SameSite {
-	if isLocal {
-		// For local development, use Lax mode which works better over HTTP
-		return http.SameSiteLaxMode
+// getCookieDomain returns the cookie domain if configured
+func getCookieDomain() string {
+	domain := os.Getenv("COOKIE_DOMAIN")
+	if domain != "" {
+		return strings.TrimSpace(domain)
 	}
-	// For production/cloud, use None mode (requires Secure=true)
-	return http.SameSiteNoneMode
+	return ""
 }
 
 // GenerateAccessToken creates a JWT token for access purposes
