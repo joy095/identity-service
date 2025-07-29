@@ -182,6 +182,65 @@ func GetServiceByIDModel(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*
 	return service, nil
 }
 
+// GetServiceByPublicId fetches a service record by its ID.
+func GetServiceByPublicId(ctx context.Context, db *pgxpool.Pool, businessId uuid.UUID) (*Service, error) {
+	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", businessId)
+
+	service := &Service{}
+	var imageObjectName pgtype.Text // Declare a variable to hold the object_name
+
+	query := `
+		SELECT
+			s.id,
+			s.business_id,
+			s.name,
+			s.description,
+			s.duration_minutes,
+			s.price,
+			s.is_active,
+			s.image_id,
+			s.created_at,
+			s.updated_at,
+			i.object_name
+		FROM
+			services AS s
+		LEFT JOIN
+			images AS i ON s.image_id = i.id
+		WHERE
+			s.id = $1;
+`
+
+	// Make sure the order of arguments in Scan matches the order of columns in SELECT
+	err := db.QueryRow(ctx, query, businessId).Scan(
+		&service.ID,
+		&service.BusinessID,
+		&service.Name,
+		&service.Description,
+		&service.Duration,
+		&service.Price,
+		&service.IsActive,
+		&service.ImageID, // Changed to pgtype.UUID to handle NULL
+		&service.CreatedAt,
+		&service.UpdatedAt,
+		&imageObjectName, // Scan the object_name into the new variable
+	)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("Service with businessId %s not found", businessId)
+			return nil, fmt.Errorf("service not found")
+		}
+		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", businessId, err)
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+	// Assign the object_name to the service if it's valid
+	if imageObjectName.Valid {
+		service.ObjectName = &imageObjectName.String
+	}
+	logger.InfoLogger.Infof("Service with businessId %s fetched successfully", businessId)
+	return service, nil
+}
+
 // GetAllServicesModel fetches all services for a given business ID.
 func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
 	const operation = "GetAllServicesModel"
