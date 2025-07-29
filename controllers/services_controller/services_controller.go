@@ -109,6 +109,40 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"service": service})
 }
 
+func (sc *ServiceController) GetServiceByPublicId(c *gin.Context) {
+	logger.InfoLogger.Info("GetServiceByID controller called")
+
+	publicId := strings.TrimSpace(c.Param("publicId"))
+	if publicId == "" {
+		logger.ErrorLogger.Error("Service ID is required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Service ID is required"})
+		return
+	}
+
+	businessId, err := business_models.GetBusinessIdOnly(c, sc.db, publicId)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
+		return
+	}
+
+	service, err := service_models.GetServiceByPublicId(c.Request.Context(), db.DB, businessId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.ErrorLogger.Error("Service not found: " + err.Error())
+			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
+
+		} else {
+			logger.ErrorLogger.Error("Failed to fetch service: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
+
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"service": service})
+}
+
 // --- Delete Service by ID ---
 func (sc *ServiceController) DeleteService(c *gin.Context) {
 	logger.InfoLogger.Info("DeleteService controller called")
