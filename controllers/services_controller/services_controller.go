@@ -92,7 +92,7 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 		return
 	}
 
-	service, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
+	service, err := service_models.GetServiceByIDModel(c.Request.Context(), sc.db, serviceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())
@@ -119,7 +119,7 @@ func (sc *ServiceController) GetServiceByPublicId(c *gin.Context) {
 		return
 	}
 
-	businessId, err := business_models.GetBusinessIdOnly(c, sc.db, publicId)
+	businessId, err := business_models.GetBusinessIdOnly(c.Request.Context(), sc.db, publicId)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Business not found"})
@@ -220,11 +220,10 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 			return
 		}
 
-		err = service_models.DeleteServiceByIDModel(c.Request.Context(), db.DB, serviceID, service.BusinessID)
+		err = service_models.DeleteServiceByIDModel(c.Request.Context(), sc.db, serviceID, service.BusinessID)
 		if err != nil {
 			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})
-			logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
 			return
 		}
 

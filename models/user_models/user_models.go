@@ -181,23 +181,37 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		return nil, fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
 
-	// Step 1: Delete unverified user with same email older than 15 minutes
-	deleteQuery := `
-		DELETE FROM users
-		WHERE email = $1
-		  AND is_verified_email = FALSE
-		  AND created_at < NOW() - INTERVAL '15 minutes'
-	`
-	_, err = db.Exec(context.Background(), deleteQuery, email)
-	if err != nil {
-		logger.ErrorLogger.Error("Failed to delete stale unverified user:", err)
-		return nil, fmt.Errorf("failed to clean up stale unverified user: %v", err)
-	}
+	// // Step 1: Delete unverified user with same email older than 15 minutes
+	// deleteQuery := `
+	// 	DELETE FROM users
+	// 	WHERE email = $1
+	// 	  AND is_verified_email = FALSE
+	// 	  AND created_at < NOW() - INTERVAL '15 minutes'
+	// `
+	// _, err = db.Exec(context.Background(), deleteQuery, email)
+	// if err != nil {
+	// 	logger.ErrorLogger.Error("Failed to delete stale unverified user:", err)
+	// 	return nil, fmt.Errorf("failed to clean up stale unverified user: %v", err)
+	// }
 
-	// Step 2: Insert the new user
+	// // Step 2: Insert the new user
+	// insertQuery := `
+	// 	INSERT INTO users (id, email, password_hash, first_name, last_name)
+	// 	VALUES ($1, $2, $3, $4, $5)
+	// 	RETURNING id
+	// `
+
+	// Use a single atomic operation
 	insertQuery := `
+		WITH deleted AS (
+			DELETE FROM users
+			WHERE email = $2
+			  AND is_verified_email = FALSE
+			  AND created_at < NOW() - INTERVAL '15 minutes'
+		)
 		INSERT INTO users (id, email, password_hash, first_name, last_name)
 		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (email) DO NOTHING
 		RETURNING id
 	`
 	_, err = db.Exec(context.Background(), insertQuery, userID, email, passwordHash, firstName, lastName)
@@ -262,7 +276,11 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 		JTI:   jti,
 	}
 
-	entryBytes, _ := json.Marshal(entry)
+	entryBytes, err := json.Marshal(entry)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to marshal refresh token entry: %v", err)
+		return nil, "", "", fmt.Errorf("failed to marshal refresh token entry: %v", err)
+	}
 
 	rdb := redisclient.GetRedisClient(ctx)
 	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
@@ -431,6 +449,7 @@ func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]int
 		argCounter++
 	}
 
+	setClauses = append(setClauses, "updated_at = NOW()")
 	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(setClauses, ", "), argCounter)
 	args = append(args, userID)
 

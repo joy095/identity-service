@@ -345,7 +345,7 @@ func GetServicesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID u
 			business_id = $1
 		ORDER BY name ASC` // Order alphabetically for consistency
 
-	rows, err := db.Query(context.Background(), query, businessID)
+	rows, err := db.Query(ctx, query, businessID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to query services for business %s: %v", businessID, err)
 		return nil, fmt.Errorf("failed to fetch services: %w", err)

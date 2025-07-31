@@ -184,6 +184,7 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	createdBooking, err := booking_models.CreateBooking(ctx, s.DB, newBooking)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save pending booking to DB: %v", err)
+		s.ReleaseSlotReservation(ctx, req.SlotID, req.CustomerID)
 		return nil, "", fmt.Errorf("failed to create pending booking: %w", err)
 	}
 	logger.InfoLogger.Infof("Pending booking %s created for slot %s", createdBooking.ID, req.SlotID)
@@ -323,7 +324,7 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 	paymentTx.RazorpayPaymentID = paymentEntity.ID
 	paymentTx.Status = paymentEntity.Status
 	// Validate amount matches original transaction
-	if int64(paymentEntity.Amount)/100 != paymentTx.Amount {
+	if int64(paymentEntity.Amount) != paymentTx.Amount*100 {
 		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", paymentTx.Amount, int64(paymentEntity.Amount)/100)
 		return fmt.Errorf("payment amount mismatch")
 	}

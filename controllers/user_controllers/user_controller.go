@@ -144,7 +144,8 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 	if !validPassword {
-		logger.InfoLogger.Info(fmt.Sprintf("Incorrect current password provided by user %s during email update attempt"))
+		logger.InfoLogger.Info(fmt.Sprintf("Incorrect current password provided by user %s during email update attempt", currentUser.Email))
+
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect current password"})
 		return
 	}
@@ -252,11 +253,25 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 		return
 	}
 
-	// Update user's email
+	// Update user's email in a transaction
 	ctx := context.Background()
-	_, err = db.DB.Exec(ctx, "UPDATE users SET email = $1, is_verified_email = TRUE WHERE id = $2", req.Email, userID)
+	tx, err := db.DB.Begin(ctx)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to begin transaction: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email"})
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, "UPDATE users SET email = $1, is_verified_email = TRUE WHERE id = $2", req.Email, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update email for user %s: %v", userID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email"})
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("Failed to commit transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update email"})
 		return
 	}
@@ -342,7 +357,7 @@ func (uc *UserController) Register(c *gin.Context) {
 
 	otp, err := utils.GenerateSecureOTP()
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for user %s: %w", err))
+		logger.ErrorLogger.Error(fmt.Errorf("failed to generate OTP for user %s: %w", user.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate OTP"})
 		return
 	}
@@ -359,13 +374,13 @@ func (uc *UserController) Register(c *gin.Context) {
 	go func() {
 		sendErr := mail.SendVerificationOTP(req.Email, req.FirstName, req.LastName, otp)
 		if sendErr != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, sendErr))
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, user.ID, sendErr))
 		} else {
 			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email))
 		}
 	}()
 
-	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v, %s", user.ID, user))
+	logger.InfoLogger.Info(fmt.Sprintf("User registered successfully with ID: %v, email: %s", user.ID, user.Email))
 
 	c.JSON(http.StatusCreated, gin.H{
 		"id":        user.ID,
@@ -444,7 +459,7 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	user, err := user_models.GetUserByEmail(ctx, db.DB, req.Email) // Assume GetUserByEmail exists
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.InfoLogger.Infof("Attempted password reset for non-existent Username: %s", req.Email)
+			logger.InfoLogger.Infof("Attempted password reset for non-existent email: %s", req.Email)
 			// For security, always return a generic success message even if email isn't found
 			// to avoid user enumeration.
 			c.JSON(http.StatusOK, gin.H{"message": "If the email is registered, an OTP has been sent for password reset."})
@@ -477,7 +492,8 @@ func (uc *UserController) ForgotPassword(c *gin.Context) {
 	go func() {
 		sendErr := mail.SendForgotPasswordOTP(user.Email, user.FirstName, user.LastName, otp) // Pass user details if email template uses them
 		if sendErr != nil {
-			logger.ErrorLogger.Error(fmt.Errorf("failed to send forgot password OTP to %s for user %s: %w", user.Email, sendErr))
+			logger.ErrorLogger.Error(fmt.Errorf("failed to send forgot password OTP to %s for user %s: %w", user.Email, user.ID, sendErr))
+
 		} else {
 			logger.InfoLogger.Info(fmt.Sprintf("Forgot password OTP sent successfully to: %s for user %s", user.Email))
 		}
@@ -559,7 +575,7 @@ func (uc *UserController) ResetPassword(c *gin.Context) {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to clear password reset OTP for user %s: %w", user.ID, err))
 	}
 
-	logger.InfoLogger.Infof("Password reset successfully for user: %s (email: %s)", user.Email)
+	logger.InfoLogger.Infof("Password reset successfully for user: %s (email: %s)", user.ID, user.Email)
 	c.JSON(http.StatusOK, gin.H{"message": "Password reset successfully!"})
 }
 
@@ -598,7 +614,7 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	}
 
 	if !valid {
-		logger.ErrorLogger.Info(fmt.Sprintf("Invalid credential for user %s", user.Email))
+		logger.InfoLogger.Info(fmt.Sprintf("Invalid credential for user %s", user.Email))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credential"})
 		return
 	}
@@ -795,7 +811,7 @@ func (uc *UserController) Logout(c *gin.Context) {
 
 	refreshToken, err := c.Cookie("refresh_token")
 	if err != nil || refreshToken == "" {
-		logger.ErrorLogger.Warn("No refresh token found in cookie during logout")
+		logger.WarnLogger.Warn("No refresh token found in cookie during logout")
 	}
 
 	// Remove specific token from Redis list

@@ -174,9 +174,9 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"business": business})
 }
 
-// GetNotActiveBusinessByUser handles the request to get all inactive businesses for the authenticated user.
-func (bc *BusinessController) GetNotActiveBusinessByUser(c *gin.Context) {
-	logger.InfoLogger.Info("GetNotActiveBusinessByUser controller called")
+// GetBusinessByUser handles the request to get all inactive businesses for the authenticated user.
+func (bc *BusinessController) GetBusinessByUser(c *gin.Context) {
+	logger.InfoLogger.Info("GetBusinessByUser controller called")
 
 	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
@@ -186,7 +186,7 @@ func (bc *BusinessController) GetNotActiveBusinessByUser(c *gin.Context) {
 	}
 
 	// Call the model function to get all inactive businesses
-	businesses, err := business_models.GetNotActiveBusinessByUserModel(c.Request.Context(), bc.DB, userID)
+	businesses, err := business_models.GetBusinessByUserModel(c.Request.Context(), bc.DB, userID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to retrieve businesses for user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve businesses"})
