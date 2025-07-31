@@ -83,6 +83,12 @@ func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path
 	// Determine if we should use secure cookies
 	useSecure := shouldUseSecureCookies()
 
+	sameSite := http.SameSiteNoneMode
+	if !useSecure {
+		// Browsers reject SameSite=None cookies without Secure, so fallback
+		sameSite = http.SameSiteLaxMode
+	}
+
 	cookie := &http.Cookie{
 		Name:     name,
 		Value:    value,
@@ -91,7 +97,7 @@ func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path
 		MaxAge:   int(expiry.Seconds()),
 		HttpOnly: true,
 		Secure:   useSecure,
-		SameSite: http.SameSiteNoneMode,
+		SameSite: sameSite,
 	}
 
 	// Add domain only if explicitly configured
