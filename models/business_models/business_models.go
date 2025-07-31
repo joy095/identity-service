@@ -21,24 +21,26 @@ type Location struct {
 
 // Business represents a business entity in your system.
 type Business struct {
-	ID         uuid.UUID                              `json:"id"`
-	Name       string                                 `json:"name"`
-	Category   string                                 `json:"category"`
-	Address    string                                 `json:"address"`
-	City       string                                 `json:"city,omitempty"`
-	State      string                                 `json:"state,omitempty"`
-	Country    string                                 `json:"country"`
-	PostalCode string                                 `json:"postalCode,omitempty"`
-	TaxID      string                                 `json:"taxId,omitempty"`
-	About      string                                 `json:"about,omitempty"`
-	Latitude   float64                                `form:"latitude,omitempty"`
-	Longitude  float64                                `form:"longitude,omitempty"`
-	CreatedAt  time.Time                              `json:"createdAt"`
-	UpdatedAt  time.Time                              `json:"updatedAt"`
-	IsActive   bool                                   `json:"isActive"`
-	OwnerID    uuid.UUID                              `json:"ownerId"`
-	PublicId   *string                                `json:"publicId"`
-	Images     []*business_image_models.BusinessImage `json:"images,omitempty"`
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	Category   string    `json:"category"`
+	Address    string    `json:"address"`
+	City       string    `json:"city,omitempty"`
+	State      string    `json:"state,omitempty"`
+	Country    string    `json:"country"`
+	PostalCode string    `json:"postalCode,omitempty"`
+	TaxID      string    `json:"taxId,omitempty"`
+	About      string    `json:"about,omitempty"`
+	Latitude   float64   `json:"latitude,omitempty"`
+	Longitude  float64   `json:"longitude,omitempty"`
+	// Latitude   float64                                `form:"latitude,omitempty"`
+	// Longitude  float64                                `form:"longitude,omitempty"`
+	CreatedAt time.Time                              `json:"createdAt"`
+	UpdatedAt time.Time                              `json:"updatedAt"`
+	IsActive  bool                                   `json:"isActive"`
+	OwnerID   uuid.UUID                              `json:"ownerId"`
+	PublicId  *string                                `json:"publicId"`
+	Images    []*business_image_models.BusinessImage `json:"images,omitempty"`
 }
 
 // NewBusiness creates a new Business struct with a generated ID and initial timestamps.
@@ -196,7 +198,7 @@ func GetBusinessByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*Busi
 	return business, nil
 }
 
-// GetBusinessByPublicId fetches a business record by its public ID (external use).
+// GetBusinessIdOnly fetches a business record by its public ID (external use).
 func GetBusinessIdOnly(ctx context.Context, db *pgxpool.Pool, publicId string) (uuid.UUID, error) {
 	logger.InfoLogger.Infof("Attempting to fetch business with public ID: %s", publicId)
 
@@ -292,8 +294,8 @@ func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId strin
 	return business, nil
 }
 
-// GetNotActiveBusinessByUserModel fetches all inactive businesses for a given user ID.
-func GetNotActiveBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) ([]*Business, error) {
+// GetBusinessByUserModel fetches all inactive businesses for a given user ID.
+func GetBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) ([]*Business, error) {
 	logger.InfoLogger.Infof("Attempting to fetch all inactive businesses for user ID: %s", userID)
 
 	var businesses []*Business

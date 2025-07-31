@@ -21,6 +21,10 @@ func RegisterServicesRoutes(router *gin.Engine) {
 	router.GET("/service/:id", serviceController.GetServiceByID)
 	router.GET("/service-business/:publicId", serviceController.GetServiceByPublicId)
 
+	// router.GET("/businesses/:businessPublicId/services", serviceController.GetAllServiceByBusiness)
+	// router.GET("/services/:id", serviceController.GetServiceByID)
+	// router.GET("/services/public/:publicId", serviceController.GetServiceByPublicId)
+
 	// All routes within this group are protected by the auth middleware
 	protected := router.Group("")
 	protected.Use(auth.AuthMiddleware())

@@ -55,7 +55,13 @@ func CreateService(c *gin.Context) {
 
 	publicId := req.PublicId
 
-	bc := db.DB // Ensure bc is properly initialized
+	bc := db.DB
+	if bc == nil {
+		logger.ErrorLogger.Error("Database connection not initialized")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database connection error"})
+		return
+	}
+
 	businessUUID, err := business_models.GetBusinessIdOnly(c.Request.Context(), bc, publicId)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get business by publicId: %s, %s", publicId, err)
@@ -108,7 +114,11 @@ func HandleImageUpload(c *gin.Context, authHeader string) (uuid.UUID, error) {
 	}
 	defer file.Close()
 
-	body, contentType := prepareMultipartRequest(file, fileHeader)
+	body, contentType, err := prepareMultipartRequest(file, fileHeader)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare image upload"})
+		return uuid.Nil, err
+	}
 	imageID, err := sendImageToService(body, contentType, authHeader)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -138,7 +148,7 @@ func HandleServiceCreationError(c *gin.Context, err error) {
 	}
 }
 
-func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHeader) (*bytes.Buffer, string) {
+func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHeader) (*bytes.Buffer, string, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -154,18 +164,18 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 	part, err := writer.CreatePart(h)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create multipart: %v", err)
-		return nil, ""
+		return nil, "", fmt.Errorf("failed to create multipart: %w", err)
 	}
 	if _, err := io.Copy(part, file); err != nil {
 		logger.ErrorLogger.Errorf("Failed to copy file content: %v", err)
-		return nil, ""
+		return nil, "", fmt.Errorf("failed to copy file content: %w", err)
 	}
 	if err := writer.Close(); err != nil {
 		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
-		return nil, ""
+		return nil, "", fmt.Errorf("failed to copy file content: %w", err)
 	}
 
-	return body, writer.FormDataContentType()
+	return body, writer.FormDataContentType(), nil
 }
 
 func sendImageToService(body *bytes.Buffer, contentType string, authHeader string) (uuid.UUID, error) {
@@ -304,7 +314,11 @@ func UpdateService(c *gin.Context) {
 		}
 		defer file.Close()
 
-		body, contentType := prepareMultipartRequest(file, fileHeader)
+		body, contentType, err := prepareMultipartRequest(file, fileHeader)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to prepare image upload"})
+			return
+		}
 
 		// Use the existing image ID
 		imageID := existingService.ImageID.Bytes

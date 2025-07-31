@@ -465,7 +465,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// 1. Update the password in the database
 	_, err = tx.Exec(c.Request.Context(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to update password in DB for user %s: %w", user.Email, err))
+		logger.ErrorLogger.Errorf("failed to update password in DB for user %s: %v", user.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}
@@ -473,7 +473,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// 2. Increment the token_version
 	_, err = tx.Exec(c.Request.Context(), `UPDATE users SET token_version = token_version + 1 WHERE id = $1`, user.ID)
 	if err != nil {
-		logger.ErrorLogger.Error(fmt.Errorf("failed to increment token version for user %s: %w", user.Email, err))
+		logger.ErrorLogger.Errorf("failed to increment token version for user %s: %v", user.Email, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke old tokens"})
 		return
 	}
@@ -481,7 +481,7 @@ func VerifyForgotPasswordOTP(c *gin.Context) {
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
 	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
-	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
+	err = redisclient.GetRedisClient(c).Del(c.Request.Context(), key).Err()
 	if err != nil {
 		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
 		// This is a warning because even if clearing fails, incrementing token_version still revokes.

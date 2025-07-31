@@ -148,6 +148,12 @@ func HandleMultipleImageUpload(c *gin.Context, accessToken string) ([]uuid.UUID,
 
 // HandleImageReplacement sends a file to replace an existing image.
 func HandleImageReplacement(c *gin.Context, accessToken string, existingImageID uuid.UUID) (uuid.UUID, error) {
+	if existingImageID == uuid.Nil {
+		err := fmt.Errorf("invalid image ID: cannot be nil")
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return uuid.Nil, err
+	}
+
 	fileHeader, err := c.FormFile("image")
 	if err != nil {
 		HandleFileError(c, err, "image")

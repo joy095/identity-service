@@ -29,7 +29,8 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Step 2: Parse and validate JWT
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			// if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			if token.Method != jwt.SigningMethodHS256 {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
 			return utils.GetJWTSecret(), nil
@@ -69,6 +70,13 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		// Validate token version is a valid integer
+		if tokenVersion != float64(int(tokenVersion)) || tokenVersion < 0 {
+			logger.ErrorLogger.Error("Token version must be a non-negative integer")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid token version format"})
+			return
+		}
+
 		// Step 3: Fetch user and compare token version
 		user, err := user_models.GetUserByID(c.Request.Context(), db.DB, userID)
 		if err != nil {
@@ -85,10 +93,14 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		// Optional: Email verification check
 		isVerified, err := user_models.IsEmailVerified(c.Request.Context(), db.DB, user.ID)
-		if err != nil || !isVerified {
-			logger.ErrorLogger.Errorf("Email verification failed for user %s", user.ID)
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Email not verified"})
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to check email verification for user %s: %v", user.ID, err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 			return
+		}
+		if !isVerified {
+			logger.ErrorLogger.Errorf("Email not verified for user %s", user.ID)
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Email not verified"})
 		}
 
 		// Success
