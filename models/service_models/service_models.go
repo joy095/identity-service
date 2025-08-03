@@ -4,7 +4,6 @@ package service_models
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -246,11 +245,6 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 	const operation = "GetAllServicesModel"
 	logger.InfoLogger.Printf("%s: Attempting to fetch services for business ID: %s", operation, businessID)
 
-	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
-	if cloudflareImageBaseURL == "" {
-		logger.DebugLogger.Warningf("%s: CLOUDFLARE_IMAGE_URL environment variable not set", operation)
-	}
-
 	query := `
 		SELECT
 			s.id,
@@ -304,9 +298,8 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 			return nil, fmt.Errorf("%s: failed to scan service row: %w", operation, err)
 		}
 
-		// Handle image fields
 		service.ImageID = imageID
-		service.ObjectName = buildImageURL(objectName, cloudflareImageBaseURL)
+		service.ObjectName = &objectName.String // just return raw objectName
 
 		services = append(services, service)
 	}

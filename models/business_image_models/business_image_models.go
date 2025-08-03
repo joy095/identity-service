@@ -3,8 +3,6 @@ package business_image_models
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,7 +46,6 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 	}
 	defer rows.Close()
 
-	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
 	var images []map[string]interface{}
 
 	for rows.Next() {
@@ -71,11 +68,11 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 		}
 
 		// Set full image URL if object name exists
-		if objectName != nil && cloudflareImageBaseURL != "" {
-			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
-			fullPath := baseURL + "/" + *objectName
-			objectName = &fullPath // Update the objectName pointer to the full URL
-		}
+		// if objectName != nil && cloudflareImageBaseURL != "" {
+		// 	baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
+		// 	fullPath := baseURL + "/" + *objectName
+		// 	objectName = &fullPath // Update the objectName pointer to the full URL
+		// }
 
 		// Create the result map
 		image := map[string]interface{}{
@@ -152,7 +149,6 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 	}
 	defer rows.Close()
 
-	cloudflareImageBaseURL := os.Getenv("CLOUDFLARE_IMAGE_URL")
 	var images []*BusinessImage
 
 	for rows.Next() {
@@ -168,15 +164,6 @@ func GetImagesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uui
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan business image row: %w", err)
 		}
-
-		// Set full image URL if object name exists
-		if img.ObjectName != nil && cloudflareImageBaseURL != "" {
-			baseURL := strings.TrimRight(cloudflareImageBaseURL, "/")
-			fullPath := baseURL + "/" + *img.ObjectName
-			img.ObjectName = &fullPath
-		}
-		// Note: img.IsPrimary is removed from struct, so it's not set here.
-		// Controllers using this might need to derive primary status from img.Position.
 
 		images = append(images, &img)
 	}
