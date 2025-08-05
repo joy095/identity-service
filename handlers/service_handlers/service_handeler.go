@@ -23,7 +23,6 @@ import (
 )
 
 type CreateServiceRequest struct {
-	PublicId    string `form:"publicId" binding:"required"`
 	Name        string `form:"name" binding:"required"`
 	Description string `form:"description,omitempty"`
 	Duration    int    `form:"duration" binding:"required"`
@@ -53,7 +52,7 @@ func CreateService(c *gin.Context) {
 		return
 	}
 
-	publicId := req.PublicId
+	publicId := c.Param("publicId")
 
 	bc := db.DB
 	if bc == nil {
