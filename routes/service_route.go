@@ -19,11 +19,7 @@ func RegisterServicesRoutes(router *gin.Engine) {
 	// This is a public route, no auth needed
 	router.GET("/services/:publicId", serviceController.GetAllServiceByBusiness) // Get all services for a business with publicId
 	router.GET("/service/:id", serviceController.GetServiceByID)
-	router.GET("/service-business/:publicId", serviceController.GetServiceByPublicId)
-
-	// router.GET("/businesses/:businessPublicId/services", serviceController.GetAllServiceByBusiness)
-	// router.GET("/services/:id", serviceController.GetServiceByID)
-	// router.GET("/services/public/:publicId", serviceController.GetServiceByPublicId)
+	router.GET("/is-service-business/:publicId", serviceController.IsServiceBusiness) // Is business service available
 
 	// All routes within this group are protected by the auth middleware
 	protected := router.Group("")

@@ -15,7 +15,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 	router.POST("/user-is-registered", middleware.NewRateLimiter("10-30s", "user-is-registered"), userController.IsUserRegistered)
 	router.POST("/register", middleware.CombinedRateLimiter("register", "10-2m", "30-60m"), userController.Register)
 	router.POST("/login", middleware.CombinedRateLimiter("login", "10-2m", "30-30m"), userController.Login)
-	router.POST("/refresh-token", middleware.NewRateLimiter("10-60m", "refresh-token"), userController.RefreshToken)
+	router.POST("/refresh-token", middleware.NewRateLimiter("10-15m", "refresh-token"), userController.RefreshToken)
 
 	router.POST("/forgot-password", middleware.NewRateLimiter("10-5m", "forgot-password"), userController.ForgotPassword)
 	router.POST("/forgot-password-otp", middleware.CombinedRateLimiter("forgot-password-otp", "5-1m", "20-10m"), mail.VerifyForgotPasswordOTP)
@@ -29,13 +29,6 @@ func RegisterUserRoutes(router *gin.Engine) {
 	protected := router.Group("/")
 	protected.Use(auth.AuthMiddleware())
 	{
-		// protected.GET("/hi", func(c *gin.Context) {
-		// 	logger.ErrorLogger.Error("!!!!!!!!!! /hi PROTECTED ROUTE HANDLER EXECUTED !!!!!!!!!!") // Use a very distinct log
-		// 	// ... your existing handler logic ...
-		// 	c.JSON(200, gin.H{
-		// 		"message": "protected route",
-		// 	})
-		// })
 		protected.POST("/logout", middleware.CombinedRateLimiter("logout", "5-1m", "20-10m"), userController.Logout)
 
 		// Profile Management - Only access your own profile

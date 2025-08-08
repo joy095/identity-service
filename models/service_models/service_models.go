@@ -181,63 +181,21 @@ func GetServiceByIDModel(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*
 	return service, nil
 }
 
-// GetServiceByPublicId fetches a service record by its ID.
-func GetServiceByPublicId(ctx context.Context, db *pgxpool.Pool, businessId uuid.UUID) (*Service, error) {
-	logger.InfoLogger.Infof("Attempting to fetch service with ID: %s", businessId)
+// IsServiceBusiness checks if a service exists for the given businessId
+func IsServiceBusiness(ctx context.Context, db *pgxpool.Pool, businessId uuid.UUID) (bool, error) {
+	logger.InfoLogger.Infof("Checking if service exists for businessId: %s", businessId)
 
-	service := &Service{}
-	var imageObjectName pgtype.Text // Declare a variable to hold the object_name
+	var exists bool
+	query := `SELECT EXISTS(SELECT 1 FROM services WHERE business_id = $1)`
 
-	query := `
-		SELECT
-			s.id,
-			s.business_id,
-			s.name,
-			s.description,
-			s.duration_minutes,
-			s.price,
-			s.is_active,
-			s.image_id,
-			s.created_at,
-			s.updated_at,
-			i.object_name
-		FROM
-			services AS s
-		LEFT JOIN
-			images AS i ON s.image_id = i.id
-		WHERE
-			s.id = $1;
-`
-
-	// Make sure the order of arguments in Scan matches the order of columns in SELECT
-	err := db.QueryRow(ctx, query, businessId).Scan(
-		&service.ID,
-		&service.BusinessID,
-		&service.Name,
-		&service.Description,
-		&service.Duration,
-		&service.Price,
-		&service.IsActive,
-		&service.ImageID, // Changed to pgtype.UUID to handle NULL
-		&service.CreatedAt,
-		&service.UpdatedAt,
-		&imageObjectName, // Scan the object_name into the new variable
-	)
-
+	err := db.QueryRow(ctx, query, businessId).Scan(&exists)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			logger.InfoLogger.Infof("Service with businessId %s not found", businessId)
-			return nil, fmt.Errorf("service not found")
-		}
-		logger.ErrorLogger.Errorf("Failed to fetch service %s: %v", businessId, err)
-		return nil, fmt.Errorf("database error: %w", err)
+		logger.ErrorLogger.Errorf("Database error while checking service existence for businessId %s: %v", businessId, err)
+		return false, fmt.Errorf("database error: %w", err)
 	}
-	// Assign the object_name to the service if it's valid
-	if imageObjectName.Valid {
-		service.ObjectName = &imageObjectName.String
-	}
-	logger.InfoLogger.Infof("Service with businessId %s fetched successfully", businessId)
-	return service, nil
+
+	logger.InfoLogger.Infof("Service exists for businessId %s: %t", businessId, exists)
+	return exists, nil
 }
 
 // GetAllServicesModel fetches all services for a given business ID.
@@ -312,15 +270,6 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 	logger.InfoLogger.Printf("%s: Successfully fetched %d services for business ID: %s",
 		operation, len(services), businessID)
 	return services, nil
-}
-
-// buildImageURL constructs the full image URL if objectName is valid
-func buildImageURL(objectName pgtype.Text, baseURL string) *string {
-	if !objectName.Valid || baseURL == "" {
-		return nil
-	}
-	fullPath := strings.TrimRight(baseURL, "/") + "/" + objectName.String
-	return &fullPath
 }
 
 // GetServicesByBusinessID fetches all services for a given business ID.

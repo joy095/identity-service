@@ -109,16 +109,17 @@ func (sc *ServiceController) GetServiceByID(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"service": service})
 }
 
-func (sc *ServiceController) GetServiceByPublicId(c *gin.Context) {
-	logger.InfoLogger.Info("GetServiceByID controller called")
+func (sc *ServiceController) IsServiceBusiness(c *gin.Context) {
+	logger.InfoLogger.Info("IsServiceBusiness controller called")
 
 	publicId := strings.TrimSpace(c.Param("publicId"))
 	if publicId == "" {
-		logger.ErrorLogger.Error("Service ID is required")
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Service ID is required"})
+		logger.ErrorLogger.Error("Public ID is required")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Public ID is required"})
 		return
 	}
 
+	// Get business ID from publicId
 	businessId, err := business_models.GetBusinessIdOnly(c.Request.Context(), sc.db, publicId)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get business by publicId: %v", err)
@@ -126,21 +127,16 @@ func (sc *ServiceController) GetServiceByPublicId(c *gin.Context) {
 		return
 	}
 
-	service, err := service_models.GetServiceByPublicId(c.Request.Context(), db.DB, businessId)
+	// Check if service exists for this business
+	exists, err := service_models.IsServiceBusiness(c.Request.Context(), sc.db, businessId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			logger.ErrorLogger.Error("Service not found: " + err.Error())
-			c.JSON(http.StatusNotFound, gin.H{"error": "Service not found"})
-
-		} else {
-			logger.ErrorLogger.Error("Failed to fetch service: " + err.Error())
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch service"})
-
-		}
+		logger.ErrorLogger.Error("Failed to check service availability: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to check service availability"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"service": service})
+	// Return only true/false
+	c.JSON(http.StatusOK, gin.H{"available": exists})
 }
 
 // --- Delete Service by ID ---
