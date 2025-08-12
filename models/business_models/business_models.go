@@ -294,13 +294,16 @@ func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId strin
 	return business, nil
 }
 
-func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, address string) ([]*Business, error) {
-	logger.InfoLogger.Infof("Attempting to search businesses for address/location: %s", address)
+func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, search string) ([]*Business, error) {
+	logger.InfoLogger.Infof("Searching businesses by query: %s", search)
 
 	var businesses []*Business
+	if search == "" {
+		return businesses, nil
+	}
 
-	query := `
-        SELECT
+	sql := `
+        SELECT DISTINCT
             id,
             name,
             category,
@@ -317,32 +320,38 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, address string)
             updated_at,
             is_active,
             owner_id,
-            public_id
-        FROM
-            businesses
+            public_id,
+            CASE 
+                WHEN name ILIKE $1 THEN 1
+                WHEN public_id ILIKE $1 THEN 2
+                ELSE 3 
+            END AS rank_score
+        FROM businesses
         WHERE
-            is_active = true  -- Only active businesses
+            is_active = true
             AND (
-                $1 = '' OR -- If no search term, return all active
-                address ILIKE '%' || $1 || '%' OR
-                city ILIKE '%' || $1 || '%' OR
-                state ILIKE '%' || $1 || '%' OR
-                country ILIKE '%' || $1 || '%' OR
-                (city || ', ' || state || ', ' || country) ILIKE '%' || $1 || '%'
+                public_id ILIKE '%' || $1 || '%'
+                OR name ILIKE '%' || $1 || '%'
+                OR address ILIKE '%' || $1 || '%'
+                OR city ILIKE '%' || $1 || '%'
+                OR state ILIKE '%' || $1 || '%'
+                OR country ILIKE '%' || $1 || '%'
+                OR (city || ', ' || state || ', ' || country) ILIKE '%' || $1 || '%'
             )
-        ORDER BY
-            created_at DESC;
+        ORDER BY rank_score, name ASC
+        LIMIT 50;
     `
 
-	rows, err := db.Query(ctx, query, address)
+	rows, err := db.Query(ctx, sql, search)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Database error during business search for location '%s': %v", address, err)
-		return nil, fmt.Errorf("database error during search: %w", err)
+		logger.ErrorLogger.Errorf("Database error during search for '%s': %v", search, err)
+		return nil, fmt.Errorf("database error: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		business := &Business{}
+		var rankScore int // <-- Temporary for ordering
 		err := rows.Scan(
 			&business.ID,
 			&business.Name,
@@ -361,16 +370,16 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, address string)
 			&business.IsActive,
 			&business.OwnerID,
 			&business.PublicId,
+			&rankScore, // <-- consumed but not stored
 		)
 		if err != nil {
-			logger.ErrorLogger.Errorf("Error scanning business row during search for '%s': %v", address, err)
-			return nil, fmt.Errorf("error scanning business row: %w", err)
+			logger.ErrorLogger.Errorf("Error scanning business row: %v", err)
+			return nil, fmt.Errorf("row scan error: %w", err)
 		}
 
-		// Fetch associated images
-		images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to retrieve images for business ID %s: %v", business.ID, err)
+		images, imgErr := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
+		if imgErr != nil {
+			logger.ErrorLogger.Errorf("Failed to load images for business %s: %v", business.ID, imgErr)
 			business.Images = []*business_image_models.BusinessImage{}
 		} else {
 			business.Images = images
@@ -380,66 +389,91 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, address string)
 	}
 
 	if err = rows.Err(); err != nil {
-		logger.ErrorLogger.Errorf("Error iterating over search rows for '%s': %v", address, err)
-		return nil, fmt.Errorf("row iteration error: %w", err)
+		logger.ErrorLogger.Errorf("Row iteration error: %v", err)
+		return nil, fmt.Errorf("iteration error: %w", err)
 	}
 
-	if len(businesses) == 0 {
-		logger.InfoLogger.Infof("No active businesses found matching location: %s", address)
-		return []*Business{}, nil
-	}
-
-	logger.InfoLogger.Infof("Successfully found %d active businesses for location: %s", len(businesses), address)
 	return businesses, nil
 }
 
-func GetLocationSuggestionsModel(ctx context.Context, db *pgxpool.Pool, query string) ([]string, error) {
-	logger.InfoLogger.Infof("Fetching location suggestions for query: %s", query)
+func GetSearchSuggestionsModel(ctx context.Context, db *pgxpool.Pool, query string) ([]string, error) {
+	logger.InfoLogger.Infof("Fetching suggestions for query: %s", query)
+
+	if query == "" {
+		return []string{}, nil
+	}
 
 	var suggestions []string
 
-	// Build a unified location string: "City, State, Country"
-	// Also optionally include partial address matches
 	sql := `
         SELECT DISTINCT
+            result_suggestion,
+            -- Add the ordering expression so we can use it in ORDER BY
             CASE 
-                WHEN $1 = '' THEN ''
-                ELSE TRIM(
-                    COALESCE(city, '') || 
-                    ', ' || COALESCE(state, '') || 
-                    ', ' || COALESCE(country, '')
+                WHEN result_suggestion ILIKE $1 || '%' THEN 1
+                WHEN result_suggestion ILIKE '%' || $1 || '%' THEN 2
+                ELSE 3 
+            END AS match_type
+        FROM (
+            -- Suggestion 1: Business Name + Location
+            SELECT
+                name || ', ' || COALESCE(city, '') || ', ' || COALESCE(state, '') || ', ' || COALESCE(country, '') AS result_suggestion
+            FROM businesses
+            WHERE
+                is_active = true
+                AND (
+                    name ILIKE '%' || $1 || '%'
+                    OR city ILIKE '%' || $1 || '%'
+                    OR state ILIKE '%' || $1 || '%'
+                    OR country ILIKE '%' || $1 || '%'
                 )
-            END AS location
-        FROM businesses
-        WHERE 
-            is_active = true
-            AND (
-                city ILIKE '%' || $1 || '%' OR
-                state ILIKE '%' || $1 || '%' OR
-                country ILIKE '%' || $1 || '%' OR
-                address ILIKE '%' || $1 || '%'
-            )
-            AND LENGTH(TRIM(COALESCE(city, '') || COALESCE(state, '') || COALESCE(country, ''))) > 0
-        ORDER BY location
+
+            UNION
+
+            -- Suggestion 2: Public ID
+            SELECT
+                public_id AS result_suggestion
+            FROM businesses
+            WHERE
+                is_active = true
+                AND public_id ILIKE '%' || $1 || '%'
+
+            UNION
+
+            -- Suggestion 3: Location only (City, State, Country)
+            SELECT
+                COALESCE(city, '') || ', ' || COALESCE(state, '') || ', ' || COALESCE(country, '') AS result_suggestion
+            FROM businesses
+            WHERE
+                is_active = true
+                AND (
+                    city ILIKE '%' || $1 || '%'
+                    OR state ILIKE '%' || $1 || '%'
+                    OR country ILIKE '%' || $1 || '%'
+                )
+        ) AS combined
+        WHERE LENGTH(TRIM(result_suggestion)) > 3
+        ORDER BY
+            match_type,
+            result_suggestion
         LIMIT 10;
     `
 
 	rows, err := db.Query(ctx, sql, query)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Database error fetching location suggestions for '%s': %v", query, err)
-		return nil, fmt.Errorf("database error: %w", err)
+		logger.ErrorLogger.Errorf("Database error fetching suggestions for '%s': %v", query, err)
+		return nil, fmt.Errorf("db error: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var location string
-		if err := rows.Scan(&location); err != nil {
-			logger.ErrorLogger.Errorf("Error scanning suggestion row: %v", err)
-			continue // skip bad rows
+		var suggestion string
+		var matchType int // <-- We scan it, but don't use it
+		if err := rows.Scan(&suggestion, &matchType); err != nil {
+			logger.ErrorLogger.Errorf("Error scanning suggestion: %v", err)
+			continue
 		}
-		if location != "" {
-			suggestions = append(suggestions, location)
-		}
+		suggestions = append(suggestions, suggestion)
 	}
 
 	if err = rows.Err(); err != nil {

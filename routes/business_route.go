@@ -14,8 +14,8 @@ func RegisterBusinessRoutes(router *gin.Engine) {
 	// These routes are accessible without authentication.
 	router.GET("/business", businessController.GetAllBusinesses)
 	router.GET("/business/:publicId", businessController.GetBusiness)
-	router.GET("/business/search/:location", businessController.SearchBusiness)
-	router.GET("/business/search/suggestions", businessController.GetLocationSuggestions)
+	router.GET("/business/search/:search", businessController.SearchBusiness)
+	router.GET("/business/search/suggestions", businessController.GetSearchSuggestions)
 
 	// --- Protected Routes ---
 	// These routes require a valid authentication token.
