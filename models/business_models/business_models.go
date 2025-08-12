@@ -294,34 +294,190 @@ func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId strin
 	return business, nil
 }
 
-// GetBusinessByUserModel fetches all inactive businesses for a given user ID.
+func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, address string) ([]*Business, error) {
+	logger.InfoLogger.Infof("Attempting to search businesses for address/location: %s", address)
+
+	var businesses []*Business
+
+	query := `
+        SELECT
+            id,
+            name,
+            category,
+            address,
+            city,
+            state,
+            country,
+            postal_code,
+            tax_id,
+            about,
+            location_latitude,
+            location_longitude,
+            created_at,
+            updated_at,
+            is_active,
+            owner_id,
+            public_id
+        FROM
+            businesses
+        WHERE
+            is_active = true  -- Only active businesses
+            AND (
+                $1 = '' OR -- If no search term, return all active
+                address ILIKE '%' || $1 || '%' OR
+                city ILIKE '%' || $1 || '%' OR
+                state ILIKE '%' || $1 || '%' OR
+                country ILIKE '%' || $1 || '%' OR
+                (city || ', ' || state || ', ' || country) ILIKE '%' || $1 || '%'
+            )
+        ORDER BY
+            created_at DESC;
+    `
+
+	rows, err := db.Query(ctx, query, address)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Database error during business search for location '%s': %v", address, err)
+		return nil, fmt.Errorf("database error during search: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		business := &Business{}
+		err := rows.Scan(
+			&business.ID,
+			&business.Name,
+			&business.Category,
+			&business.Address,
+			&business.City,
+			&business.State,
+			&business.Country,
+			&business.PostalCode,
+			&business.TaxID,
+			&business.About,
+			&business.Latitude,
+			&business.Longitude,
+			&business.CreatedAt,
+			&business.UpdatedAt,
+			&business.IsActive,
+			&business.OwnerID,
+			&business.PublicId,
+		)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Error scanning business row during search for '%s': %v", address, err)
+			return nil, fmt.Errorf("error scanning business row: %w", err)
+		}
+
+		// Fetch associated images
+		images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to retrieve images for business ID %s: %v", business.ID, err)
+			business.Images = []*business_image_models.BusinessImage{}
+		} else {
+			business.Images = images
+		}
+
+		businesses = append(businesses, business)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error iterating over search rows for '%s': %v", address, err)
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	if len(businesses) == 0 {
+		logger.InfoLogger.Infof("No active businesses found matching location: %s", address)
+		return []*Business{}, nil
+	}
+
+	logger.InfoLogger.Infof("Successfully found %d active businesses for location: %s", len(businesses), address)
+	return businesses, nil
+}
+
+func GetLocationSuggestionsModel(ctx context.Context, db *pgxpool.Pool, query string) ([]string, error) {
+	logger.InfoLogger.Infof("Fetching location suggestions for query: %s", query)
+
+	var suggestions []string
+
+	// Build a unified location string: "City, State, Country"
+	// Also optionally include partial address matches
+	sql := `
+        SELECT DISTINCT
+            CASE 
+                WHEN $1 = '' THEN ''
+                ELSE TRIM(
+                    COALESCE(city, '') || 
+                    ', ' || COALESCE(state, '') || 
+                    ', ' || COALESCE(country, '')
+                )
+            END AS location
+        FROM businesses
+        WHERE 
+            is_active = true
+            AND (
+                city ILIKE '%' || $1 || '%' OR
+                state ILIKE '%' || $1 || '%' OR
+                country ILIKE '%' || $1 || '%' OR
+                address ILIKE '%' || $1 || '%'
+            )
+            AND LENGTH(TRIM(COALESCE(city, '') || COALESCE(state, '') || COALESCE(country, ''))) > 0
+        ORDER BY location
+        LIMIT 10;
+    `
+
+	rows, err := db.Query(ctx, sql, query)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Database error fetching location suggestions for '%s': %v", query, err)
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var location string
+		if err := rows.Scan(&location); err != nil {
+			logger.ErrorLogger.Errorf("Error scanning suggestion row: %v", err)
+			continue // skip bad rows
+		}
+		if location != "" {
+			suggestions = append(suggestions, location)
+		}
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Row iteration error: %v", err)
+		return nil, fmt.Errorf("row error: %w", err)
+	}
+
+	return suggestions, nil
+}
+
+// GetBusinessByUserModel fetches all businesses for a given user ID.
 func GetBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) ([]*Business, error) {
-	logger.InfoLogger.Infof("Attempting to fetch all inactive businesses for user ID: %s", userID)
+	logger.InfoLogger.Infof("Attempting to fetch all businesses for user ID: %s", userID)
 
 	var businesses []*Business
 	query := `
         SELECT
-            b.id,
-            b.name,
-            b.category,
-            b.address,
-            b.city,
-            b.state,
-            b.country,
-            b.postal_code,
-            b.tax_id,
-            b.about,
-            b.location_latitude,
-            b.location_longitude,
-            b.created_at,
-            b.updated_at,
-            b.is_active,
-            b.owner_id,
-            b.public_id
+            id,
+            name,
+            category,
+            address,
+            city,
+            state,
+            country,
+            postal_code,
+            tax_id,
+            about,
+            location_latitude,
+            location_longitude,
+            created_at,
+            updated_at,
+            is_active,
+            owner_id,
+            public_id
         FROM
-            businesses AS b
+            businesses
         WHERE
-            b.owner_id = $1;
+            owner_id = $1;
     `
 
 	rows, err := db.Query(ctx, query, userID)

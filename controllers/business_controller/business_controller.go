@@ -121,7 +121,11 @@ func (bc *BusinessController) CreateBusiness(c *gin.Context) {
 	}
 
 	logger.InfoLogger.WithFields(map[string]interface{}{"business_id": createdBusiness.ID, "sub": userID}).Info("Business created successfully")
-	c.JSON(http.StatusCreated, gin.H{"message": "Business created successfully!", "business": createdBusiness})
+
+	c.JSON(http.StatusCreated, gin.H{
+		"business": createdBusiness,
+		"publicId": createdBusiness.PublicId,
+	})
 }
 
 func (bc *BusinessController) GetAllBusinesses(c *gin.Context) {
@@ -172,6 +176,67 @@ func (bc *BusinessController) GetBusiness(c *gin.Context) {
 	}
 	logger.InfoLogger.Infof("Successfully retrieved business %s ", businessID)
 	c.JSON(http.StatusOK, gin.H{"business": business})
+}
+
+func (bc *BusinessController) SearchBusiness(c *gin.Context) {
+	logger.InfoLogger.Info("SearchBusiness controller called")
+
+	// You can get location from URL param: /search/:location
+	location := c.Param("location")
+
+	// Or alternatively, use query param: /search?location=...
+	if location == "" {
+		location = c.Query("location")
+	}
+
+	// Trim and lowercase for consistency (though DB uses ILIKE)
+	location = strings.TrimSpace(location)
+
+	if location == "" {
+		logger.InfoLogger.Warn("SearchBusiness called without location parameter")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "location is required"})
+		return
+	}
+
+	businesses, err := business_models.SearchBusinessModels(c.Request.Context(), bc.DB, location)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to search businesses for location '%s': %v", location, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to search businesses"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"businesses": businesses,
+		"count":      len(businesses),
+	})
+}
+
+func (bc *BusinessController) GetLocationSuggestions(c *gin.Context) {
+    logger.InfoLogger.Info("GetLocationSuggestions controller called")
+
+    query := c.Query("q")
+    if query == "" {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Query parameter 'q' is required"})
+        return
+    }
+
+    query = strings.TrimSpace(query)
+
+    if len(query) < 2 {
+        c.JSON(http.StatusOK, gin.H{"suggestions": []string{}})
+        return
+    }
+
+    suggestions, err := business_models.GetLocationSuggestionsModel(c.Request.Context(), bc.DB, query)
+    if err != nil {
+        logger.ErrorLogger.Errorf("Failed to fetch location suggestions for query '%s': %v", query, err)
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch suggestions"})
+        return
+    }
+
+    c.JSON(http.StatusOK, gin.H{
+        "suggestions": suggestions,
+    })
 }
 
 // GetBusinessByUser handles the request to get all inactive businesses for the authenticated user.
