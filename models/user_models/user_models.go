@@ -33,12 +33,6 @@ const (
 	KeyLength   = 64        // Derived key size (bytes)
 )
 
-// ErrUserNotFound is returned when no user is found with the given email.
-var ErrUserNotFound = errors.New("user not found")
-
-// ErrVerificationExpired is returned when a user exists but their email verification period has expired.
-var ErrVerificationExpired = errors.New("email verification period expired")
-
 // User Model
 type User struct {
 	ID              uuid.UUID

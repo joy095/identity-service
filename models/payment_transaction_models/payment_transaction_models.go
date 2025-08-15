@@ -14,36 +14,38 @@ import (
 
 // PaymentTransaction represents a record of a payment transaction.
 type PaymentTransaction struct {
-	ID                uuid.UUID  `json:"id"`
-	BookingID         uuid.UUID  `json:"booking_id"`
-	RazorpayOrderID   string     `json:"razorpay_order_id"`
-	RazorpayPaymentID string     `json:"razorpay_payment_id"`
-	Amount            int64      `json:"amount"`
-	Currency          string     `json:"currency"`
-	Status            string     `json:"status"`      // e.g., "created", "authorized", "captured", "failed"
-	CapturedAt        *time.Time `json:"captured_at"` // Nullable timestamp
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	PaymentMethod     string     `json:"payment_method"`    // e.g., "card", "upi", "netbanking"
-	ErrorDescription  *string    `json:"error_description"` // Nullable error message
+	ID                   uuid.UUID  `json:"id"`
+	BookingID            uuid.UUID  `json:"booking_id"`
+	CashfreeOrderID      string     `json:"cashfree_order_id"`
+	CashfreePaymentID    string     `json:"cashfree_payment_id"`
+	PaymentSessionID     string     `json:"payment_session_id"`
+	Amount               int64      `json:"amount"`
+	Currency             string     `json:"currency"`
+	Status               string     `json:"status"`      // e.g., "ACTIVE", "PAID", "EXPIRED", "CANCELLED"
+	CapturedAt           *time.Time `json:"captured_at"` // Nullable timestamp
+	CreatedAt            time.Time  `json:"created_at"`
+	UpdatedAt            time.Time  `json:"updated_at"`
+	PaymentMethod        string     `json:"payment_method"`    // e.g., "card", "upi", "netbanking"
+	ErrorDescription     *string    `json:"error_description"` // Nullable error message
 }
 
 // NewPaymentTransaction creates a new PaymentTransaction struct.
-func NewPaymentTransaction(bookingID uuid.UUID, rzpOrderID string, amount int64, currency string) (*PaymentTransaction, error) {
+func NewPaymentTransaction(bookingID uuid.UUID, cashfreeOrderID string, paymentSessionID string, amount int64, currency string) (*PaymentTransaction, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate UUID for payment transaction: %w", err)
 	}
 	now := time.Now()
 	return &PaymentTransaction{
-		ID:              id,
-		BookingID:       bookingID,
-		RazorpayOrderID: rzpOrderID,
-		Amount:          amount,
-		Currency:        currency,
-		Status:          "created", // Initial status
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                id,
+		BookingID:         bookingID,
+		CashfreeOrderID:   cashfreeOrderID,
+		PaymentSessionID:  paymentSessionID,
+		Amount:            amount,
+		Currency:          currency,
+		Status:            "ACTIVE", // Initial status for Cashfree
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}, nil
 }
 
@@ -64,16 +66,16 @@ func CreatePaymentTransaction(ctx context.Context, db *pgxpool.Pool, tx *Payment
 
 	query := `
 		INSERT INTO payment_transactions (
-			id, booking_id, razorpay_order_id, razorpay_payment_id,
+			id, booking_id, cashfree_order_id, cashfree_payment_id, payment_session_id,
 			amount, currency, status, captured_at, created_at, updated_at,
 			payment_method, error_description
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		) RETURNING id`
 
 	var insertedID uuid.UUID
 	err := db.QueryRow(ctx, query,
-		tx.ID, tx.BookingID, tx.RazorpayOrderID, tx.RazorpayPaymentID,
+		tx.ID, tx.BookingID, tx.CashfreeOrderID, tx.CashfreePaymentID, tx.PaymentSessionID,
 		tx.Amount, tx.Currency, tx.Status, tx.CapturedAt, tx.CreatedAt, tx.UpdatedAt,
 		tx.PaymentMethod, tx.ErrorDescription,
 	).Scan(&insertedID)
@@ -97,7 +99,7 @@ func UpdatePaymentTransaction(ctx context.Context, db *pgxpool.Pool, tx *Payment
 	query := `
 		UPDATE payment_transactions
 		SET
-			razorpay_payment_id = $2,
+			cashfree_payment_id = $2,
 			amount = $3,
 			currency = $4,
 			status = $5,
@@ -108,7 +110,7 @@ func UpdatePaymentTransaction(ctx context.Context, db *pgxpool.Pool, tx *Payment
 		WHERE id = $1`
 
 	cmdTag, err := db.Exec(ctx, query,
-		tx.ID, tx.RazorpayPaymentID, tx.Amount, tx.Currency, tx.Status,
+		tx.ID, tx.CashfreePaymentID, tx.Amount, tx.Currency, tx.Status,
 		tx.CapturedAt, tx.UpdatedAt, tx.PaymentMethod, tx.ErrorDescription,
 	)
 	if err != nil {
@@ -123,29 +125,30 @@ func UpdatePaymentTransaction(ctx context.Context, db *pgxpool.Pool, tx *Payment
 	return nil
 }
 
-// GetPaymentTransactionByRazorpayOrderID fetches a payment transaction record by its Razorpay Order ID.
-func GetPaymentTransactionByRazorpayOrderID(ctx context.Context, db *pgxpool.Pool, razorpayOrderID string) (*PaymentTransaction, error) {
-	logger.InfoLogger.Infof("Attempting to fetch payment transaction by Razorpay Order ID: %s", razorpayOrderID)
+// GetPaymentTransactionByCashfreeOrderID fetches a payment transaction record by its Cashfree Order ID.
+func GetPaymentTransactionByCashfreeOrderID(ctx context.Context, db *pgxpool.Pool, cashfreeOrderID string) (*PaymentTransaction, error) {
+	logger.InfoLogger.Infof("Attempting to fetch payment transaction by Cashfree Order ID: %s", cashfreeOrderID)
 
 	tx := &PaymentTransaction{}
 	query := `
-		SELECT id, booking_id, razorpay_order_id, razorpay_payment_id, amount, currency, status, captured_at, created_at, updated_at, payment_method, error_description
+		SELECT id, booking_id, cashfree_order_id, cashfree_payment_id, payment_session_id, 
+		       amount, currency, status, captured_at, created_at, updated_at, payment_method, error_description
 		FROM payment_transactions
-		WHERE razorpay_order_id = $1`
+		WHERE cashfree_order_id = $1`
 
-	err := db.QueryRow(ctx, query, razorpayOrderID).Scan(
-		&tx.ID, &tx.BookingID, &tx.RazorpayOrderID, &tx.RazorpayPaymentID,
+	err := db.QueryRow(ctx, query, cashfreeOrderID).Scan(
+		&tx.ID, &tx.BookingID, &tx.CashfreeOrderID, &tx.CashfreePaymentID, &tx.PaymentSessionID,
 		&tx.Amount, &tx.Currency, &tx.Status, &tx.CapturedAt, &tx.CreatedAt, &tx.UpdatedAt,
 		&tx.PaymentMethod, &tx.ErrorDescription,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			logger.WarnLogger.Warnf("Payment transaction with Razorpay Order ID %s not found", razorpayOrderID)
+			logger.WarnLogger.Warnf("Payment transaction with Cashfree Order ID %s not found", cashfreeOrderID)
 			return nil, fmt.Errorf("payment transaction not found")
 		}
-		logger.ErrorLogger.Errorf("Failed to fetch payment transaction by Razorpay Order ID %s: %v", razorpayOrderID, err)
+		logger.ErrorLogger.Errorf("Failed to fetch payment transaction by Cashfree Order ID %s: %v", cashfreeOrderID, err)
 		return nil, fmt.Errorf("database error fetching payment transaction: %w", err)
 	}
-	logger.InfoLogger.Infof("Payment transaction with Razorpay Order ID %s fetched successfully", razorpayOrderID)
+	logger.InfoLogger.Infof("Payment transaction with Cashfree Order ID %s fetched successfully", cashfreeOrderID)
 	return tx, nil
 }

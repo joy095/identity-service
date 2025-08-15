@@ -29,30 +29,29 @@ type SlotBookingRequest struct {
 	CustomerID uuid.UUID `json:"customer_id"`
 }
 
-// RazorpayWebhookPayload represents the structure of a Razorpay webhook payload.
-type RazorpayWebhookPayload struct {
-	Entity    string   `json:"entity"` // "event"
-	AccountID string   `json:"account_id"`
-	Event     string   `json:"event"`
-	Contains  []string `json:"contains"`
-	Payload   struct {
-		Payment *struct {
-			Entity struct {
-				ID               string                 `json:"id"`
-				OrderID          string                 `json:"order_id"`
-				Amount           int                    `json:"amount"` // in paise
-				Currency         string                 `json:"currency"`
-				Status           string                 `json:"status"` // "captured", "failed", etc.
-				Method           string                 `json:"method"`
-				Captured         bool                   `json:"captured"`
-				CreatedAt        int64                  `json:"created_at"` // Unix timestamp
-				Notes            map[string]interface{} `json:"notes"`
-				ErrorDescription *string                `json:"error_description"`
-			} `json:"entity"`
+// CashfreeWebhookPayload represents the structure of a Cashfree webhook payload.
+type CashfreeWebhookPayload struct {
+	Type string `json:"type"` // "PAYMENT_SUCCESS_WEBHOOK", "PAYMENT_FAILED_WEBHOOK", etc.
+	Data struct {
+		Order struct {
+			OrderID       string  `json:"order_id"`
+			OrderAmount   float64 `json:"order_amount"`
+			OrderCurrency string  `json:"order_currency"`
+			OrderStatus   string  `json:"order_status"` // "PAID", "ACTIVE", "EXPIRED", etc.
+		} `json:"order"`
+		Payment struct {
+			CFPaymentID     string                 `json:"cf_payment_id"`
+			PaymentStatus   string                 `json:"payment_status"`   // "SUCCESS", "FAILED", etc.
+			PaymentAmount   float64                `json:"payment_amount"`
+			PaymentCurrency string                 `json:"payment_currency"`
+			PaymentMessage  string                 `json:"payment_message"`
+			PaymentTime     string                 `json:"payment_time"`     // ISO timestamp
+			PaymentMethod   map[string]interface{} `json:"payment_method"`
+			ErrorDetails    map[string]interface{} `json:"error_details,omitempty"`
 		} `json:"payment"`
-		// Other entities like Order, Refund, etc. can be here
-	} `json:"payload"`
-	CreatedAt int64 `json:"created_at"` // Unix timestamp
+		CustomerDetails map[string]interface{} `json:"customer_details"`
+	} `json:"data"`
+	EventTime string `json:"event_time"` // ISO timestamp
 }
 
 // --- Constants for Redis Keys ---
@@ -63,19 +62,19 @@ const (
 
 // SlotBookingService handles the business logic for slot bookings.
 type SlotBookingService struct {
-	DB                    *pgxpool.Pool
-	RedisClient           *redis.Client
-	RazorpayClient        clients.RazorpayClientWrapper
-	RazorpayWebhookSecret string // Your Razorpay webhook secret
+	DB                     *pgxpool.Pool
+	RedisClient            *redis.Client
+	CashfreeClient         clients.CashfreeClientWrapper
+	CashfreeWebhookSecret  string // Your Cashfree webhook secret
 }
 
 // NewSlotBookingService creates a new SlotBookingService.
-func NewSlotBookingService(db *pgxpool.Pool, rdb *redis.Client, rzpClient clients.RazorpayClientWrapper, rzpWebhookSecret string) *SlotBookingService {
+func NewSlotBookingService(db *pgxpool.Pool, rdb *redis.Client, cfClient clients.CashfreeClientWrapper, cfWebhookSecret string) *SlotBookingService {
 	return &SlotBookingService{
-		DB:                    db,
-		RedisClient:           rdb,
-		RazorpayClient:        rzpClient,
-		RazorpayWebhookSecret: rzpWebhookSecret,
+		DB:                     db,
+		RedisClient:            rdb,
+		CashfreeClient:         cfClient,
+		CashfreeWebhookSecret:  cfWebhookSecret,
 	}
 }
 
@@ -189,8 +188,8 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 	}
 	logger.InfoLogger.Infof("Pending booking %s created for slot %s", createdBooking.ID, req.SlotID)
 
-	// 4. Initiate Razorpay Payment Order
-	amountInPaise := service.Price * 100
+	// 4. Initiate Cashfree Payment Order
+	amount := float64(service.Price) // Cashfree uses actual amount, not paise
 	if service.Price <= 0 {
 		return nil, "", fmt.Errorf("invalid service price: %d", service.Price)
 	}
@@ -204,38 +203,50 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 		logger.WarnLogger.Warnf("Unsupported currency %s, defaulting to INR", currency)
 		currency = "INR"
 	}
+
+	// Prepare customer details (required for Cashfree)
+	customerDetails := map[string]interface{}{
+		"customer_id":    createdBooking.CustomerID.String(),
+		"customer_name":  "Customer", // You might want to fetch actual customer details
+		"customer_email": "customer@example.com", // Replace with actual customer email
+		"customer_phone": "9999999999", // Replace with actual customer phone
+	}
+
 	orderData := map[string]interface{}{
-		"amount":   amountInPaise,
-		"currency": currency,
-		"receipt":  createdBooking.ID.String(),
-		"notes": map[string]interface{}{
+		"order_id":         createdBooking.ID.String(),
+		"order_amount":     amount,
+		"order_currency":   currency,
+		"customer_details": customerDetails,
+		"order_meta": map[string]interface{}{
 			"booking_id":  createdBooking.ID.String(),
 			"customer_id": createdBooking.CustomerID.String(),
 			"slot_id":     createdBooking.SlotID.String(),
 			"service_id":  createdBooking.ServiceID.String(),
 		},
+		"order_note": fmt.Sprintf("Payment for booking %s", createdBooking.ID.String()),
 	}
 
-	rzpOrder, err := s.RazorpayClient.CreateOrder(orderData)
+	cfOrder, err := s.CashfreeClient.CreateOrder(orderData)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to create Razorpay order for booking %s: %v", createdBooking.ID, err)
+		logger.ErrorLogger.Errorf("Failed to create Cashfree order for booking %s: %v", createdBooking.ID, err)
 		if err := booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed); err != nil {
 			logger.ErrorLogger.Errorf("Critical: Failed to update booking %s to failed status: %v", createdBooking.ID, err)
 		}
 		return nil, "", fmt.Errorf("failed to initiate payment: %w", err)
 	}
 
-	razorpayOrderID, ok := rzpOrder["id"].(string)
-	if !ok || razorpayOrderID == "" {
-		logger.ErrorLogger.Errorf("Razorpay order ID not found in response for booking %s", createdBooking.ID)
+	cashfreeOrderID, ok := cfOrder["cf_order_id"].(string)
+	if !ok || cashfreeOrderID == "" {
+		logger.ErrorLogger.Errorf("Cashfree order ID not found in response for booking %s", createdBooking.ID)
 		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
-		return nil, "", fmt.Errorf("invalid Razorpay order response")
+		return nil, "", fmt.Errorf("invalid Cashfree order response")
 	}
 
-	logger.InfoLogger.Infof("Razorpay order %s created for booking %s", razorpayOrderID, createdBooking.ID)
+	paymentSessionID, _ := cfOrder["payment_session_id"].(string)
+	logger.InfoLogger.Infof("Cashfree order %s created for booking %s with payment session %s", cashfreeOrderID, createdBooking.ID, paymentSessionID)
 
 	// 5. Save Payment Transaction details (initial status)
-	paymentTx, err := payment_transaction_models.NewPaymentTransaction(createdBooking.ID, razorpayOrderID, service.Price, currency)
+	paymentTx, err := payment_transaction_models.NewPaymentTransaction(createdBooking.ID, cashfreeOrderID, paymentSessionID, service.Price, currency)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create payment transaction object for booking %s: %v", createdBooking.ID, err)
 		_ = booking_models.UpdateBookingStatus(ctx, s.DB, createdBooking.ID, shared_models.BookingStatusFailed)
@@ -252,89 +263,83 @@ func (s *SlotBookingService) BookSlot(ctx context.Context, req *SlotBookingReque
 		return nil, "", fmt.Errorf("failed to record payment attempt: %w", err)
 	}
 
-	return createdBooking, razorpayOrderID, nil
+	return createdBooking, paymentSessionID, nil
 }
 
-// HandleRazorpayWebhook processes payment confirmation/failure from Razorpay webhooks.
-func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signature, body string) error {
+// HandleCashfreeWebhook processes payment confirmation/failure from Cashfree webhooks.
+func (s *SlotBookingService) HandleCashfreeWebhook(ctx context.Context, signature, body string) error {
 	// Verify webhook signature (CRITICAL for security)
-	if !s.RazorpayClient.VerifyPaymentSignature(signature, body, s.RazorpayWebhookSecret) {
-		logger.ErrorLogger.Errorf("Webhook signature verification failed.")
+	if !s.CashfreeClient.VerifyWebhookSignature(signature, body) {
+		logger.ErrorLogger.Errorf("Cashfree webhook signature verification failed.")
 		return fmt.Errorf("invalid webhook signature")
 	}
-	logger.InfoLogger.Info("Razorpay webhook signature verified successfully.")
+	logger.InfoLogger.Info("Cashfree webhook signature verified successfully.")
 
-	var payload RazorpayWebhookPayload
+	var payload CashfreeWebhookPayload
 	if err := json.Unmarshal([]byte(body), &payload); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse Razorpay webhook payload: %v", err)
+		logger.ErrorLogger.Errorf("Failed to parse Cashfree webhook payload: %v", err)
 		return fmt.Errorf("invalid webhook payload")
 	}
 
-	if payload.Event != "payment.captured" && payload.Event != "payment.failed" {
-		logger.InfoLogger.Infof("Unhandled Razorpay event type: %s", payload.Event)
+	if payload.Type != "PAYMENT_SUCCESS_WEBHOOK" && payload.Type != "PAYMENT_FAILED_WEBHOOK" {
+		logger.InfoLogger.Infof("Unhandled Cashfree event type: %s", payload.Type)
 		return nil
 	}
 
-	paymentEntity := payload.Payload.Payment.Entity
-	if paymentEntity.OrderID == "" {
-		logger.ErrorLogger.Error("Razorpay Order ID not found in webhook payload")
-		return fmt.Errorf("missing Razorpay Order ID")
+	orderID := payload.Data.Order.OrderID
+	if orderID == "" {
+		logger.ErrorLogger.Error("Cashfree Order ID not found in webhook payload")
+		return fmt.Errorf("missing Cashfree Order ID")
 	}
 
-	// Fetch existing transaction by Razorpay Order ID
-	paymentTx, err := payment_transaction_models.GetPaymentTransactionByRazorpayOrderID(ctx, s.DB, paymentEntity.OrderID)
+	// Parse booking ID from order ID (since we use booking ID as order ID)
+	bookingID, err := uuid.Parse(orderID)
 	if err != nil {
-		// If transaction not found, it might be a race condition or direct webhook without initial booking.
-		// Re-create transaction and handle.
-		if errors.Is(err, fmt.Errorf("payment transaction not found")) {
-			logger.WarnLogger.Warnf("Payment transaction for Razorpay Order ID %s not found. Attempting to create new from webhook.", paymentEntity.OrderID)
-			bookingIDStr, ok := paymentEntity.Notes["booking_id"].(string)
-			if !ok || bookingIDStr == "" {
-				logger.ErrorLogger.Errorf("Booking ID not found in Razorpay payment notes for order %s. Cannot create payment transaction.", paymentEntity.OrderID)
-				return fmt.Errorf("missing booking ID in payment notes")
-			}
-			bookingID, parseErr := uuid.Parse(bookingIDStr)
-			if parseErr != nil {
-				logger.ErrorLogger.Errorf("Invalid booking ID format from Razorpay notes '%s': %v", bookingIDStr, parseErr)
-				return fmt.Errorf("invalid booking ID format in notes")
-			}
-
-			paymentTx, err = payment_transaction_models.NewPaymentTransaction(bookingID, paymentEntity.OrderID, int64(paymentEntity.Amount/100), paymentEntity.Currency)
-			if err != nil {
-				logger.ErrorLogger.Errorf("Failed to create new payment transaction object for webhook: %v", err)
-				return fmt.Errorf("internal error handling payment: %w", err)
-			}
-			_, err = payment_transaction_models.CreatePaymentTransaction(ctx, s.DB, paymentTx)
-			if err != nil {
-				logger.ErrorLogger.Errorf("Failed to save new payment transaction from webhook: %v", err)
-				return fmt.Errorf("failed to record payment transaction: %w", err)
-			}
-		} else {
-			logger.ErrorLogger.Errorf("Database error fetching payment transaction for order %s: %v", paymentEntity.OrderID, err)
-			return fmt.Errorf("database error processing webhook: %w", err)
-		}
-	} else {
-		// Idempotency check: If the transaction is already captured/failed, skip processing.
-		if paymentTx.Status == "captured" || paymentTx.Status == "failed" {
-			logger.InfoLogger.Infof("Webhook for order %s already processed with status %s. Skipping.", paymentEntity.OrderID, paymentTx.Status)
-			return nil
-		}
+		logger.ErrorLogger.Errorf("Invalid booking ID format from order ID '%s': %v", orderID, err)
+		return fmt.Errorf("invalid order ID format")
 	}
 
-	paymentTx.RazorpayPaymentID = paymentEntity.ID
-	paymentTx.Status = paymentEntity.Status
+	// Fetch existing transaction by Cashfree Order ID
+	paymentTx, err := payment_transaction_models.GetPaymentTransactionByCashfreeOrderID(ctx, s.DB, orderID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Payment transaction for Cashfree Order ID %s not found: %v", orderID, err)
+		return fmt.Errorf("payment transaction not found: %w", err)
+	}
+
+	// Idempotency check: If the transaction is already processed, skip processing.
+	if paymentTx.Status == "PAID" || paymentTx.Status == "CANCELLED" {
+		logger.InfoLogger.Infof("Webhook for order %s already processed with status %s. Skipping.", orderID, paymentTx.Status)
+		return nil
+	}
+
+	// Update payment transaction with webhook data
+	paymentTx.CashfreePaymentID = payload.Data.Payment.CFPaymentID
+	paymentTx.Status = payload.Data.Order.OrderStatus
+
 	// Validate amount matches original transaction
-	if int64(paymentEntity.Amount) != paymentTx.Amount*100 {
-		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", paymentTx.Amount, int64(paymentEntity.Amount)/100)
+	if payload.Data.Order.OrderAmount != float64(paymentTx.Amount) {
+		logger.ErrorLogger.Errorf("Amount mismatch in webhook: expected %f, got %f", float64(paymentTx.Amount), payload.Data.Order.OrderAmount)
 		return fmt.Errorf("payment amount mismatch")
 	}
-	paymentTx.PaymentMethod = paymentEntity.Method
-	paymentTx.ErrorDescription = paymentEntity.ErrorDescription
 
-	if paymentEntity.Captured {
-		capturedAt := time.Unix(paymentEntity.CreatedAt, 0)
-		paymentTx.CapturedAt = &capturedAt
-		paymentTx.Status = "captured"
+	// Extract payment method
+	if methodType, ok := payload.Data.Payment.PaymentMethod["type"].(string); ok {
+		paymentTx.PaymentMethod = methodType
+	}
+
+	// Handle error details if payment failed
+	if payload.Type == "PAYMENT_FAILED_WEBHOOK" {
+		if errorMsg, ok := payload.Data.Payment.ErrorDetails["error_message"].(string); ok {
+			paymentTx.ErrorDescription = &errorMsg
+		}
+	}
+
+	// Set captured time for successful payments
+	if payload.Type == "PAYMENT_SUCCESS_WEBHOOK" && payload.Data.Payment.PaymentTime != "" {
+		if capturedAt, parseErr := time.Parse(time.RFC3339, payload.Data.Payment.PaymentTime); parseErr == nil {
+			paymentTx.CapturedAt = &capturedAt
+		}
+		paymentTx.Status = "PAID"
 	}
 
 	err = payment_transaction_models.UpdatePaymentTransaction(ctx, s.DB, paymentTx)
@@ -343,27 +348,9 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 		return fmt.Errorf("failed to update payment record: %w", err)
 	}
 
-	bookingID := paymentTx.BookingID // Use bookingID from the paymentTx
-	slotIDStr, ok := paymentEntity.Notes["slot_id"].(string)
-	var slotID uuid.UUID
-	if ok && slotIDStr != "" {
-		slotID, err = uuid.Parse(slotIDStr)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Invalid slot ID format from Razorpay notes '%s': %v", slotIDStr, err)
-		}
-	}
-	customerIDStr, ok := paymentEntity.Notes["customer_id"].(string)
-	var customerID uuid.UUID
-	if ok && customerIDStr != "" {
-		customerID, err = uuid.Parse(customerIDStr)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Invalid customer ID format from Razorpay notes '%s': %v", customerIDStr, err)
-		}
-	}
-
-	// --- Process Booking Status Update based on Payment Status ---
-	if payload.Event == "payment.captured" && paymentEntity.Captured {
-		logger.InfoLogger.Infof("Payment captured for booking %s (Razorpay Order: %s)", bookingID, paymentEntity.OrderID)
+	// Process Booking Status Update based on Payment Status
+	if payload.Type == "PAYMENT_SUCCESS_WEBHOOK" {
+		logger.InfoLogger.Infof("Payment successful for booking %s (Cashfree Order: %s)", bookingID, orderID)
 
 		// 1. Update Booking Status to Confirmed
 		err = booking_models.UpdateBookingStatus(ctx, s.DB, bookingID, shared_models.BookingStatusConfirmed)
@@ -372,27 +359,29 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 			return fmt.Errorf("failed to confirm booking: %w", err)
 		}
 
-		// 2. Mark the Schedule Slot as Unavailable
-		if slotID != uuid.Nil {
-			err = schedule_slot_models.UpdateScheduleSlotAvailability(ctx, s.DB, slotID, false)
+		// 2. Get booking details to mark slot as unavailable
+		booking, err := booking_models.GetBookingByID(ctx, s.DB, bookingID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to fetch booking %s: %v", bookingID, err)
+		} else {
+			// Mark the Schedule Slot as Unavailable
+			err = schedule_slot_models.UpdateScheduleSlotAvailability(ctx, s.DB, booking.SlotID, false)
 			if err != nil {
-				logger.ErrorLogger.Errorf("Failed to mark slot %s as unavailable after booking %s: %v", slotID, bookingID, err)
-				return fmt.Errorf("failed to mark slot unavailable, manual intervention may be required: %w", err)
+				logger.ErrorLogger.Errorf("Failed to mark slot %s as unavailable after booking %s: %v", booking.SlotID, bookingID, err)
+				return fmt.Errorf("failed to mark slot unavailable: %w", err)
 			}
+
+			// 3. Release Redis Reservation
+			s.ReleaseSlotReservation(ctx, booking.SlotID, booking.CustomerID)
 		}
 
-		// 3. Release Redis Reservation (if customerID was retrieved)
-		if slotID != uuid.Nil && customerID != uuid.Nil {
-			s.ReleaseSlotReservation(ctx, slotID, customerID)
+	} else if payload.Type == "PAYMENT_FAILED_WEBHOOK" {
+		errorDesc := payload.Data.Payment.PaymentMessage
+		if errorDesc == "" {
+			errorDesc = "unknown error"
 		}
-
-	} else if payload.Event == "payment.failed" {
-		errorDesc := "unknown error"
-		if paymentEntity.ErrorDescription != nil {
-			errorDesc = *paymentEntity.ErrorDescription
-		}
-		logger.WarnLogger.Warnf("Payment failed for booking %s (Razorpay Order: %s), error: %s",
-			bookingID, paymentEntity.OrderID, errorDesc)
+		logger.WarnLogger.Warnf("Payment failed for booking %s (Cashfree Order: %s), error: %s",
+			bookingID, orderID, errorDesc)
 
 		// Update Booking Status to Failed
 		err = booking_models.UpdateBookingStatus(ctx, s.DB, bookingID, shared_models.BookingStatusFailed)
@@ -401,12 +390,13 @@ func (s *SlotBookingService) HandleRazorpayWebhook(ctx context.Context, signatur
 			return fmt.Errorf("failed to mark booking as failed: %w", err)
 		}
 
-		// Release Redis Reservation (if it still exists and customerID was retrieved)
-		if slotID != uuid.Nil && customerID != uuid.Nil {
-			s.ReleaseSlotReservation(ctx, slotID, customerID)
+		// Release Redis Reservation
+		booking, err := booking_models.GetBookingByID(ctx, s.DB, bookingID)
+		if err == nil {
+			s.ReleaseSlotReservation(ctx, booking.SlotID, booking.CustomerID)
 		}
 	}
 
-	logger.InfoLogger.Infof("Successfully processed Razorpay webhook for event %s, booking %s", payload.Event, bookingID)
+	logger.InfoLogger.Infof("Successfully processed Cashfree webhook for event %s, booking %s", payload.Type, bookingID)
 	return nil
 }
