@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"log"
+
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/business_image_controller"
@@ -10,6 +12,7 @@ import (
 func RegisterBusinessImageRoutes(router *gin.Engine) {
 	businessImageController, err := business_image_controller.NewBusinessImageController(db.DB)
 	if err != nil {
+		log.Printf("RegisterBusinessImageRoutes: failed to init BusinessImageController: %v", err)
 		return
 	}
 

@@ -2,15 +2,15 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/working_hour_controller"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
-func RegisterWorkingHoursRoutes(router *gin.Engine, db *pgxpool.Pool) {
+func RegisterWorkingHoursRoutes(router *gin.Engine) {
 
-	workingHourController := working_hour_controller.NewWorkingHourController(db)
+	workingHourController := working_hour_controller.NewWorkingHourController(db.DB)
 
 	public := router.Group("/public-working-hour")
 	{

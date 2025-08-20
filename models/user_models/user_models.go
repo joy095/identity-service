@@ -33,12 +33,6 @@ const (
 	KeyLength   = 64        // Derived key size (bytes)
 )
 
-// ErrUserNotFound is returned when no user is found with the given email.
-var ErrUserNotFound = errors.New("user not found")
-
-// ErrVerificationExpired is returned when a user exists but their email verification period has expired.
-var ErrVerificationExpired = errors.New("email verification period expired")
-
 // User Model
 type User struct {
 	ID              uuid.UUID
@@ -53,6 +47,7 @@ type User struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	Status          string
+	Phone           json.Number
 }
 
 // generateSalt generates a secure random salt
@@ -181,27 +176,7 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		return nil, fmt.Errorf("failed to generate UUIDv7: %v", err)
 	}
 
-	// // Step 1: Delete unverified user with same email older than 15 minutes
-	// deleteQuery := `
-	// 	DELETE FROM users
-	// 	WHERE email = $1
-	// 	  AND is_verified_email = FALSE
-	// 	  AND created_at < NOW() - INTERVAL '15 minutes'
-	// `
-	// _, err = db.Exec(context.Background(), deleteQuery, email)
-	// if err != nil {
-	// 	logger.ErrorLogger.Error("Failed to delete stale unverified user:", err)
-	// 	return nil, fmt.Errorf("failed to clean up stale unverified user: %v", err)
-	// }
-
-	// // Step 2: Insert the new user
-	// insertQuery := `
-	// 	INSERT INTO users (id, email, password_hash, first_name, last_name)
-	// 	VALUES ($1, $2, $3, $4, $5)
-	// 	RETURNING id
-	// `
-
-	// Use a single atomic operation
+	// Use a single atomic operation with better conflict handling
 	insertQuery := `
 		WITH deleted AS (
 			DELETE FROM users
@@ -211,14 +186,19 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		)
 		INSERT INTO users (id, email, password_hash, first_name, last_name)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (email) DO NOTHING
 		RETURNING id
 	`
-	_, err = db.Exec(context.Background(), insertQuery, userID, email, passwordHash, firstName, lastName)
+	var returnedID uuid.UUID
+	err = db.QueryRow(context.Background(), insertQuery, userID, email, passwordHash, firstName, lastName).Scan(&returnedID)
 	if err != nil {
-		// Unique constraint check (in case a verified user still exists)
+		// Check if it's a unique constraint violation
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
-			return nil, errors.New("email is already registered")
+			// Check if the existing user is verified
+			existingUser, checkErr := GetUserByEmail(context.Background(), db, email)
+			if checkErr == nil && existingUser.IsVerifiedEmail {
+				return nil, errors.New("email is already registered with a verified account")
+			}
+			return nil, errors.New("email is already in use, please try again later")
 		}
 		return nil, err
 	}
@@ -287,6 +267,7 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 
 	pipe := rdb.Pipeline()
 	pipe.LPush(ctx, key, entryBytes)                                      // Add new token
+	pipe.LTrim(ctx, key, 0, 9)                                            // Keep only the last 10 tokens
 	pipe.Expire(ctx, key, time.Hour*shared_utils.REFRESH_TOKEN_EXP_HOURS) // Reset expiration
 	_, err = pipe.Exec(ctx)
 	if err != nil {
@@ -419,39 +400,36 @@ func IncrementUserTokenVersion(ctx context.Context, db *pgxpool.Pool, userID uui
 	return err
 }
 
-// UpdateUserFields updates specific fields of a user's profile.
 // Define allowed fields for updates to prevent SQL injection
 func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {
 	if len(updates) == 0 {
 		return nil // No updates to perform
 	}
 
-	var allowedUpdateFields = map[string]bool{
-		"first_name": true,
-		"last_name":  true,
-		"email":      true, // Email can be updated, but you might want additional verification for email changes
+	// Use a single parameterized query with COALESCE for optional updates
+	query := `
+		UPDATE users 
+		SET 
+			first_name = COALESCE($2, first_name),
+			last_name = COALESCE($3, last_name),
+			email = COALESCE($4, email),
+			updated_at = NOW()
+		WHERE id = $1
+	`
+
+	// Prepare arguments, using nil for fields not being updated
+	var firstName, lastName, email interface{}
+	if val, ok := updates["first_name"]; ok {
+		firstName = val
+	}
+	if val, ok := updates["last_name"]; ok {
+		lastName = val
+	}
+	if val, ok := updates["email"]; ok {
+		email = val
 	}
 
-	// Validate field names to prevent SQL injection
-	for field := range updates {
-		if !allowedUpdateFields[field] {
-			return fmt.Errorf("field '%s' is not allowed for updates", field)
-		}
-	}
-
-	setClauses := []string{}
-	args := []interface{}{}
-	argCounter := 1
-
-	for field, value := range updates {
-		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", field, argCounter))
-		args = append(args, value)
-		argCounter++
-	}
-
-	setClauses = append(setClauses, "updated_at = NOW()")
-	query := fmt.Sprintf("UPDATE users SET %s WHERE id = $%d", strings.Join(setClauses, ", "), argCounter)
-	args = append(args, userID)
+	args := []interface{}{userID, firstName, lastName, email}
 
 	_, err := db.Exec(context.Background(), query, args...)
 	if err != nil {
@@ -476,7 +454,36 @@ func IsEmailVerified(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) (b
 }
 
 func DeleteUser(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) error {
+	// Begin transaction
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx) // Will be no-op if commit succeeds
+
+	// Delete from Redis first
+	key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
+	if err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err(); err != nil {
+		logger.ErrorLogger.Errorf("Failed to delete refresh tokens from Redis: %v", err)
+		// Continue with user deletion even if Redis fails
+	}
+
+	// Delete user from database
 	query := `DELETE FROM users WHERE id = $1`
-	_, err := db.Exec(ctx, query, userID)
-	return err
+	result, err := tx.Exec(ctx, query, userID)
+	if err != nil {
+		return fmt.Errorf("failed to delete user: %w", err)
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("user not found")
+	}
+
+	// Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }

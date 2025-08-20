@@ -104,7 +104,9 @@ func CreateWorkingHour(ctx context.Context, db *pgxpool.Pool, wh *WorkingHour) (
 	}
 	defer func() {
 		if err != nil {
-			tx.Rollback(ctx) // Rollback on any error from this function
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				logger.ErrorLogger.Errorf("Failed to rollback transaction: %v", rbErr)
+			}
 		}
 	}()
 
