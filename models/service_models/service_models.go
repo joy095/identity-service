@@ -257,7 +257,9 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 		}
 
 		service.ImageID = imageID
-		service.ObjectName = &objectName.String // just return raw objectName
+		if objectName.Valid {
+			service.ObjectName = &objectName.String
+		}
 
 		services = append(services, service)
 	}

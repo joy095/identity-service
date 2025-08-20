@@ -784,8 +784,16 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	}
 
 	// Set cookies
-	_ = shared_models.SetJWTCookie(c, "access_token", newAccessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/")
-	_ = shared_models.SetJWTCookie(c, "refresh_token", newRefreshToken, shared_models.REFRESH_TOKEN_EXPIRY, "/")
+	if err := shared_models.SetJWTCookie(c, "access_token", newAccessToken, shared_models.ACCESS_TOKEN_EXPIRY, "/"); err != nil {
+		logger.ErrorLogger.Errorf("Failed to set access token cookie: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set access token cookie"})
+		return
+	}
+	if err := shared_models.SetJWTCookie(c, "refresh_token", newRefreshToken, shared_models.REFRESH_TOKEN_EXPIRY, "/"); err != nil {
+		logger.ErrorLogger.Errorf("Failed to set refresh token cookie: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set refresh token cookie"})
+		return
+	}
 
 	logger.InfoLogger.Infof("Tokens refreshed for user %s", userID)
 	c.JSON(http.StatusOK, gin.H{"message": "Tokens refreshed successfully"})

@@ -101,6 +101,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		if !isVerified {
 			logger.ErrorLogger.Errorf("Email not verified for user %s", user.ID)
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Email not verified"})
+			return
 		}
 
 		// Success

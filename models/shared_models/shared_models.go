@@ -61,7 +61,6 @@ func GenerateRefreshTokenWithJTI(userID uuid.UUID, tokenVersion int, duration ti
 		"exp":           now.Add(duration).Unix(),
 		"nbf":           now.Unix(),
 		"jti":           jti,
-		"iss":           "identity-service",
 		"type":          "refresh",
 		"token_version": tokenVersion,
 	}
@@ -177,7 +176,6 @@ func GenerateAccessToken(userID uuid.UUID, tokenVersion int, duration time.Durat
 		"exp":           now.Add(duration).Unix(),
 		"nbf":           now.Unix(),
 		"jti":           jti,
-		"iss":           "identity-service",
 		"type":          "access",
 		"token_version": tokenVersion,
 	}
@@ -238,7 +236,7 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 	}
 
 	if !token.Valid {
-		logger.ErrorLogger.Errorf("Invalid token: %s", tokenString)
+		logger.ErrorLogger.Error("Invalid token")
 		return nil, fmt.Errorf("invalid token")
 	}
 

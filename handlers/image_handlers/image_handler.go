@@ -85,7 +85,7 @@ func processMultiImageResponse(c *gin.Context, resp *http.Response) ([]uuid.UUID
 					detailMsg = *result.Detail // Now this dereference is valid
 				}
 			}
-			logger.ErrorLogger.Warnf("Image upload failed for file '%s'. Success: %t, ImageID valid: %t. Detail: %s",
+			logger.WarnLogger.Warnf("Image upload failed for file '%s'. Success: %t, ImageID valid: %t. Detail: %s",
 				result.Filename, result.Success, (result.ImageID != uuid.Nil), detailMsg)
 		}
 	}
@@ -128,7 +128,7 @@ func HandleMultipleImageUpload(c *gin.Context, accessToken string) ([]uuid.UUID,
 
 	// Note: The endpoint should be designed to handle multiple uploads, e.g., "/images/upload-multiple/"
 	pythonServerURL := getServiceURL() + "/images/upload-multiple/"
-	httpReq, err := http.NewRequest("POST", pythonServerURL, body)
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "POST", pythonServerURL, body)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create HTTP request: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create upload request"})
@@ -168,7 +168,7 @@ func HandleImageReplacement(c *gin.Context, accessToken string, existingImageID 
 	}
 
 	pythonServerURL := getServiceURL() + "/replace-image/" + existingImageID.String()
-	httpReq, err := http.NewRequest("PUT", pythonServerURL, body)
+	httpReq, err := http.NewRequestWithContext(c.Request.Context(), "PUT", pythonServerURL, body)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create HTTP request for image replacement: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create replacement request"})

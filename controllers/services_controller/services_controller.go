@@ -157,7 +157,7 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 		return
 	}
 
-	service, err := service_models.GetServiceByIDModel(c.Request.Context(), db.DB, serviceID)
+	service, err := service_models.GetServiceByIDModel(c.Request.Context(), sc.db, serviceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())

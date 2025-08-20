@@ -3,7 +3,6 @@ package schedule_slot_controller
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,8 +10,23 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/schedule_slot_models"
-	"github.com/joy095/identity/utils"
 )
+
+// Status constants
+const (
+	StatusPending   = "pending"
+	StatusConfirmed = "confirmed"
+	StatusCancelled = "cancelled"
+	StatusRefunded  = "refunded"
+)
+
+// ValidStatuses for validation
+var ValidStatuses = map[string]bool{
+	StatusPending:   true,
+	StatusConfirmed: true,
+	StatusCancelled: true,
+	StatusRefunded:  true,
+}
 
 // ScheduleSlotController handles HTTP requests for schedule slots management
 type ScheduleSlotController struct{}
@@ -22,25 +36,30 @@ func NewScheduleSlotController() *ScheduleSlotController {
 	return &ScheduleSlotController{}
 }
 
+type UnavailableTime struct {
+	OpenTime  time.Time `json:"open_time"`
+	CloseTime time.Time `json:"close_time"`
+}
+
 // CreateScheduleSlotRequest represents the request payload for creating a new schedule slot
 type CreateScheduleSlotRequest struct {
-	BusinessID  uuid.UUID `json:"business_id" binding:"required"`
-	OpenTime    time.Time `json:"open_time" binding:"required"`
-	CloseTime   time.Time `json:"close_time" binding:"required"`
-	IsAvailable bool      `json:"is_available"`
+	BusinessID uuid.UUID `json:"business_id" binding:"required"`
+	OpenTime   time.Time `json:"open_time" binding:"required"`
+	CloseTime  time.Time `json:"close_time" binding:"required"`
+	Status     string    `json:"status,omitempty"` // optional; defaults to "pending"
 }
 
 // UpdateScheduleSlotRequest represents the request payload for updating a schedule slot
 type UpdateScheduleSlotRequest struct {
-	OpenTime    *time.Time `json:"open_time,omitempty"`
-	CloseTime   *time.Time `json:"close_time,omitempty"`
-	IsAvailable *bool      `json:"is_available,omitempty"`
+	OpenTime  *time.Time `json:"open_time,omitempty"`
+	CloseTime *time.Time `json:"close_time,omitempty"`
+	Status    *string    `json:"status,omitempty"`
 }
 
 // ScheduleSlotResponse represents the standardized schedule slot response
 type ScheduleSlotResponse struct {
 	Slot    *schedule_slot_models.ScheduleSlot `json:"slot"`
-	Message string                            `json:"message,omitempty"`
+	Message string                             `json:"message,omitempty"`
 }
 
 // ScheduleSlotListResponse represents paginated schedule slot list response
@@ -61,27 +80,55 @@ func (sc *ScheduleSlotController) CreateScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	// Validate that open time is before close time
+	// Validate open time < close time
 	if req.OpenTime.After(req.CloseTime) || req.OpenTime.Equal(req.CloseTime) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Open time must be before close time"})
 		return
 	}
 
-	// Get authenticated user ID (for business owner validation if needed)
-	userID, err := utils.GetUserIDFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+	// Validate slot date/time is not in the past
+	now := time.Now().UTC()
+	if req.OpenTime.Before(now) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Slot date/time cannot be in the past"})
 		return
 	}
 
-	// TODO: Add business owner validation - check if userID owns businessID
-	logger.InfoLogger.Infof("User %s creating schedule slot for business %s", userID, req.BusinessID)
+	// Default status to "pending" if not provided
+	if req.Status == "" {
+		req.Status = StatusPending
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Validate status
+	if !ValidStatuses[req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid status",
+			"allowed": []string{StatusPending, StatusConfirmed, StatusCancelled, StatusRefunded},
+		})
+		return
+	}
+
+	// Get authenticated user ID
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	logger.InfoLogger.Infof("User %s creating schedule slot for business %s with status: %s", userID, req.BusinessID, req.Status)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	// Create new schedule slot
-	newSlot, err := schedule_slot_models.NewScheduleSlot(req.BusinessID, req.OpenTime, req.CloseTime, req.IsAvailable)
+	// Create new slot
+	newSlot, err := schedule_slot_models.NewScheduleSlot(req.BusinessID, userID, req.OpenTime, req.CloseTime, req.Status)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create new schedule slot object: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal error creating slot"})
@@ -111,6 +158,21 @@ func (sc *ScheduleSlotController) GetScheduleSlot(c *gin.Context) {
 		return
 	}
 
+	// Get authenticated user ID
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -121,53 +183,14 @@ func (sc *ScheduleSlotController) GetScheduleSlot(c *gin.Context) {
 		return
 	}
 
+	// Only send response if the authenticated user owns the slot
+	if slot.UserID != userID {
+		logger.ErrorLogger.Warnf("User %s tried to access slot %s owned by %s", userID, slotID, slot.UserID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not allowed to access this schedule slot"})
+		return
+	}
+
 	c.JSON(http.StatusOK, ScheduleSlotResponse{Slot: slot})
-}
-
-// GetScheduleSlotsByBusiness retrieves all schedule slots for a specific business
-func (sc *ScheduleSlotController) GetScheduleSlotsByBusiness(c *gin.Context) {
-	businessIDStr := c.Param("business_id")
-	businessID, err := uuid.Parse(businessIDStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
-		return
-	}
-
-	// Parse query parameters
-	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil || page < 1 {
-		page = 1
-	}
-	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
-	if err != nil || limit < 1 || limit > 100 {
-		limit = 10
-	}
-	
-	// Optional availability filter
-	var availableFilter *bool
-	if availableStr := c.Query("available"); availableStr != "" {
-		if available, parseErr := strconv.ParseBool(availableStr); parseErr == nil {
-			availableFilter = &available
-		}
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	slots, totalCount, err := schedule_slot_models.GetScheduleSlotsByBusiness(ctx, db.DB, businessID, availableFilter, page, limit)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch schedule slots for business %s: %v", businessID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch schedule slots"})
-		return
-	}
-
-	c.JSON(http.StatusOK, ScheduleSlotListResponse{
-		Slots:      slots,
-		TotalCount: totalCount,
-		Page:       page,
-		Limit:      limit,
-		HasMore:    page*limit < totalCount,
-	})
 }
 
 // UpdateScheduleSlot updates an existing schedule slot
@@ -186,7 +209,7 @@ func (sc *ScheduleSlotController) UpdateScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	// Validate times if both are provided
+	// Validate time order if both are provided
 	if req.OpenTime != nil && req.CloseTime != nil {
 		if req.OpenTime.After(*req.CloseTime) || req.OpenTime.Equal(*req.CloseTime) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Open time must be before close time"})
@@ -194,27 +217,48 @@ func (sc *ScheduleSlotController) UpdateScheduleSlot(c *gin.Context) {
 		}
 	}
 
-	// Get authenticated user ID (for business owner validation if needed)
-	userID, err := utils.GetUserIDFromContext(c)
+	// Validate status if provided
+	if req.Status != nil && !ValidStatuses[*req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid status",
+			"allowed": []string{StatusPending, StatusConfirmed, StatusCancelled, StatusRefunded},
+		})
+		return
+	}
+
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// First, fetch the existing slot to validate ownership
 	existingSlot, err := schedule_slot_models.GetScheduleSlotByID(ctx, db.DB, slotID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Schedule slot not found"})
 		return
 	}
 
-	// TODO: Add business owner validation - check if userID owns existingSlot.BusinessID
+	// Ownership check
+	if existingSlot.UserID != userID {
+		logger.WarnLogger.Warnf("User %s attempted to update slot %s owned by %s", userID, slotID, existingSlot.UserID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to modify this slot"})
+		return
+	}
+
 	logger.InfoLogger.Infof("User %s updating schedule slot %s for business %s", userID, slotID, existingSlot.BusinessID)
 
-	updatedSlot, err := schedule_slot_models.UpdateScheduleSlot(ctx, db.DB, slotID, req.OpenTime, req.CloseTime, req.IsAvailable)
+	updatedSlot, err := schedule_slot_models.UpdateScheduleSlot(ctx, db.DB, slotID, req.OpenTime, req.CloseTime, req.Status)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update schedule slot %s: %v", slotID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update schedule slot"})
@@ -237,24 +281,29 @@ func (sc *ScheduleSlotController) DeleteScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	// Get authenticated user ID (for business owner validation if needed)
-	userID, err := utils.GetUserIDFromContext(c)
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// First, fetch the existing slot to validate ownership
 	existingSlot, err := schedule_slot_models.GetScheduleSlotByID(ctx, db.DB, slotID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Schedule slot not found"})
 		return
 	}
 
-	// TODO: Add business owner validation - check if userID owns existingSlot.BusinessID
 	logger.InfoLogger.Infof("User %s deleting schedule slot %s for business %s", userID, slotID, existingSlot.BusinessID)
 
 	err = schedule_slot_models.DeleteScheduleSlot(ctx, db.DB, slotID)
@@ -268,8 +317,8 @@ func (sc *ScheduleSlotController) DeleteScheduleSlot(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Schedule slot deleted successfully"})
 }
 
-// ToggleSlotAvailability toggles the availability status of a schedule slot
-func (sc *ScheduleSlotController) ToggleSlotAvailability(c *gin.Context) {
+// SetSlotStatus updates the status of a schedule slot
+func (sc *ScheduleSlotController) SetSlotStatus(c *gin.Context) {
 	slotIDStr := c.Param("slot_id")
 	slotID, err := uuid.Parse(slotIDStr)
 	if err != nil {
@@ -277,46 +326,65 @@ func (sc *ScheduleSlotController) ToggleSlotAvailability(c *gin.Context) {
 		return
 	}
 
-	// Get authenticated user ID (for business owner validation if needed)
-	userID, err := utils.GetUserIDFromContext(c)
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format", "details": err.Error()})
+		return
+	}
+
+	if !ValidStatuses[req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid status",
+			"allowed": []string{StatusPending, StatusConfirmed, StatusCancelled, StatusRefunded},
+		})
+		return
+	}
+
+	userIDFromToken, exists := c.Get("sub")
+	if !exists {
+		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDFromToken.(string))
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// First, fetch the existing slot to validate ownership and get current status
 	existingSlot, err := schedule_slot_models.GetScheduleSlotByID(ctx, db.DB, slotID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Schedule slot not found"})
 		return
 	}
 
-	// TODO: Add business owner validation - check if userID owns existingSlot.BusinessID
-	logger.InfoLogger.Infof("User %s toggling availability for schedule slot %s", userID, slotID)
+	logger.InfoLogger.Infof("User %s setting status of slot %s to %s", userID, slotID, req.Status)
 
-	// Toggle the availability
-	newAvailability := !existingSlot.IsAvailable
-	err = schedule_slot_models.UpdateScheduleSlotAvailability(ctx, db.DB, slotID, newAvailability)
+	err = schedule_slot_models.UpdateScheduleSlotStatus(ctx, db.DB, slotID, req.Status)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to toggle availability for schedule slot %s: %v", slotID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to toggle slot availability"})
+		logger.ErrorLogger.Errorf("Failed to update status for schedule slot %s: %v", slotID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update slot status"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Schedule slot %s availability toggled to %t", slotID, newAvailability)
+	logger.InfoLogger.Infof("Schedule slot %s status updated to %s", slotID, req.Status)
 	c.JSON(http.StatusOK, gin.H{
-		"message":     "Slot availability toggled successfully",
-		"slot_id":     slotID,
-		"available":   newAvailability,
-		"was_available": existingSlot.IsAvailable,
+		"message":         "Slot status updated successfully",
+		"slot_id":         slotID,
+		"new_status":      req.Status,
+		"previous_status": existingSlot.Status,
 	})
 }
 
-// GetAvailableSlots retrieves all available schedule slots for a business
-func (sc *ScheduleSlotController) GetAvailableSlots(c *gin.Context) {
+// GetUnavailableTimes retrieves all confirmed (booked) schedule slots for a business on a specific date
+func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 	businessIDStr := c.Param("business_id")
 	businessID, err := uuid.Parse(businessIDStr)
 	if err != nil {
@@ -324,104 +392,72 @@ func (sc *ScheduleSlotController) GetAvailableSlots(c *gin.Context) {
 		return
 	}
 
-	// Parse query parameters
-	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
-	if err != nil || page < 1 {
-		page = 1
+	dateStr := c.Query("date")
+	if dateStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query parameter 'date' is required in YYYY-MM-DD format"})
+		return
 	}
-	limit, err := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	if err != nil || limit < 1 || limit > 100 {
-		limit = 20
+
+	// Parse date in YYYY-MM-DD format (UTC)
+	bookingDate, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format, use YYYY-MM-DD"})
+		return
 	}
+
+	// UTC day boundaries
+	startOfDay := time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	logger.InfoLogger.Infof("Fetching unavailable times for business=%s, date=%s, UTC range=%s - %s",
+		businessID, dateStr, startOfDay.Format(time.RFC3339), endOfDay.Format(time.RFC3339))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Only get available slots
-	availableFilter := true
-	slots, totalCount, err := schedule_slot_models.GetScheduleSlotsByBusiness(ctx, db.DB, businessID, &availableFilter, page, limit)
+	// Overlap-safe query: returns slots that start or end within the day
+	rows, err := db.DB.Query(ctx, `
+        SELECT open_time, close_time, status, business_id
+        FROM schedule_slots
+        WHERE business_id = $1
+          AND status = 'confirmed'
+          AND (open_time < $3 AND close_time > $2)
+        ORDER BY open_time ASC
+    `, businessID, startOfDay, endOfDay)
+
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch available schedule slots for business %s: %v", businessID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch available slots"})
+		logger.ErrorLogger.Errorf("Query error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch unavailable times"})
 		return
 	}
+	defer rows.Close()
 
-	c.JSON(http.StatusOK, gin.H{
-		"available_slots": slots,
-		"total_count":     totalCount,
-		"page":           page,
-		"limit":          limit,
-		"has_more":       page*limit < totalCount,
-	})
-}
+	times := make([]UnavailableTime, 0)
+	for rows.Next() {
+		var t UnavailableTime
+		var status string
+		var dbBusinessID uuid.UUID
 
-// BulkUpdateSlotAvailability updates availability for multiple slots
-func (sc *ScheduleSlotController) BulkUpdateSlotAvailability(c *gin.Context) {
-	var req struct {
-		SlotIDs     []uuid.UUID `json:"slot_ids" binding:"required,min=1"`
-		IsAvailable bool        `json:"is_available"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.WarnLogger.Warnf("Invalid bulk update request: %v", err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format", "details": err.Error()})
-		return
-	}
-
-	// Limit bulk operations to prevent abuse
-	if len(req.SlotIDs) > 50 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot update more than 50 slots at once"})
-		return
-	}
-
-	// Get authenticated user ID (for business owner validation if needed)
-	userID, err := utils.GetUserIDFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	var successCount, failureCount int
-	var failedSlots []uuid.UUID
-
-	for _, slotID := range req.SlotIDs {
-		// Validate ownership for each slot (simplified - in production you might batch this)
-		_, err := schedule_slot_models.GetScheduleSlotByID(ctx, db.DB, slotID)
-		if err != nil {
-			logger.WarnLogger.Warnf("Slot %s not found during bulk update by user %s", slotID, userID)
-			failedSlots = append(failedSlots, slotID)
-			failureCount++
+		if err := rows.Scan(&t.OpenTime, &t.CloseTime, &status, &dbBusinessID); err != nil {
+			logger.ErrorLogger.Errorf("Scan error: %v", err)
 			continue
 		}
 
-		// TODO: Add business owner validation - check if userID owns existingSlot.BusinessID
+		logger.InfoLogger.Infof("Row found: business_id=%s, status=%s, open=%s, close=%s",
+			dbBusinessID, status, t.OpenTime.Format(time.RFC3339), t.CloseTime.Format(time.RFC3339))
 
-		err = schedule_slot_models.UpdateScheduleSlotAvailability(ctx, db.DB, slotID, req.IsAvailable)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to update slot %s availability during bulk update: %v", slotID, err)
-			failedSlots = append(failedSlots, slotID)
-			failureCount++
-		} else {
-			successCount++
-		}
+		times = append(times, t)
 	}
 
-	logger.InfoLogger.Infof("Bulk availability update completed by user %s: %d success, %d failures", userID, successCount, failureCount)
-
-	response := gin.H{
-		"message":       "Bulk update completed",
-		"success_count": successCount,
-		"failure_count": failureCount,
-		"total_count":   len(req.SlotIDs),
-		"is_available":  req.IsAvailable,
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Row iteration error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading unavailable times"})
+		return
 	}
 
-	if len(failedSlots) > 0 {
-		response["failed_slot_ids"] = failedSlots
+	if len(times) == 0 {
+		logger.InfoLogger.Infof("No unavailable slots found for business=%s on date=%s", businessID, dateStr)
 	}
 
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, gin.H{"times": times})
 }

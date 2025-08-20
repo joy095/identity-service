@@ -181,7 +181,11 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to replace image"})
 		return
 	}
-	defer tx.Rollback(c.Request.Context()) // Ensure rollback on error
+	defer func() {
+		if err != nil {
+			tx.Rollback(c.Request.Context())
+		}
+	}()
 
 	// 1. Delete the old association from business_images
 	_, err = tx.Exec(c.Request.Context(), `
