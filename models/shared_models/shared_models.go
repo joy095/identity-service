@@ -197,6 +197,11 @@ func GenerateAccessToken(userID uuid.UUID, tokenVersion int, duration time.Durat
 // You might need to pass a 'userRepository' or similar dependency.
 // For simplicity in this example, I'll simulate fetching it.
 func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUID) (int, error)) (*Claims, error) {
+	if userTokenVersionFetcher == nil {
+		logger.ErrorLogger.Error("nil userTokenVersionFetcher provided to ParseToken")
+		return nil, fmt.Errorf("token validation failed: misconfiguration")
+	}
+
 	parser := jwt.NewParser(jwt.WithJSONNumber())
 	var claimsMap jwt.MapClaims
 	_, _, err := parser.ParseUnverified(tokenString, &claimsMap)
@@ -223,8 +228,12 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 	}
 
 	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+	validatedParser := jwt.NewParser(
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithLeeway(30*time.Second),
+	)
+	token, err := validatedParser.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return secretKey, nil

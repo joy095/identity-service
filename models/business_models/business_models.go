@@ -322,8 +322,8 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, search string) 
             owner_id,
             public_id,
             CASE 
-                WHEN name ILIKE $1 THEN 1
-                WHEN public_id ILIKE $1 THEN 2
+                WHEN name ILIKE '%' || $1 || '%' THEN 1
+                WHEN public_id ILIKE '%' || $1 || '%' THEN 2
                 ELSE 3 
             END AS rank_score
         FROM businesses
@@ -755,7 +755,7 @@ func GetAllBusinesses(ctx context.Context, db *pgxpool.Pool, limit, offset int) 
 		images, err := business_image_models.GetImagesByBusinessID(ctx, db, business.ID)
 		if err != nil {
 			// Log the error but don't fail fetching the business list
-			logger.ErrorLogger.Warnf("Failed to get images for business %s: %v", business.ID, err)
+			logger.WarnLogger.Warnf("Failed to get images for business %s: %v", business.ID, err)
 			// business.Images will remain nil or empty
 		} else {
 			// Assign the retrieved images directly

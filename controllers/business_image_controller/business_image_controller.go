@@ -182,7 +182,10 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 		return
 	}
 	defer func() {
-		if err != nil {
+		if p := recover(); p != nil {
+			tx.Rollback(c.Request.Context())
+			panic(p) // re-panic after rollback
+		} else if err != nil {
 			tx.Rollback(c.Request.Context())
 		}
 	}()
@@ -204,9 +207,16 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 	// Assuming the new image should inherit is_primary and position from the old image
 	newPosition := oldImage.Position
 	if newPosition == nil {
-		// Assign a default if old position was null, or handle as per your logic
-		tempPos := 1 // Default to 1 if not specified
-		newPosition = &tempPos
+		// Get the next available position for this business
+		var maxPos int
+		err = tx.QueryRow(c.Request.Context(),
+			"SELECT COALESCE(MAX(position), 0) + 1 FROM business_images WHERE business_id = $1",
+			business.ID).Scan(&maxPos)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to get max position: %v", err)
+			maxPos = 1 // Fallback to 1 if query fails
+		}
+		newPosition = &maxPos
 	}
 	// Ensure the query matches the number of values
 	_, err = tx.Exec(c.Request.Context(), `
@@ -295,8 +305,8 @@ func (bc *BusinessImageController) DeleteBusinessImage(c *gin.Context) {
 	accessToken, err := c.Cookie("access_token")
 	if err != nil || accessToken == "" {
 		logger.ErrorLogger.Errorf("Authentication token missing in cookie for image service deletion (imageID: %s)", imageID)
-		// Proceeding without accessToken for image service deletion, relying on DB cleanup.
-		// Consider if this should be an outright error.
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication token required for image deletion"})
+		return
 	}
 
 	// Call the model function which handles both relationship deletion and conditional image service deletion
@@ -394,7 +404,7 @@ func (bc *BusinessImageController) ReorderBusinessImages(c *gin.Context) {
 	var req ReorderRequest
 	if err := c.ShouldBindJSON(&req); err != nil { // Use ShouldBindJSON for JSON
 		logger.ErrorLogger.Errorf("Failed to parse reorder request body for business %s: %v", business.ID, err)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body", "details": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
 	}
 
@@ -409,6 +419,7 @@ func (bc *BusinessImageController) ReorderBusinessImages(c *gin.Context) {
 
 	// --- 3. Convert String IDs to UUIDs ---
 	imageIDsInOrder := make([]uuid.UUID, 0, len(req.Order))
+	seen := make(map[uuid.UUID]bool)
 	for _, idStr := range req.Order {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
@@ -416,6 +427,11 @@ func (bc *BusinessImageController) ReorderBusinessImages(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid image ID format: %s", idStr)})
 			return
 		}
+		if seen[id] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Duplicate image ID in order: %s", idStr)})
+			return
+		}
+		seen[id] = true
 		imageIDsInOrder = append(imageIDsInOrder, id)
 	}
 
@@ -427,7 +443,7 @@ func (bc *BusinessImageController) ReorderBusinessImages(c *gin.Context) {
 		logger.ErrorLogger.Errorf("Failed to reorder images for business %s: %v", business.ID, err)
 		// Determine error type if needed for specific status codes (e.g., 404 if image not found)
 		// For simplicity, returning 500 for any model error
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reorder images", "details": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reorder images"})
 		return
 	}
 

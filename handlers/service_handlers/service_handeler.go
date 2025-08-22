@@ -136,6 +136,7 @@ func handleFileError(c *gin.Context, err error) {
 	}
 	logger.ErrorLogger.Errorf("Could not get form file 'image': %v", err)
 	c.JSON(http.StatusBadRequest, gin.H{"error": "Could not process image file"})
+	return
 }
 
 func HandleServiceCreationError(c *gin.Context, err error) {
@@ -167,7 +168,7 @@ func prepareMultipartRequest(file multipart.File, fileHeader *multipart.FileHead
 	}
 	if _, err := io.Copy(part, file); err != nil {
 		logger.ErrorLogger.Errorf("Failed to copy file content: %v", err)
-		return nil, "", fmt.Errorf("failed to copy file content: %w", err)
+		return nil, "", fmt.Errorf("failed to close multipart writer: %w", err)
 	}
 	if err := writer.Close(); err != nil {
 		logger.ErrorLogger.Errorf("Failed to close multipart writer: %v", err)
@@ -197,7 +198,7 @@ func sendImageToService(body *bytes.Buffer, contentType string, authHeader strin
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to send request to image service")
+		return uuid.Nil, fmt.Errorf("failed to send request to image service: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -225,7 +226,7 @@ func updateImageToService(body *bytes.Buffer, contentType, authHeader string, im
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to send request to image service")
+		return uuid.Nil, fmt.Errorf("failed to send request to image service: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -244,7 +245,7 @@ func processImageResponse(resp *http.Response) (uuid.UUID, error) {
 
 	var imgResp ImageUploadResponse
 	if err := json.Unmarshal(responseBody, &imgResp); err != nil {
-		return uuid.Nil, fmt.Errorf("failed to parse response from image service")
+		return uuid.Nil, fmt.Errorf("failed to parse response from image service: %w", err)
 	}
 
 	if imgResp.ImageID == uuid.Nil {
@@ -286,6 +287,10 @@ func UpdateService(c *gin.Context) {
 	}
 
 	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Service name cannot be empty"})
+			return
+		}
 		existingService.Name = *req.Name
 	}
 	if req.Description != nil {

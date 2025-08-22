@@ -381,12 +381,6 @@ func (bc *BusinessController) DeleteBusiness(c *gin.Context) {
 		return
 	}
 
-	accessToken, err := c.Cookie("access_token")
-	if err != nil || accessToken == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication token missing in cookie"})
-		return
-	}
-
 	// Delete associated data first (images, services, etc.)
 	err = business_models.DeleteImageAndReferences(c.Request.Context(), bc.DB, existingBusiness.ID)
 	if err != nil {

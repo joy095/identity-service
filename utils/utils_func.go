@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joy095/identity/logger"
@@ -31,7 +32,7 @@ func GetJWTSecret() []byte {
 	// For now, let's keep it simple and re-read/decode each time, which is fine for most apps.
 	secret, err := getSecretFromEnv("JWT_SECRET") // Use the function to get and decode
 	if err != nil {
-		errMsg := fmt.Sprintf("SECURITY RISK: %s - using insecure default", err.Error())
+		errMsg := "SECURITY RISK: JWT refresh secret configuration error - using insecure default"
 		logger.ErrorLogger.Error(errMsg)
 		if os.Getenv("GO_ENV") == "production" {
 			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET")
@@ -46,7 +47,7 @@ func GetJWTSecret() []byte {
 func GetJWTRefreshSecret() []byte {
 	secret, err := getSecretFromEnv("JWT_SECRET_REFRESH") // Use the function to get and decode
 	if err != nil {
-		errMsg := fmt.Sprintf("SECURITY RISK: %s - using insecure default", err.Error())
+		errMsg := "SECURITY RISK: JWT refresh secret configuration error - using insecure default"
 		logger.ErrorLogger.Error(errMsg)
 		if os.Getenv("GO_ENV") == "production" {
 			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET_REFRESH")
@@ -101,4 +102,33 @@ func HashOTP(otp string) string {
 	hashed := argon2.IDKey([]byte(otp), salt, timeIterations, memoryKB, parallelism, keyLen)
 
 	return fmt.Sprintf("%x", hashed)
+}
+
+// ParseTimeToUTC parses a time string (e.g., "03:30:00") and assigns it a date (today UTC) and UTC timezone.
+// The `day` parameter is likely intended for context (e.g., timezone lookup based on the day/business) but is not parsed as time.
+func ParseTimeToUTC(t string, day string) (time.Time, error) {
+	// Trim whitespace from the time string
+	t = strings.TrimSpace(t)
+
+	// Define the expected layout for the time string
+	layout := "15:04:05" // This matches HH:MM:SS
+
+	// Parse the time string using the specified layout
+	parsedTime, err := time.Parse(layout, t)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("cannot parse time '%s': %w", t, err)
+	}
+
+	// Get the current UTC date
+	now := time.Now().UTC()
+
+	// Combine the parsed time (hours, minutes, seconds) with today's UTC date
+	resultTime := time.Date(
+		now.Year(), now.Month(), now.Day(), // Date part from today UTC
+		parsedTime.Hour(), parsedTime.Minute(), parsedTime.Second(), // Time part from parsed string
+		0,        // Nanoseconds
+		time.UTC, // Timezone
+	)
+
+	return resultTime, nil
 }

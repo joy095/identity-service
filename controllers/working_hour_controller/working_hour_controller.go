@@ -39,16 +39,16 @@ const (
 type CreateWorkingHourRequest struct {
 	BusinessID uuid.UUID `json:"businessId" binding:"required"`
 	DayOfWeek  string    `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime   string    `json:"openTime" binding:"required,datetime=15:04:05"`  // HH:MM:SS format
-	CloseTime  string    `json:"closeTime" binding:"required,datetime=15:04:05"` // HH:MM:SS format
+	OpenTime   string    `json:"openTime" binding:"required"`  // HH:MM:SS format
+	CloseTime  string    `json:"closeTime" binding:"required"` // HH:MM:SS format
 	IsClosed   bool      `json:"isClosed"`
 }
 
 // UpdateWorkingHourRequest represents the expected JSON payload for updating a working hour slot.
 type UpdateWorkingHourRequest struct {
 	DayOfWeek *string `json:"dayOfWeek,omitempty" binding:"omitempty,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty,datetime=15:04:05"`
-	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty,datetime=15:04:05"`
+	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty"`
+	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty"`
 	IsClosed  *bool   `json:"isClosed,omitempty"`
 }
 
@@ -63,14 +63,12 @@ type DayWorkingHourRequest struct {
 // BulkUpdateWorkingHoursRequest represents the expected JSON payload for bulk updating/upserting working hour slots.
 // BusinessID is now taken from the path parameter.
 type BulkUpdateWorkingHoursRequest struct {
-	// BusinessID uuid.UUID `json:"businessId" binding:"required"` // Removed
 	Days []DayWorkingHourRequest `json:"days" binding:"required,min=1"`
 }
 
 // InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
 // BusinessID is now taken from the path parameter.
 type InitializeWorkingHoursRequest struct {
-	// BusinessID uuid.UUID `json:"businessId" binding:"required"` // Removed
 	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
 	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
 	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
@@ -186,7 +184,19 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 			isClosedDefault = true // Weekends closed by default if initialized
 		}
 		// Use businessID from path parameter here
-		wh, err := working_hour_models.NewWorkingHour(businessID, day, defaultOpenTime, defaultCloseTime, isClosedDefault)
+		openTime, err := time.Parse("15:04:05", defaultOpenTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse default open time for %s: %v", day, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse default open time"})
+			return
+		}
+		closeTime, err := time.Parse("15:04:05", defaultCloseTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse default close time for %s: %v", day, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse default close time"})
+			return
+		}
+		wh, err := working_hour_models.NewWorkingHour(businessID, day, openTime, closeTime, isClosedDefault)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to create working hour for %s: %v", day, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create working hour for %s", day)})
@@ -204,7 +214,19 @@ func (whc *WorkingHourController) InitializeWorkingHours(c *gin.Context) {
 			return
 		}
 		// Use businessID from path parameter here
-		wh, err := working_hour_models.NewWorkingHour(businessID, override.DayOfWeek, override.OpenTime, override.CloseTime, override.IsClosed)
+		openTime, err := time.Parse("15:04:05", override.OpenTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse open time for override %s: %v", override.DayOfWeek, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid open time for override %s", override.DayOfWeek)})
+			return
+		}
+		closeTime, err := time.Parse("15:04:05", override.CloseTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse close time for override %s: %v", override.DayOfWeek, err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid close time for override %s", override.DayOfWeek)})
+			return
+		}
+		wh, err := working_hour_models.NewWorkingHour(businessID, override.DayOfWeek, openTime, closeTime, override.IsClosed)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to create working hour override for %s: %v", override.DayOfWeek, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create working hour override for %s", override.DayOfWeek)})
@@ -356,22 +378,46 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 
 		if existing, ok := existingMap[dayReq.DayOfWeek]; ok {
 			// Day exists, perform UPDATE
-			// Use businessID in log message
 			logger.InfoLogger.Debugf("Updating existing working hour for %s (ID: %s) for business %s.", dayReq.DayOfWeek, existing.ID, businessID)
+
+			var openTime, closeTime time.Time
+			if !dayReq.IsClosed {
+				openTime, err = utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
+				if err != nil {
+					tx.Rollback(c.Request.Context())
+					logger.ErrorLogger.Errorf("Failed to parse open time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.OpenTime, dayReq.DayOfWeek, err) // Add this log
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error": fmt.Sprintf("Invalid openTime for %s: %v", dayReq.DayOfWeek, err), // Include %v to show the underlying error
+					})
+					return
+				}
+
+				closeTime, err = utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
+				if err != nil {
+					tx.Rollback(c.Request.Context())
+					logger.ErrorLogger.Errorf("Failed to parse close time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.CloseTime, dayReq.DayOfWeek, err) // Add this log
+					c.JSON(http.StatusBadRequest, gin.H{
+						"error": fmt.Sprintf("Invalid closeTime for %s: %v", dayReq.DayOfWeek, err),
+					})
+					return
+				}
+			}
+
+			// Update existing record directly
 			existing.DayOfWeek = dayReq.DayOfWeek
-			existing.OpenTime = dayReq.OpenTime
-			existing.CloseTime = dayReq.CloseTime
+			existing.OpenTime = openTime
+			existing.CloseTime = closeTime
 			existing.IsClosed = dayReq.IsClosed
 			existing.UpdatedAt = time.Now()
 
-			// Update in transaction context
-			updatedHour, err := working_hour_models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing) // Use UpdateWorkingHourTx
+			updatedHour, err := working_hour_models.UpdateWorkingHourTx(c.Request.Context(), tx, &existing)
 			if err != nil {
 				tx.Rollback(c.Request.Context())
 				logger.ErrorLogger.Errorf("Failed to update working hour for %s (ID: %s) in bulk update transaction: %v", dayReq.DayOfWeek, existing.ID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to update working hours for %s", dayReq.DayOfWeek)})
 				return
 			}
+
 			results = append(results, *updatedHour)
 			logger.InfoLogger.Debugf("Successfully updated working hour for %s (ID: %s) in transaction.", dayReq.DayOfWeek, updatedHour.ID)
 		} else {
@@ -380,7 +426,22 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 			logger.InfoLogger.Debugf("Creating new working hour for %s for business %s.", dayReq.DayOfWeek, businessID)
 
 			// Create new working hour instance, use businessID from path
-			newHour, err := working_hour_models.NewWorkingHour(businessID, dayReq.DayOfWeek, dayReq.OpenTime, dayReq.CloseTime, dayReq.IsClosed)
+			openTime, err := utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
+			if err != nil {
+				tx.Rollback(c.Request.Context())
+				logger.ErrorLogger.Errorf("Failed to parse open time for %s: %v", dayReq.DayOfWeek, err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid open time for %s", dayReq.DayOfWeek)})
+				return
+			}
+
+			closeTime, err := utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
+			if err != nil {
+				tx.Rollback(c.Request.Context())
+				logger.ErrorLogger.Errorf("Failed to parse close time for %s: %v", dayReq.DayOfWeek, err)
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid close time for %s", dayReq.DayOfWeek)})
+				return
+			}
+			newHour, err := working_hour_models.NewWorkingHour(businessID, dayReq.DayOfWeek, openTime, closeTime, dayReq.IsClosed)
 			if err != nil {
 				tx.Rollback(c.Request.Context())
 				logger.ErrorLogger.Errorf("Failed to create new working hour instance for %s: %v", dayReq.DayOfWeek, err)
@@ -464,12 +525,25 @@ func (whc *WorkingHourController) CreateWorkingHour(c *gin.Context) {
 		return
 	}
 
+	openTime, err := time.Parse("15:04:05", req.OpenTime)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse open time: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid open time format"})
+		return
+	}
+	closeTime, err := time.Parse("15:04:05", req.CloseTime)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse close time: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid close time format"})
+		return
+	}
+
 	// Create a models.WorkingHour instance
 	wh, err := working_hour_models.NewWorkingHour(
 		req.BusinessID,
 		req.DayOfWeek,
-		req.OpenTime,
-		req.CloseTime,
+		openTime,
+		closeTime,
 		req.IsClosed,
 	)
 	if err != nil {
@@ -614,11 +688,23 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		logger.InfoLogger.Debugf("Updating DayOfWeek for %s from %s to %s", whID, existingWH.DayOfWeek, updatedDayOfWeek)
 	}
 	if req.OpenTime != nil {
-		updatedOpenTime = *req.OpenTime
+		parsedTime, err := time.Parse("15:04:05", *req.OpenTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse open time: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid open time format"})
+			return
+		}
+		updatedOpenTime = parsedTime
 		logger.InfoLogger.Debugf("Updating OpenTime for %s from %s to %s", whID, existingWH.OpenTime, updatedOpenTime)
 	}
 	if req.CloseTime != nil {
-		updatedCloseTime = *req.CloseTime
+		parsedTime, err := time.Parse("15:04:05", *req.CloseTime)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse close time: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid close time format"})
+			return
+		}
+		updatedCloseTime = parsedTime
 		logger.InfoLogger.Debugf("Updating CloseTime for %s from %s to %s", whID, existingWH.CloseTime, updatedCloseTime)
 	}
 	if req.IsClosed != nil {
@@ -627,7 +713,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 	}
 
 	// Re-validate times with potentially updated values
-	if err := validateWorkingHoursTimes(updatedOpenTime, updatedCloseTime, updatedIsClosed); err != nil {
+	if err := validateWorkingHoursTimes(updatedOpenTime.Format("15:04:05"), updatedCloseTime.Format("15:04:05"), updatedIsClosed); err != nil {
 		logger.ErrorLogger.Errorf("Working hour time validation failed during update for ID %s: %v", whID, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

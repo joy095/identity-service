@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/models/service_models"
@@ -58,7 +57,7 @@ func (sc *ServiceController) GetAllServiceByBusiness(c *gin.Context) {
 		return
 	}
 
-	services, err := service_models.GetAllServicesModel(c.Request.Context(), db.DB, businessId)
+	services, err := service_models.GetAllServicesModel(c.Request.Context(), sc.db, businessId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.ErrorLogger.Error("Service not found: " + err.Error())

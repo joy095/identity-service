@@ -3,6 +3,7 @@ package image_handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -194,7 +195,9 @@ func DeleteImage(imageID uuid.UUID, accessToken string) error {
 	}
 
 	pythonServerURL := getServiceURL() + "/images/" + imageID.String()
-	httpReq, err := http.NewRequest("DELETE", pythonServerURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, "DELETE", pythonServerURL, nil)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create DELETE request for image %s: %v", imageID, err)
 		return fmt.Errorf("failed to create delete request")
@@ -237,7 +240,7 @@ func sendRequestToImageService(req *http.Request, contentType, accessToken strin
 	})
 
 	client := &http.Client{Timeout: 90 * time.Second} // Increased timeout for multiple uploads
-	resp, err := client.Do(req)
+	resp, err := client.Do(req.WithContext(req.Context()))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to send request to image service: %v", err)
 		return nil, fmt.Errorf("failed to send request to image service")
