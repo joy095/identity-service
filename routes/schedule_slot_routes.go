@@ -23,7 +23,7 @@ func RegisterScheduleSlotRoutes(router *gin.Engine) {
 
 		// Get a single schedule slot by ID
 		protected.GET("/:slot_id",
-			middleware.NewRateLimiter("30-1m", "get-slot"),
+			middleware.NewRateLimiter("get-slot", "30-1m"),
 			scheduleSlotController.GetScheduleSlot)
 
 		// Update an existing schedule slot
@@ -40,7 +40,7 @@ func RegisterScheduleSlotRoutes(router *gin.Engine) {
 
 	public := router.Group("/public/business")
 	{
-		public.GET("/:business_id/unavailable-times",
+		public.GET("/:service_id/unavailable-times",
 			middleware.NewRateLimiter("20-1m", "public-unavailable-times"),
 			scheduleSlotController.GetUnavailableTimes) // /business/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 	}

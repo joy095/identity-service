@@ -41,6 +41,9 @@ func main() {
 	logger.InfoLogger.Info("Application: Email templates initialized.")
 
 	badwords.LoadBadWords("badwords/en.txt")
+	if err := badwords.LoadBadWords("badwords/en.txt"); err != nil {
+		logger.ErrorLogger.Fatalf("Failed to load bad words: %v", err)
+	}
 	logger.InfoLogger.Info("Bad words loaded successfully!")
 
 	r := gin.Default()
@@ -65,8 +68,12 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: r,
+		Addr:           ":" + port,
+		Handler:        r,
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1 MB
 	}
 
 	go func() {

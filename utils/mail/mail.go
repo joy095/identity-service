@@ -245,6 +245,11 @@ func ResendOTP(c *gin.Context) {
 	}
 
 	user, err := user_models.GetUserByEmail(ctx, db.DB, request.Email)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get user by email in ResendOTP: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process request"})
+		return
+	}
 	if user == nil {
 		logger.InfoLogger.Info("ResendOTP: Email not found, sending generic message.")
 		c.JSON(http.StatusOK, gin.H{"message": "A verification email has been sent to your email address."})

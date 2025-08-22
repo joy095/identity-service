@@ -3,7 +3,6 @@ package working_hour_models
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,8 +16,8 @@ type WorkingHour struct {
 	ID         uuid.UUID `json:"id"`
 	BusinessID uuid.UUID `json:"businessId"`
 	DayOfWeek  string    `json:"dayOfWeek"` // e.g., "Monday", "Tuesday"
-	OpenTime   string    `json:"openTime"`  // Stored as HH:MM:SS string for TIME WITHOUT TIME ZONE
-	CloseTime  string    `json:"closeTime"` // Stored as HH:MM:SS string
+	OpenTime   time.Time `json:"openTime"`  // Stored as HH:MM:SS string for TIME WITHOUT TIME ZONE
+	CloseTime  time.Time `json:"closeTime"` // Stored as HH:MM:SS string
 	IsClosed   bool      `json:"isClosed"`
 	CreatedAt  time.Time `json:"createdAt"`
 	UpdatedAt  time.Time `json:"updatedAt"`
@@ -27,40 +26,31 @@ type WorkingHour struct {
 // NewWorkingHour creates a new WorkingHour instance.
 func NewWorkingHour(
 	businessID uuid.UUID,
-	dayOfWeek, openTime, closeTime string,
+	dayOfWeek string,
+	openTime time.Time,
+	closeTime time.Time,
 	isClosed bool,
 ) (*WorkingHour, error) {
-	// Validate day of week
 	validDays := map[string]bool{
-		"Sunday": true, "Monday": true, "Tuesday": true, "Wednesday": true,
-		"Thursday": true, "Friday": true, "Saturday": true,
+		"Sunday": true, "Monday": true, "Tuesday": true,
+		"Wednesday": true, "Thursday": true,
+		"Friday": true, "Saturday": true,
 	}
 	if !validDays[dayOfWeek] {
-		logger.ErrorLogger.Errorf("Invalid day of week: %s", dayOfWeek)
 		return nil, fmt.Errorf("invalid day of week: %s", dayOfWeek)
 	}
 
-	// Validate time format (HH:MM:SS)
-	timeRegex := regexp.MustCompile(`^([0-1]?[0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])$`)
-	if !isClosed {
-		if !timeRegex.MatchString(openTime) || !timeRegex.MatchString(closeTime) {
-			logger.ErrorLogger.Errorf("Invalid time format. Expected HH:MM:SS")
-			return nil, fmt.Errorf("invalid time format for openTime or closeTime, expected HH:MM:SS")
-		}
-	}
 	now := time.Now()
-	wh := &WorkingHour{
+	return &WorkingHour{
 		ID:         uuid.New(),
 		BusinessID: businessID,
 		DayOfWeek:  dayOfWeek,
-		OpenTime:   openTime,
+		OpenTime:   openTime, // preserve local time
 		CloseTime:  closeTime,
 		IsClosed:   isClosed,
 		CreatedAt:  now,
 		UpdatedAt:  now,
-	}
-	logger.DebugLogger.Debugf("Created new WorkingHour model for BusinessID: %s, Day: %s", businessID, dayOfWeek)
-	return wh, nil
+	}, nil
 }
 
 func createWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingHour) (*WorkingHour, error) {
@@ -77,7 +67,9 @@ func createWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingH
 	var err error
 	switch conn := dbConn.(type) {
 	case *pgxpool.Pool:
-		_, err = conn.Exec(ctx, query, wh.ID, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt)
+		var returnedID uuid.UUID
+		err = conn.QueryRow(ctx, query, wh.ID, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&returnedID)
+
 	case pgx.Tx:
 		var returnedID uuid.UUID
 		err = conn.QueryRow(ctx, query, wh.ID, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&returnedID)

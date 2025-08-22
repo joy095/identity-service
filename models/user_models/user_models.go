@@ -115,7 +115,7 @@ func ComparePasswords(db *pgxpool.Pool, password, email string) (bool, error) {
 	user, err := GetUserByEmail(context.Background(), db, email)
 	if err != nil {
 		logger.ErrorLogger.Errorf("user not found for email %s: %v", email, err)
-		return false, err
+		return false, errors.New("invalid credentials")
 	}
 
 	// Verify the provided password against the stored hash
