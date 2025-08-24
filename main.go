@@ -47,7 +47,6 @@ func main() {
 	logger.InfoLogger.Info("Bad words loaded successfully!")
 
 	r := gin.Default()
-	r.Use(gin.Recovery())
 	r.Use(cors.CorsMiddleware())
 
 	// Set MaxMultipartMemory globally
@@ -59,6 +58,7 @@ func main() {
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r)
 	routes.RegisterScheduleSlotRoutes(r)
+	routes.RegisterBusinessPaymentRoutes(r)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "ok from identity service"})

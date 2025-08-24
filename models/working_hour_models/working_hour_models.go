@@ -57,11 +57,11 @@ func createWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingH
 	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s", wh.BusinessID, wh.DayOfWeek)
 	query := `
         INSERT INTO working_hours (
-            id, business_id, day_of_week, open_time, close_time,
+            business_id, day_of_week, open_time, close_time,
             is_closed, created_at, updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8
+            $1, $2, $3, $4, $5, $6, $7
         ) RETURNING id` // Always use RETURNING for consistency if needed, or just rely on success/failure
 
 	var err error

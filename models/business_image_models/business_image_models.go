@@ -124,6 +124,10 @@ func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 		}
 	}
 
+	if len(imageIDs) == 0 {
+		return fmt.Errorf("imageIDs cannot be empty")
+	}
+
 	return tx.Commit(ctx)
 }
 

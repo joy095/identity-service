@@ -39,16 +39,16 @@ const (
 type CreateWorkingHourRequest struct {
 	BusinessID uuid.UUID `json:"businessId" binding:"required"`
 	DayOfWeek  string    `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime   string    `json:"openTime" binding:"required"`  // HH:MM:SS format
-	CloseTime  string    `json:"closeTime" binding:"required"` // HH:MM:SS format
+	OpenTime   string    `json:"openTime" binding:"required,datetime=15:04:05"`  // HH:MM:SS format
+	CloseTime  string    `json:"closeTime" binding:"required,datetime=15:04:05"` // HH:MM:SS format
 	IsClosed   bool      `json:"isClosed"`
 }
 
 // UpdateWorkingHourRequest represents the expected JSON payload for updating a working hour slot.
 type UpdateWorkingHourRequest struct {
 	DayOfWeek *string `json:"dayOfWeek,omitempty" binding:"omitempty,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty"`
-	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty"`
+	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty,datetime=15:04:05"`
+	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty,datetime=15:04:05"`
 	IsClosed  *bool   `json:"isClosed,omitempty"`
 }
 
@@ -401,6 +401,10 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 					})
 					return
 				}
+			} else {
+				// For closed days, parse the times anyway to maintain data consistency
+				openTime, _ = utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
+				closeTime, _ = utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
 			}
 
 			// Update existing record directly

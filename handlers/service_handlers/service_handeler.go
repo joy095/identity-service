@@ -1,4 +1,4 @@
-// handlers/service_handlers/service_handler.go
+// handlers/service_handlers/service_handeler.go
 package service_handlers
 
 import (

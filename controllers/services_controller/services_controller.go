@@ -71,7 +71,7 @@ func (sc *ServiceController) GetAllServiceByBusiness(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"service": services})
+	c.JSON(http.StatusOK, gin.H{"services": services})
 }
 
 func (sc *ServiceController) GetServiceByID(c *gin.Context) {
@@ -224,4 +224,13 @@ func (sc *ServiceController) DeleteService(c *gin.Context) {
 
 		c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully with ID " + serviceID.String()})
 	}
+	// Delete service from database (should happen regardless of image presence)
+	err = service_models.DeleteServiceByIDModel(c.Request.Context(), sc.db, serviceID, service.BusinessID)
+	if err != nil {
+		logger.ErrorLogger.Error("Failed to delete service: " + err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete service"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Service deleted successfully with ID " + serviceID.String()})
 }

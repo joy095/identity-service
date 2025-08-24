@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,7 +33,7 @@ func GetJWTSecret() []byte {
 	// For now, let's keep it simple and re-read/decode each time, which is fine for most apps.
 	secret, err := getSecretFromEnv("JWT_SECRET") // Use the function to get and decode
 	if err != nil {
-		errMsg := "SECURITY RISK: JWT refresh secret configuration error - using insecure default"
+		errMsg := "SECURITY RISK: JWT access secret configuration error - using insecure default"
 		logger.ErrorLogger.Error(errMsg)
 		if os.Getenv("GO_ENV") == "production" {
 			logger.ErrorLogger.Fatal("Cannot run in production without secure JWT_SECRET")
@@ -131,4 +132,20 @@ func ParseTimeToUTC(t string, day string) (time.Time, error) {
 	)
 
 	return resultTime, nil
+}
+
+var (
+	// E.164: optional +, 8–15 digits, no leading 0 after +
+	reE164 = regexp.MustCompile(`^\+?[1-9]\d{7,14}$`)
+	// India: optional +91/91/0, then 10 digits starting 6–9
+	reIN = regexp.MustCompile(`^(?:\+91|91|0)?[6-9]\d{9}$`)
+)
+
+func IsValidPhone(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	// Accept if it’s valid E.164 or valid Indian format
+	return reE164.MatchString(p) || reIN.MatchString(p)
 }
