@@ -11,7 +11,7 @@ func RegisterBusinessPaymentRoutes(router *gin.Engine) {
 	businessPaymentController := business_payment_controller.NewBusinessPaymentController(db.DB)
 
 	// Unprotected routes
-	router.GET("/payment/callback", businessPaymentController.PaymentCallback)
+	router.POST("/payment/webhook", businessPaymentController.PaymentWebhook)
 
 	// Protected routes
 	protected := router.Group("/")
@@ -27,5 +27,6 @@ func RegisterBusinessPaymentRoutes(router *gin.Engine) {
 		protected.GET("/orders/:order_id", businessPaymentController.GetOrder)
 		protected.GET("/bookings", businessPaymentController.GetBookings)
 		protected.GET("/bookings/:booking_id", businessPaymentController.GetBooking)
+		protected.POST("/payouts", businessPaymentController.CreatePayout)
 	}
 }

@@ -3,7 +3,11 @@ package business_payment_controller
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -35,11 +39,15 @@ const (
 
 // BusinessPaymentController holds dependencies for business-related operations.
 type BusinessPaymentController struct {
-	DB           *pgxpool.Pool
-	ClientID     string
-	ClientSecret string
-	APIVersion   string
-	BaseURL      string
+	DB                 *pgxpool.Pool
+	ClientID           string
+	ClientSecret       string
+	APIVersion         string
+	BaseURL            string
+	PayoutClientID     string
+	PayoutClientSecret string
+	PayoutBaseURL      string
+	WebhookSecret      string
 }
 
 // NewBusinessPaymentController creates a new instance of BusinessPaymentController.
@@ -56,12 +64,29 @@ func NewBusinessPaymentController(db *pgxpool.Pool) *BusinessPaymentController {
 	if baseURL == "" {
 		baseURL = "https://sandbox.cashfree.com/pg"
 	}
+
+	payoutClientID := os.Getenv("CASHFREE_PAYOUT_CLIENT_ID")
+	payoutClientSecret := os.Getenv("CASHFREE_PAYOUT_CLIENT_SECRET")
+	payoutBaseURL := os.Getenv("CASHFREE_PAYOUT_BASE_URL")
+	if payoutBaseURL == "" {
+		payoutBaseURL = "https://payout-sandbox.cashfree.com"
+	}
+
+	webhookSecret := os.Getenv("CASHFREE_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		panic("Required Cashfree webhook secret not set: CASHFREE_WEBHOOK_SECRET")
+	}
+
 	return &BusinessPaymentController{
-		DB:           db,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-		APIVersion:   apiVersion,
-		BaseURL:      baseURL,
+		DB:                 db,
+		ClientID:           clientID,
+		ClientSecret:       clientSecret,
+		APIVersion:         apiVersion,
+		BaseURL:            baseURL,
+		PayoutClientID:     payoutClientID,
+		PayoutClientSecret: payoutClientSecret,
+		PayoutBaseURL:      payoutBaseURL,
+		WebhookSecret:      webhookSecret,
 	}
 }
 
@@ -80,6 +105,63 @@ func (bc *BusinessPaymentController) callCashfree(ctx context.Context, method, p
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	return client.Do(req)
+}
+
+func (bc *BusinessPaymentController) callPayout(ctx context.Context, method, path string, body io.Reader, useBearer bool, token string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, bc.PayoutBaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if useBearer {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Set("X-Client-Id", bc.PayoutClientID)
+		req.Header.Set("X-Client-Secret", bc.PayoutClientSecret)
+	}
+	// Assuming same API version for payouts
+	req.Header.Set("x-api-version", bc.APIVersion)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	return client.Do(req)
+}
+
+func (bc *BusinessPaymentController) getPayoutToken(ctx context.Context) (string, error) {
+	resp, err := bc.callPayout(ctx, "POST", "/payout/v1/authorize", nil, false, "")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return "", fmt.Errorf("authorize returned non-200: %d, body: %s", resp.StatusCode, string(b))
+	}
+
+	var cfResp map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
+		return "", err
+	}
+
+	status, ok := cfResp["status"].(string)
+	if !ok || status != "SUCCESS" {
+		return "", fmt.Errorf("authorize failed: %v", cfResp)
+	}
+
+	data, ok := cfResp["data"].(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("missing data in response")
+	}
+
+	token, ok := data["token"].(string)
+	if !ok {
+		return "", fmt.Errorf("missing token in response")
+	}
+
+	return token, nil
 }
 
 type CreatePaymentRequest struct {
@@ -139,9 +221,6 @@ func (bc *BusinessPaymentController) CreateOrders(c *gin.Context) {
 		"customer_details": map[string]string{
 			"customer_id":    customerID.String(),
 			"customer_phone": *user.Phone,
-		},
-		"order_meta": map[string]string{
-			"return_url": "https://yourapp.com/payment/callback?order_id=" + orderID,
 		},
 	}
 	jsonPayload, err := json.Marshal(payload)
@@ -360,48 +439,70 @@ func (bc *BusinessPaymentController) PayUPICollect(c *gin.Context) {
 	bc.processUPIPayment(c, "collect", "collect_payment", true)
 }
 
-func (bc *BusinessPaymentController) PaymentCallback(c *gin.Context) {
-	orderID := c.Query("order_id")
+type WebhookPayload struct {
+	Data struct {
+		Order struct {
+			OrderID string `json:"order_id"`
+		} `json:"order"`
+		Payment struct {
+			PaymentStatus string `json:"payment_status"`
+		} `json:"payment"`
+	} `json:"data"`
+	Type string `json:"type"`
+}
+
+func (bc *BusinessPaymentController) PaymentWebhook(c *gin.Context) {
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+		return
+	}
+
+	timestamp := c.GetHeader("x-webhook-timestamp")
+	signature := c.GetHeader("x-webhook-signature")
+
+	if timestamp == "" || signature == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing webhook headers"})
+		return
+	}
+
+	msg := timestamp + "." + string(bodyBytes)
+	key := []byte(bc.WebhookSecret)
+	h := hmac.New(sha256.New, key)
+	h.Write([]byte(msg))
+	expectedSig := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	if expectedSig != signature {
+		logger.ErrorLogger.Error("Invalid webhook signature")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+		return
+	}
+
+	var payload WebhookPayload
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+		logger.ErrorLogger.Errorf("Invalid webhook payload: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	orderID := payload.Data.Order.OrderID
 	if orderID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing order_id"})
 		return
 	}
 
-	resp, err := bc.callCashfree(c.Request.Context(), "GET", "/orders/"+orderID, nil)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "cashfree request failed"})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "cashfree returned error", "status": resp.StatusCode, "body": string(b)})
-		return
-	}
-
-	var cfResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid cashfree response"})
-		return
-	}
-
-	orderStatus, ok := cfResp["order_status"].(string)
-	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "missing order_status"})
-		return
-	}
+	orderStatus := payload.Data.Payment.PaymentStatus
 
 	statusMap := map[string]string{
-		"PAID":      PaymentStatusPaid,
-		"FAILED":    PaymentStatusFailed,
-		"CANCELLED": PaymentStatusFailed,
-		"EXPIRED":   PaymentStatusFailed,
+		"SUCCESS":      PaymentStatusPaid,
+		"FAILED":       PaymentStatusFailed,
+		"USER_DROPPED": PaymentStatusFailed,
 	}
 	dbStatus, exists := statusMap[orderStatus]
 	if !exists {
-		logger.InfoLogger.Printf("Unknown Cashfree order status received: %s for order_id: %s", orderStatus, orderID)
-		c.JSON(http.StatusOK, gin.H{"message": "no update needed", "order_status": orderStatus})
+		logger.InfoLogger.Printf("Unknown Cashfree payment status received: %s for order_id: %s", orderStatus, orderID)
+		c.JSON(http.StatusOK, gin.H{"message": "no update needed", "payment_status": orderStatus})
 		return
 	}
 
@@ -431,7 +532,7 @@ func (bc *BusinessPaymentController) PaymentCallback(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "commit failed"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"message": "status already updated", "order_status": orderStatus})
+		c.JSON(http.StatusOK, gin.H{"message": "status already updated", "payment_status": orderStatus})
 		return
 	}
 
@@ -452,7 +553,7 @@ func (bc *BusinessPaymentController) PaymentCallback(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "status updated", "order_status": orderStatus, "db_status": dbStatus})
+	c.JSON(http.StatusOK, gin.H{"message": "status updated", "payment_status": orderStatus, "db_status": dbStatus})
 }
 
 type CreateRefundRequest struct {
@@ -510,7 +611,7 @@ func (bc *BusinessPaymentController) CreateRefund(c *gin.Context) {
 	_, err = bc.DB.Exec(ctx, `INSERT INTO refunds (order_id, refund_id, amount, status, note, created_at)
 								VALUES ($1, $2, $3, $4, $5, NOW())
 								RETURNING id;`,
-		uuid.New(), req.RefundID, req.RefundAmount, RefundStatusPending, req.RefundNote)
+		orderID, req.RefundID, req.RefundAmount, RefundStatusPending, req.RefundNote)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save refund"})
 		return
@@ -580,7 +681,7 @@ func (bc *BusinessPaymentController) GetOrder(c *gin.Context) {
 
 type Booking struct {
 	ID         uuid.UUID `json:"id"`
-	CustomerID string    `json:"customer_id"`
+	CustomerID uuid.UUID `json:"customer_id"`
 	Status     string    `json:"status"`
 }
 
@@ -641,4 +742,74 @@ func (bc *BusinessPaymentController) GetBooking(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"booking": b})
+}
+
+type CreatePayoutRequest struct {
+	Amount       float64 `json:"amount" binding:"required,gt=0"`
+	TransferID   string  `json:"transfer_id" binding:"required"`
+	TransferMode string  `json:"transfer_mode" binding:"required"`
+	BeneDetails  struct {
+		BankAccount string `json:"bank_account" binding:"required"`
+		IFSC        string `json:"ifsc" binding:"required"`
+		Name        string `json:"name" binding:"required"`
+		Phone       string `json:"phone" binding:"required"`
+		Email       string `json:"email"`
+		VPA         string `json:"vpa"`
+		Address1    string `json:"address1"`
+	} `json:"bene_details" binding:"required"`
+}
+
+func (bc *BusinessPaymentController) CreatePayout(c *gin.Context) {
+	if bc.PayoutClientID == "" || bc.PayoutClientSecret == "" {
+		logger.ErrorLogger.Error("Cashfree payout credentials not configured")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cashfree payout credentials not configured"})
+		return
+	}
+
+	var req CreatePayoutRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.ErrorLogger.Errorf("Invalid request payload: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	token, err := bc.getPayoutToken(c.Request.Context())
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get payout token: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to authenticate with cashfree payouts"})
+		return
+	}
+
+	payload := map[string]interface{}{
+		"amount":       req.Amount,
+		"transferId":   req.TransferID,
+		"transferMode": req.TransferMode,
+		"beneDetails":  req.BeneDetails,
+	}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to serialize cashfree payload"})
+		return
+	}
+
+	resp, err := bc.callPayout(c.Request.Context(), "POST", "/payout/v1/directTransfer", bytes.NewBuffer(jsonPayload), true, token)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "cashfree payout request failed"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		c.JSON(http.StatusBadGateway, gin.H{"error": "cashfree returned non-2xx", "status": resp.StatusCode, "body": string(b)})
+		return
+	}
+
+	var cfResp map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid cashfree response"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"payout": cfResp})
 }
