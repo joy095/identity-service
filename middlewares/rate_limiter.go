@@ -48,7 +48,10 @@ func getUserIDFromContext(c *gin.Context) string {
 // createRedisStore creates a Redis-backed rate limiter store with a route-specific and user-specific prefix,
 // and sets the expiration based on the rate's period.
 func createRedisStore(ctx context.Context, routeID string, period time.Duration) (limiter.Store, error) {
-	rdb := db.GetRedisClient(ctx)
+	rdb, err := db.GetRedisClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init redis client: %w", err)
+	}
 
 	store, err := redisstore.NewStoreWithOptions(rdb, limiter.StoreOptions{
 		Prefix:   fmt.Sprintf("rate_limiter:%s", routeID), // This prefix will be combined with the key function

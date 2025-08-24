@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -40,14 +41,14 @@ type User struct {
 	Email           string
 	PasswordHash    string
 	RefreshToken    *string
-	OTP             *string // Renamed from OTPHash to OTP to reflect potential storage of raw OTP or hash
+	OTPHash         *string // Renamed from OTPHash to OTP to reflect potential storage of raw OTP or hash
 	FirstName       string
 	LastName        string
 	IsVerifiedEmail bool
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	Status          string
-	Phone           json.Number
+	Phone           *string
 }
 
 // generateSalt generates a secure random salt
@@ -184,12 +185,12 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 			  AND is_verified_email = FALSE
 			  AND created_at < NOW() - INTERVAL '15 minutes'
 		)
-		INSERT INTO users (id, email, password_hash, first_name, last_name)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO users (email, password_hash, first_name, last_name)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id
 	`
 	var returnedID uuid.UUID
-	err = db.QueryRow(context.Background(), insertQuery, userID, email, passwordHash, firstName, lastName).Scan(&returnedID)
+	err = db.QueryRow(context.Background(), insertQuery, email, passwordHash, firstName, lastName).Scan(&returnedID)
 	if err != nil {
 		// Check if it's a unique constraint violation
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
@@ -262,7 +263,10 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 		return nil, "", "", fmt.Errorf("failed to marshal refresh token entry: %v", err)
 	}
 
-	rdb := redisclient.GetRedisClient(ctx)
+	rdb, err := redisclient.GetRedisClient(ctx)
+	if err != nil {
+		log.Fatalf("Redis init failed: %v", err)
+	}
 	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
 
 	pipe := rdb.Pipeline()
@@ -287,10 +291,10 @@ func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 
 	// Remove from database (if refresh_token column is still used for old sessions or backup)
 	key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
-	err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to clear refresh token from Redis for user %s: %v", userID, err)
-		return fmt.Errorf("failed to clear refresh token from Redis: %w", err)
+	if rdb, err := redisclient.GetRedisClient(ctx); err != nil {
+		return err
+	} else if delErr := rdb.Del(ctx, key).Err(); delErr != nil {
+		return delErr
 	}
 
 	return nil
@@ -356,7 +360,7 @@ func CheckUserStatus(ctx context.Context, db *pgxpool.Pool, email string) (*User
 func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User, error) {
 	var user User
 
-	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE email = $1`
+	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version, phone FROM users WHERE email = $1`
 
 	err := db.QueryRow(ctx, query, email).Scan(
 		&user.ID,
@@ -366,6 +370,7 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 		&user.PasswordHash,
 		&user.IsVerifiedEmail,
 		&user.TokenVersion,
+		&user.Phone,
 	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("failed to get user by email: %v", err)
@@ -378,7 +383,7 @@ func GetUserByEmail(ctx context.Context, db *pgxpool.Pool, email string) (*User,
 // GetUserByID retrieves a user by id
 func GetUserByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*User, error) {
 	var user User
-	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version FROM users WHERE id = $1`
+	query := `SELECT id, email, first_name, last_name, password_hash, is_verified_email, token_version, phone FROM users WHERE id = $1`
 	err := db.QueryRow(ctx, query, id).Scan(
 		&user.ID,
 		&user.Email,
@@ -387,6 +392,7 @@ func GetUserByID(ctx context.Context, db *pgxpool.Pool, id uuid.UUID) (*User, er
 		&user.PasswordHash,
 		&user.IsVerifiedEmail,
 		&user.TokenVersion,
+		&user.Phone,
 	)
 	if err != nil {
 		return nil, err
@@ -406,19 +412,19 @@ func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]int
 		return nil // No updates to perform
 	}
 
-	// Use a single parameterized query with COALESCE for optional updates
+	// Use COALESCE to update only provided fields
 	query := `
 		UPDATE users 
 		SET 
 			first_name = COALESCE($2, first_name),
-			last_name = COALESCE($3, last_name),
-			email = COALESCE($4, email),
+			last_name  = COALESCE($3, last_name),
+			email      = COALESCE($4, email),
+			phone      = COALESCE($5, phone),
 			updated_at = NOW()
 		WHERE id = $1
 	`
 
-	// Prepare arguments, using nil for fields not being updated
-	var firstName, lastName, email interface{}
+	var firstName, lastName, email, phone interface{}
 	if val, ok := updates["first_name"]; ok {
 		firstName = val
 	}
@@ -428,8 +434,11 @@ func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]int
 	if val, ok := updates["email"]; ok {
 		email = val
 	}
+	if val, ok := updates["phone"]; ok {
+		phone = val
+	}
 
-	args := []interface{}{userID, firstName, lastName, email}
+	args := []interface{}{userID, firstName, lastName, email, phone}
 
 	_, err := db.Exec(context.Background(), query, args...)
 	if err != nil {
@@ -463,9 +472,12 @@ func DeleteUser(ctx context.Context, db *pgxpool.Pool, userID uuid.UUID) error {
 
 	// Delete from Redis first
 	key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
-	if err := redisclient.GetRedisClient(ctx).Del(ctx, key).Err(); err != nil {
-		logger.ErrorLogger.Errorf("Failed to delete refresh tokens from Redis: %v", err)
-		// Continue with user deletion even if Redis fails
+	if rdb, err := redisclient.GetRedisClient(ctx); err != nil {
+		logger.ErrorLogger.Errorf("Failed to init Redis client: %v", err)
+		// continue with user deletion even if Redis fails
+	} else if delErr := rdb.Del(ctx, key).Err(); delErr != nil {
+		logger.ErrorLogger.Errorf("Failed to delete refresh tokens from Redis: %v", delErr)
+		// continue with user deletion even if Redis fails
 	}
 
 	// Delete user from database

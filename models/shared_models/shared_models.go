@@ -210,6 +210,12 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 		return nil, fmt.Errorf("invalid token format: %w", err)
 	}
 
+	// Validate that we have a properly structured token before proceeding
+	if len(claimsMap) == 0 {
+		logger.ErrorLogger.Error("Token claims are empty")
+		return nil, fmt.Errorf("invalid token: empty claims")
+	}
+
 	tokenType, ok := claimsMap["type"].(string)
 	if !ok {
 		logger.ErrorLogger.Error("Token 'type' claim is missing or not a string")
@@ -253,6 +259,16 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 	if claims.UserID == uuid.Nil {
 		logger.ErrorLogger.Error("UserID claim is missing or invalid in token")
 		return nil, fmt.Errorf("invalid token: user ID missing")
+	}
+
+	if claims.Type == "" {
+		logger.ErrorLogger.Error("Type claim is missing in token")
+		return nil, fmt.Errorf("invalid token: type missing")
+	}
+
+	if claims.Type != tokenType {
+		logger.ErrorLogger.Errorf("Token type mismatch: expected %s, got %s", tokenType, claims.Type)
+		return nil, fmt.Errorf("invalid token: type mismatch")
 	}
 
 	// Fetch the current token_version for the user from the database

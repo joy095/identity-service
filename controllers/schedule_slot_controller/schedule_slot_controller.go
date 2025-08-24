@@ -311,7 +311,14 @@ func (sc *ScheduleSlotController) DeleteScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userIDStr, ok := userIDFromToken.(string)
+	if !ok {
+		logger.ErrorLogger.Error("User ID from context is not a string")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
@@ -379,26 +386,27 @@ func (sc *ScheduleSlotController) SetSlotStatus(c *gin.Context) {
 		return
 	}
 
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userIDStr, ok := userIDFromToken.(string)
+	if !ok {
+		logger.ErrorLogger.Error("User ID from context is not a string")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	existingSlot, err := schedule_slot_models.GetScheduleSlotByID(ctx, db.DB, slotID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Schedule slot not found"})
-		return
-	}
-
-	// Ownership check
-	if existingSlot.UserID != userID {
-		logger.WarnLogger.Warnf("User %s attempted to update status of slot %s owned by %s", userID, slotID, existingSlot.UserID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to modify this slot"})
 		return
 	}
 

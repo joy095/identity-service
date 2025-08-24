@@ -104,9 +104,16 @@ func (bc *BusinessImageController) AddBusinessImages(c *gin.Context) {
 	err = business_image_models.AddBusinessImages(c.Request.Context(), bc.db, business.ID, uploadedImageIDs)
 	if err != nil {
 		// Clean up uploaded images on database error
+		var deletionErrors []string
 		for _, uploadedID := range uploadedImageIDs {
-			image_handlers.DeleteImage(uploadedID, accessToken) // Error from this is logged inside
+			if err := image_handlers.DeleteImage(uploadedID, accessToken); err != nil {
+				deletionErrors = append(deletionErrors, fmt.Sprintf("imageID=%s: %v", uploadedID, err))
+			}
 		}
+		if len(deletionErrors) > 0 {
+			logger.ErrorLogger.Errorf("Failed to clean up some uploaded images: %v", deletionErrors)
+		}
+
 		logger.ErrorLogger.Errorf("Failed to associate images with business %s: %v", business.ID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to associate images with business"})
 		return

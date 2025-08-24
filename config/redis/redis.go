@@ -3,7 +3,7 @@ package redis
 
 import (
 	"context"
-	"crypto/tls"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -17,34 +17,37 @@ var (
 )
 
 // GetRedisClient returns a singleton Redis client
-func GetRedisClient(ctx context.Context) *redis.Client {
+func GetRedisClient(ctx context.Context) (*redis.Client, error) {
 	redisOnce.Do(func() {
 		redisURL := os.Getenv("REDIS_URL")
 		if redisURL == "" {
-			log.Fatal("REDIS_URL environment variable is not set")
+			redisClient = nil
+			return
 		}
 
 		opt, err := redis.ParseURL(redisURL)
 		if err != nil {
-			log.Fatalf("Failed to parse REDIS_URL: %v", err)
+			redisClient = nil
+			return
 		}
 
-		// Ensure TLS for Upstash
-		if opt.TLSConfig == nil {
-			opt.TLSConfig = &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			}
-		}
-
+		// Create client first
 		redisClient = redis.NewClient(opt)
 
+		// Then ping to check connectivity
 		if _, err := redisClient.Ping(ctx).Result(); err != nil {
 			log.Fatalf("Failed to connect to Redis: %v", err)
+			redisClient = nil
+			return
 		}
+
 		log.Println("Connected to Upstash Redis")
 	})
 
-	return redisClient
+	if redisClient == nil {
+		return nil, fmt.Errorf("redis client not initialized; check REDIS_URL and connectivity")
+	}
+	return redisClient, nil
 }
 
 // CloseRedis closes the Redis connection

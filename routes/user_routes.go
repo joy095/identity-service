@@ -12,7 +12,7 @@ func RegisterUserRoutes(router *gin.Engine) {
 	userController := user_controllers.NewUserController()
 
 	// Public routes
-	router.POST("/user-is-registered", middleware.NewRateLimiter("10-30s", "user-is-registered"), userController.IsUserRegistered)
+	router.POST("/user-is-registered", middleware.CombinedRateLimiter("user-is-registered", "3-60s", "50-24h"), userController.IsUserRegistered)
 	router.POST("/register", middleware.CombinedRateLimiter("register", "10-2m", "30-60m"), userController.Register)
 	router.POST("/login", middleware.CombinedRateLimiter("login", "10-2m", "30-30m"), userController.Login)
 	router.POST("/refresh-token", middleware.NewRateLimiter("10-15m", "refresh-token"), userController.RefreshToken)

@@ -151,13 +151,13 @@ func CreateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slot *ScheduleSlo
 	logger.InfoLogger.Infof("Creating new schedule slot for service %s", slot.ServiceID)
 
 	query := `
-		INSERT INTO schedule_slots (id, service_id, user_id, open_time, close_time, created_at, updated_at, status)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
+		INSERT INTO schedule_slots (service_id, user_id, open_time, close_time, created_at, updated_at, status)
+		VALUES ($1, $2, $3, $4, NOW(), NOW(), $5)
 		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
 
 	var createdSlot ScheduleSlot
 	err := db.QueryRow(ctx, query,
-		slot.ID, slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime, slot.Status,
+		slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime, slot.Status,
 	).Scan(
 		&createdSlot.ID, &createdSlot.ServiceID, &createdSlot.UserID,
 		&createdSlot.OpenTime, &createdSlot.CloseTime,
@@ -195,8 +195,8 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 		}
 	}
 
-	if openTime != nil && closeTime != nil && !closeTime.After(*openTime) {
-		return nil, fmt.Errorf("close time must be after open time")
+	if status != nil && !validStatuses[*status] {
+		return nil, fmt.Errorf("invalid status: %s", *status)
 	}
 
 	// Use COALESCE to handle optional updates
@@ -205,14 +205,15 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 		SET 
 			open_time = COALESCE($2, open_time),
 			close_time = COALESCE($3, close_time),
-			updated_at = $4
+			status = COALESCE($4, status),
+			updated_at = $5
 		WHERE id = $1
-		RETURNING id, service_id, open_time, close_time, created_at, updated_at`
+		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
 
 	var updatedSlot ScheduleSlot
-	err := db.QueryRow(ctx, query, slotID, openTime, closeTime, time.Now()).Scan(
-		&updatedSlot.ID, &updatedSlot.ServiceID, &updatedSlot.OpenTime, &updatedSlot.CloseTime,
-		&updatedSlot.CreatedAt, &updatedSlot.UpdatedAt)
+	err := db.QueryRow(ctx, query, slotID, openTime, closeTime, status, time.Now()).Scan(
+		&updatedSlot.ID, &updatedSlot.ServiceID, &updatedSlot.UserID, &updatedSlot.OpenTime, &updatedSlot.CloseTime,
+		&updatedSlot.CreatedAt, &updatedSlot.UpdatedAt, &updatedSlot.Status)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

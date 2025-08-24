@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"fmt"
+
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/services_controller"
@@ -13,7 +15,7 @@ func RegisterServicesRoutes(router *gin.Engine) {
 
 	serviceController, err := services_controller.NewServiceController(db.DB)
 	if err != nil {
-		return
+		panic(fmt.Errorf("failed to initialize service controller: %w", err))
 	}
 
 	// This is a public route, no auth needed

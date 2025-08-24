@@ -83,14 +83,13 @@ func NewBusiness(
 // CreateBusiness inserts a new business record into the database.
 func CreateBusiness(ctx context.Context, db *pgxpool.Pool, business *Business) (*Business, error) {
 	query := `
-        INSERT INTO businesses (id, name, category, address, city, state, country, postal_code, tax_id, about, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id, public_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+        INSERT INTO businesses (name, category, address, city, state, country, postal_code, tax_id, about, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id, public_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING id, name, category, address, city, state, country, postal_code, tax_id, about, location_latitude, location_longitude, created_at, updated_at, is_active, owner_id, public_id
     `
 	logger.InfoLogger.Infof("Executing query to create business: %s", business.Name)
 
 	err := db.QueryRow(ctx, query,
-		business.ID,
 		business.Name,
 		business.Category,
 		business.Address,
@@ -565,7 +564,7 @@ func GetBusinessByUserModel(ctx context.Context, db *pgxpool.Pool, userID uuid.U
 	}
 
 	if len(businesses) == 0 {
-		logger.InfoLogger.Infof("No inactive businesses found for user ID %s", userID)
+		logger.InfoLogger.Infof("No businesses found for user ID %s", userID)
 		return []*Business{}, nil // Return an empty slice if no rows are found
 	}
 

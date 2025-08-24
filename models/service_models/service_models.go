@@ -4,11 +4,11 @@ package service_models
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5" // Use pgx for scanning/rows operations
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger" // Adjust import path for your logger
@@ -87,15 +87,14 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 
 	query := `
         INSERT INTO services (
-            id, business_id, name, description, duration_minutes,
+            business_id, name, description, duration_minutes,
             price, image_id, is_active, created_at, updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+            $1, $2, $3, $4, $5, $6, $7, $8, $9
         )`
 
 	_, err := db.Exec(ctx, query,
-		service.ID,
 		service.BusinessID,
 		service.Name,
 		service.Description,
@@ -110,9 +109,11 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert service into database: %v", err)
 
-		// Check if it's a NOT NULL constraint violation
-		if strings.Contains(err.Error(), "null value in column \"image_id\"") {
-			return nil, fmt.Errorf("image is required for service creation")
+		// Check for PostgreSQL error codes
+		if pgErr, ok := err.(*pgconn.PgError); ok {
+			if pgErr.Code == "23502" && pgErr.ColumnName == "image_id" {
+				return nil, fmt.Errorf("image is required for service creation")
+			}
 		}
 
 		return nil, fmt.Errorf("failed to create service: %w", err)
@@ -330,8 +331,6 @@ func GetServicesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID u
 func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service) (*Service, error) {
 	logger.InfoLogger.Infof("Attempting to update service record with ID: %s", service.ID)
 
-	service.UpdatedAt = time.Now() // Update timestamp on modification
-
 	query := `
 		UPDATE services
 		SET
@@ -341,9 +340,9 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 			price = $5,
 			image_id = $6,
 			is_active = $7,
-			updated_at = $8
+			updated_at = NOW()
 		WHERE
-			id = $1 AND business_id = $9
+			id = $1 AND business_id = $8
 		`
 
 	res, err := db.Exec(ctx, query,
@@ -354,9 +353,12 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 		service.Price,
 		service.ImageID,
 		service.IsActive,
-		service.UpdatedAt,
 		service.BusinessID, // Used in WHERE clause
 	)
+
+	if err == nil && res.RowsAffected() > 0 {
+		service.UpdatedAt = time.Now()
+	}
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update service %s in database: %v", service.ID, err)

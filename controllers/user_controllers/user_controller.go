@@ -53,6 +53,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 	var req struct {
 		FirstName *string `json:"firstName"`
 		LastName  *string `json:"lastName"`
+		Phone     *string `json:"phone"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -73,9 +74,21 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 	if req.FirstName != nil && *req.FirstName != "" && *req.FirstName != currentUser.FirstName {
 		updates["first_name"] = *req.FirstName
 	}
-
 	if req.LastName != nil && *req.LastName != "" && *req.LastName != currentUser.LastName {
 		updates["last_name"] = *req.LastName
+	}
+	if req.Phone != nil {
+		phone := strings.TrimSpace(*req.Phone)
+
+		if phone == "" || !utils.IsValidPhone(phone) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid phone number"})
+			return
+		}
+
+		// Only add to updates if changed
+		if currentUser.Phone == nil || phone != *currentUser.Phone {
+			updates["phone"] = phone
+		}
 	}
 
 	if len(updates) == 0 {
@@ -83,7 +96,6 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	// Apply immediate updates (username, first_name, last_name)
 	err = user_models.UpdateUserFields(db.DB, userID, updates)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Sprintf("Failed to update user fields for ID %s: %v", userID, err))
@@ -91,7 +103,7 @@ func (uc *UserController) UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	logger.InfoLogger.Info(fmt.Sprintf("User profile update process completed for ID: %s", userID))
+	logger.InfoLogger.Info(fmt.Sprintf("User profile updated successfully for ID: %s", userID))
 	c.JSON(http.StatusOK, gin.H{"message": "Profile updated successfully"})
 }
 
@@ -376,7 +388,8 @@ func (uc *UserController) Register(c *gin.Context) {
 		if sendErr != nil {
 			logger.ErrorLogger.Error(fmt.Errorf("failed to send OTP email to %s for user %s: %w", req.Email, user.ID, sendErr))
 		} else {
-			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email))
+			logger.InfoLogger.Info(fmt.Sprintf("OTP email sent successfully to: %s for user %s", req.Email, user.ID))
+
 		}
 	}()
 
@@ -432,6 +445,7 @@ func (uc *UserController) Login(c *gin.Context) {
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
+			"phone":     user.Phone,
 		},
 	})
 
@@ -655,11 +669,13 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 	// 3. Optionally, clear the refresh_token field in the database
 	// This immediately invalidates the stored refresh token as well.
 	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
-	err = redisclient.GetRedisClient(ctx).Del(ctx, key).Err()
+	rdb, err := redisclient.GetRedisClient(ctx)
 	if err != nil {
-		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, err))
-		// This is a warning because even if clearing fails, incrementing token_version still revokes.
-		// But it's good practice to clear the old token too.
+		logger.WarnLogger.Warn(fmt.Errorf("failed to init redis client for user %s: %w", user.Email, err))
+		// still continue, token_version revocation works
+	} else if delErr := rdb.Del(ctx, key).Err(); delErr != nil {
+		logger.WarnLogger.Warn(fmt.Errorf("failed to clear refresh token for user %s: %w", user.Email, delErr))
+		// warning only, not fatal
 	}
 
 	// --- Commit Transaction ---
@@ -717,7 +733,11 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	}
 
 	// Check if the token JTI exists in Redis list
-	rdb := redisclient.GetRedisClient(c)
+	rdb, err := redisclient.GetRedisClient(c)
+	if err != nil {
+		logger.ErrorLogger.Error("Error connecting redis")
+		return // or log it
+	}
 	redisKey := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
 
 	listItems, err := rdb.LRange(context.Background(), redisKey, 0, -1).Result()
@@ -824,7 +844,12 @@ func (uc *UserController) Logout(c *gin.Context) {
 
 	// Remove specific token from Redis list
 	if refreshToken != "" {
-		rdb := redisclient.GetRedisClient(c)
+		rdb, err := redisclient.GetRedisClient(c)
+		if err != nil {
+			logger.ErrorLogger.Errorf("failed to connect to redis: %v", err)
+			return // or continue if Redis is optional
+		}
+
 		key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
 
 		// Remove all matching entries (usually one) from Redis list
@@ -922,6 +947,7 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 			"email":     user.Email,
 			"firstName": user.FirstName,
 			"lastName":  user.LastName,
+			"phone":     user.Phone,
 		},
 	})
 }
