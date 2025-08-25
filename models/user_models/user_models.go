@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -41,7 +40,7 @@ type User struct {
 	Email           string
 	PasswordHash    string
 	RefreshToken    *string
-	OTPHash         *string // Renamed from OTPHash to OTP to reflect potential storage of raw OTP or hash
+	OTPHash         *string
 	FirstName       string
 	LastName        string
 	IsVerifiedEmail bool
@@ -49,6 +48,14 @@ type User struct {
 	UpdatedAt       time.Time
 	Status          string
 	Phone           *string
+}
+
+// Define allowed fields for updates
+var allowedUpdateFields = map[string]bool{
+	"first_name": true,
+	"last_name":  true,
+	"email":      true,
+	"phone":      true,
 }
 
 // generateSalt generates a secure random salt
@@ -172,16 +179,11 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		return nil, err
 	}
 
-	userID, err := shared_models.GenerateUUIDv7()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate UUIDv7: %v", err)
-	}
-
 	// Use a single atomic operation with better conflict handling
 	insertQuery := `
 		WITH deleted AS (
 			DELETE FROM users
-			WHERE email = $2
+			WHERE email = $1
 			  AND is_verified_email = FALSE
 			  AND created_at < NOW() - INTERVAL '15 minutes'
 		)
@@ -205,7 +207,7 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 	}
 
 	user := &User{
-		ID:           userID,
+		ID:           returnedID,
 		Email:        email,
 		PasswordHash: passwordHash,
 		FirstName:    firstName,
@@ -265,7 +267,8 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 
 	rdb, err := redisclient.GetRedisClient(ctx)
 	if err != nil {
-		log.Fatalf("Redis init failed: %v", err)
+		logger.ErrorLogger.Errorf("Redis init failed for user %s: %v", user.ID, err)
+		return nil, "", "", fmt.Errorf("failed to connect to Redis: %v", err)
 	}
 	key := shared_utils.REFRESH_TOKEN_PREFIX + user.ID.String()
 
@@ -408,6 +411,14 @@ func IncrementUserTokenVersion(ctx context.Context, db *pgxpool.Pool, userID uui
 
 // Define allowed fields for updates to prevent SQL injection
 func UpdateUserFields(db *pgxpool.Pool, userID uuid.UUID, updates map[string]interface{}) error {
+
+	// Validate that only allowed fields are being updated
+	for field := range updates {
+		if !allowedUpdateFields[field] {
+			return fmt.Errorf("field '%s' is not allowed for update", field)
+		}
+	}
+
 	if len(updates) == 0 {
 		return nil // No updates to perform
 	}

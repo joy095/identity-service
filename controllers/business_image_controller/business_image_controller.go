@@ -215,15 +215,12 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 	newPosition := oldImage.Position
 	if newPosition == nil {
 		// Get the next available position for this business
-		var maxPos int
-		err = tx.QueryRow(c.Request.Context(),
-			"SELECT COALESCE(MAX(position), 0) + 1 FROM business_images WHERE business_id = $1",
-			business.ID).Scan(&maxPos)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to get max position: %v", err)
-			maxPos = 1 // Fallback to 1 if query fails
-		}
-		newPosition = &maxPos
+		// Use a single atomic operation to avoid race conditions
+		err = tx.QueryRow(c.Request.Context(), `
+			INSERT INTO business_images (business_id, image_id, position)
+			VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM business_images WHERE business_id = $1))
+			RETURNING position
+		`, business.ID, newImageID).Scan(&newPosition)
 	}
 	// Ensure the query matches the number of values
 	_, err = tx.Exec(c.Request.Context(), `

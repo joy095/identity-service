@@ -96,7 +96,7 @@ func UpdateScheduleSlotStatus(ctx context.Context, db *pgxpool.Pool, slotID uuid
 }
 
 // NewScheduleSlot creates a new ScheduleSlot instance.
-func NewScheduleSlot(ServiceID, userID uuid.UUID, openTime, closeTime time.Time, status string) (*ScheduleSlot, error) {
+func NewScheduleSlot(serviceID, userID uuid.UUID, openTime, closeTime time.Time, status string) (*ScheduleSlot, error) {
 	if status == "" {
 		status = StatusPending
 	}
@@ -104,14 +104,30 @@ func NewScheduleSlot(ServiceID, userID uuid.UUID, openTime, closeTime time.Time,
 		return nil, fmt.Errorf("invalid status: %s", status)
 	}
 
+	if serviceID == uuid.Nil {
+		return nil, fmt.Errorf("ServiceID must be provided")
+	}
+	if userID == uuid.Nil {
+		return nil, fmt.Errorf("UserID must be provided")
+	}
+	if openTime.IsZero() || closeTime.IsZero() {
+		return nil, fmt.Errorf("openTime and closeTime must be provided")
+	}
+	if !openTime.Before(closeTime) {
+		return nil, fmt.Errorf("closeTime must be after openTime")
+	}
+	// Normalize to UTC
+	openTime = openTime.UTC()
+	closeTime = closeTime.UTC()
+
 	return &ScheduleSlot{
 		ID:        uuid.New(),
-		ServiceID: ServiceID,
+		ServiceID: serviceID,
 		UserID:    userID,
 		OpenTime:  openTime,
 		CloseTime: closeTime,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 		Status:    status,
 	}, nil
 }
@@ -151,13 +167,13 @@ func CreateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slot *ScheduleSlo
 	logger.InfoLogger.Infof("Creating new schedule slot for service %s", slot.ServiceID)
 
 	query := `
-		INSERT INTO schedule_slots (service_id, user_id, open_time, close_time, created_at, updated_at, status)
-		VALUES ($1, $2, $3, $4, NOW(), NOW(), $5)
+		INSERT INTO schedule_slots (id, service_id, user_id, open_time, close_time, created_at, updated_at, status)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
 		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
 
 	var createdSlot ScheduleSlot
 	err := db.QueryRow(ctx, query,
-		slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime, slot.Status,
+		slot.ID, slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime, slot.Status,
 	).Scan(
 		&createdSlot.ID, &createdSlot.ServiceID, &createdSlot.UserID,
 		&createdSlot.OpenTime, &createdSlot.CloseTime,
@@ -184,10 +200,21 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 		}
 		finalOpen := existing.OpenTime
 		finalClose := existing.CloseTime
+		// Validate non-zero and normalize to UTC if provided
 		if openTime != nil {
+			if openTime.IsZero() {
+				return nil, fmt.Errorf("openTime must not be zero")
+			}
+			ot := openTime.UTC()
+			openTime = &ot
 			finalOpen = *openTime
 		}
 		if closeTime != nil {
+			if closeTime.IsZero() {
+				return nil, fmt.Errorf("closeTime must not be zero")
+			}
+			ct := closeTime.UTC()
+			closeTime = &ct
 			finalClose = *closeTime
 		}
 		if !finalOpen.Before(finalClose) {
@@ -206,12 +233,12 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 			open_time = COALESCE($2, open_time),
 			close_time = COALESCE($3, close_time),
 			status = COALESCE($4, status),
-			updated_at = $5
+			updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
 
 	var updatedSlot ScheduleSlot
-	err := db.QueryRow(ctx, query, slotID, openTime, closeTime, status, time.Now()).Scan(
+	err := db.QueryRow(ctx, query, slotID, openTime, closeTime, status).Scan(
 		&updatedSlot.ID, &updatedSlot.ServiceID, &updatedSlot.UserID, &updatedSlot.OpenTime, &updatedSlot.CloseTime,
 		&updatedSlot.CreatedAt, &updatedSlot.UpdatedAt, &updatedSlot.Status)
 

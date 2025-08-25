@@ -93,9 +93,11 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 
 // AddBusinessImages adds multiple image associations for a given business.
 // It now includes a 'position' for each image.
-func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID, imageIDs []uuid.UUID /* , primaryImageID uuid.UUID - Remove if not used elsewhere */) error {
-	// Optional: Validate that primaryImageID (if passed) exists in imageIDs
-	// if slices.Contains(imageIDs, primaryImageID) { ... } else { ... }
+func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID, imageIDs []uuid.UUID) error {
+
+	if len(imageIDs) == 0 {
+		return fmt.Errorf("imageIDs cannot be empty")
+	}
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -209,6 +211,7 @@ func DeleteBusinessImage(ctx context.Context, db *pgxpool.Pool, businessID, imag
 			UNION ALL
 			SELECT 1 FROM services WHERE image_id = $1 -- Assuming 'services' also has an image_id foreign key
 		) as refs
+		FOR UPDATE
 	`, imageID).Scan(&count)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to check image references for image %s: %v", imageID, err)

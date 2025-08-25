@@ -735,8 +735,8 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 	// Check if the token JTI exists in Redis list
 	rdb, err := redisclient.GetRedisClient(c)
 	if err != nil {
-		logger.ErrorLogger.Error("Error connecting redis")
-		return // or log it
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Service temporarily unavailable"})
+		return
 	}
 	redisKey := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
 

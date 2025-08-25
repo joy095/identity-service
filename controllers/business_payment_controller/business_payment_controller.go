@@ -324,11 +324,6 @@ type PayPaymentRequest struct {
 }
 
 func (bc *BusinessPaymentController) PayPayment(c *gin.Context) {
-	// Read raw body
-	bodyBytes, _ := io.ReadAll(c.Request.Body)
-	logger.DebugLogger.Printf("Raw request body: %s", string(bodyBytes))
-	// Restore io.ReadCloser so ShouldBindJSON can read it
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	var req PayPaymentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -336,8 +331,6 @@ func (bc *BusinessPaymentController) PayPayment(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-
-	logger.InfoLogger.Infof("Parsed request: %+v", req)
 
 	payload := map[string]interface{}{
 		"payment_session_id": req.PaymentSessionId,
@@ -610,6 +603,7 @@ func (bc *BusinessPaymentController) CreateRefund(c *gin.Context) {
 	ctx := c.Request.Context()
 	_, err = bc.DB.Exec(ctx, `INSERT INTO refunds (order_id, refund_id, amount, status, note, created_at)
 								VALUES ($1, $2, $3, $4, $5, NOW())
+								ON CONFLICT (refund_id) DO NOTHING
 								RETURNING id;`,
 		orderID, req.RefundID, req.RefundAmount, RefundStatusPending, req.RefundNote)
 	if err != nil {
@@ -716,6 +710,11 @@ func (bc *BusinessPaymentController) GetBookings(c *gin.Context) {
 			return
 		}
 		bookings = append(bookings, b)
+	}
+
+	if err := rows.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error iterating bookings"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"bookings": bookings, "limit": limit, "offset": offset})

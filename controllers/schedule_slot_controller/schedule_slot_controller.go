@@ -410,19 +410,19 @@ func (sc *ScheduleSlotController) SetSlotStatus(c *gin.Context) {
 		return
 	}
 
+	// Ownership check
+	if existingSlot.UserID != userID {
+		logger.WarnLogger.Warnf("User %s attempted to update status of slot %s owned by %s", userID, slotID, existingSlot.UserID)
+		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to modify this slot"})
+		return
+	}
+
 	logger.InfoLogger.Infof("User %s setting status of slot %s to %s", userID, slotID, req.Status)
 
 	err = schedule_slot_models.UpdateScheduleSlotStatus(ctx, db.DB, slotID, req.Status)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update status for schedule slot %s: %v", slotID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update slot status"})
-		return
-	}
-
-	// Ownership check
-	if existingSlot.UserID != userID {
-		logger.WarnLogger.Warnf("User %s attempted to update status of slot %s owned by %s", userID, slotID, existingSlot.UserID)
-		c.JSON(http.StatusForbidden, gin.H{"error": "You do not have permission to modify this slot"})
 		return
 	}
 
@@ -435,12 +435,12 @@ func (sc *ScheduleSlotController) SetSlotStatus(c *gin.Context) {
 	})
 }
 
-// GetUnavailableTimes retrieves all confirmed (booked) schedule slots for a business on a specific date
+// GetUnavailableTimes retrieves all confirmed (booked) schedule slots for a service on a specific date
 func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 	ServiceIDStr := c.Param("service_id")
 	ServiceID, err := uuid.Parse(ServiceIDStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid business ID format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
 		return
 	}
 

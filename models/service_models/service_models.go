@@ -87,14 +87,15 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 
 	query := `
         INSERT INTO services (
-            business_id, name, description, duration_minutes,
+            id, business_id, name, description, duration_minutes,
             price, image_id, is_active, created_at, updated_at
         )
         VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
         )`
 
 	_, err := db.Exec(ctx, query,
+		service.ID,
 		service.BusinessID,
 		service.Name,
 		service.Description,
@@ -353,12 +354,8 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 		service.Price,
 		service.ImageID,
 		service.IsActive,
-		service.BusinessID, // Used in WHERE clause
+		service.BusinessID,
 	)
-
-	if err == nil && res.RowsAffected() > 0 {
-		service.UpdatedAt = time.Now()
-	}
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update service %s in database: %v", service.ID, err)
