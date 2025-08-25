@@ -41,7 +41,7 @@ func RegisterScheduleSlotRoutes(router *gin.Engine) {
 	public := router.Group("/public/business")
 	{
 		public.GET("/:service_id/unavailable-times",
-			middleware.NewRateLimiter("20-1m", "public-unavailable-times"),
+			middleware.NewRateLimiter("public-unavailable-times", "20-1m"),
 			scheduleSlotController.GetUnavailableTimes) // /business/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 	}
 }

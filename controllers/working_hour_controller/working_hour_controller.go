@@ -39,24 +39,24 @@ const (
 type CreateWorkingHourRequest struct {
 	BusinessID uuid.UUID `json:"businessId" binding:"required"`
 	DayOfWeek  string    `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime   string    `json:"openTime" binding:"required,datetime=15:04:05"`  // HH:MM:SS format
-	CloseTime  string    `json:"closeTime" binding:"required,datetime=15:04:05"` // HH:MM:SS format
+	OpenTime   string    `json:"openTime" binding:"required"`
+	CloseTime  string    `json:"closeTime" binding:"required"`
 	IsClosed   bool      `json:"isClosed"`
 }
 
 // UpdateWorkingHourRequest represents the expected JSON payload for updating a working hour slot.
 type UpdateWorkingHourRequest struct {
 	DayOfWeek *string `json:"dayOfWeek,omitempty" binding:"omitempty,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty,datetime=15:04:05"`
-	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty,datetime=15:04:05"`
+	OpenTime  *string `json:"openTime,omitempty" binding:"omitempty"`
+	CloseTime *string `json:"closeTime,omitempty" binding:"omitempty"`
 	IsClosed  *bool   `json:"isClosed,omitempty"`
 }
 
 // DayWorkingHourRequest represents a working hour request for a specific day (without BusinessID)
 type DayWorkingHourRequest struct {
 	DayOfWeek string `json:"dayOfWeek" binding:"required,oneof=Monday Tuesday Wednesday Thursday Friday Saturday Sunday"`
-	OpenTime  string `json:"openTime" binding:"required,datetime=15:04:05"`
-	CloseTime string `json:"closeTime" binding:"required,datetime=15:04:05"`
+	OpenTime  string `json:"openTime" binding:"required"`
+	CloseTime string `json:"closeTime" binding:"required"`
 	IsClosed  bool   `json:"isClosed"`
 }
 
@@ -69,8 +69,8 @@ type BulkUpdateWorkingHoursRequest struct {
 // InitializeWorkingHoursRequest represents the expected JSON payload for initializing working hours.
 // BusinessID is now taken from the path parameter.
 type InitializeWorkingHoursRequest struct {
-	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty,datetime=15:04:05"`
-	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty,datetime=15:04:05"`
+	DefaultOpenTime    string                  `json:"defaultOpenTime" binding:"omitempty"`
+	DefaultCloseTime   string                  `json:"defaultCloseTime" binding:"omitempty"`
 	Overrides          []DayWorkingHourRequest `json:"overrides,omitempty"`
 	InitializeWeekends bool                    `json:"initializeWeekends"`
 }
