@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -505,14 +505,22 @@ func (bc *BusinessPaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
+	// Check timestamp tolerance
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil || time.Since(time.Unix(ts, 0)) > 5*time.Minute {
+		logger.ErrorLogger.Error("Invalid or expired webhook timestamp")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid timestamp"})
+		return
+	}
+
 	msg := timestamp + "." + string(bodyBytes)
 	key := []byte(bc.WebhookSecret)
 	h := hmac.New(sha256.New, key)
 	h.Write([]byte(msg))
-	expectedSig := base64.StdEncoding.EncodeToString(h.Sum(nil))
+	expectedSig := hex.EncodeToString(h.Sum(nil)) // FIX: hex, not base64
 
 	if expectedSig != signature {
-		logger.ErrorLogger.Error("Invalid webhook signature")
+		logger.ErrorLogger.Errorf("Invalid webhook signature: expected=%s got=%s", expectedSig, signature)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
@@ -527,7 +535,7 @@ func (bc *BusinessPaymentController) PaymentWebhook(c *gin.Context) {
 
 	logger.InfoLogger.Infof("Received webhook event: type=%s, time=%s", event.Type, event.EventTime)
 
-	// Store raw webhook event for audit
+	// Store raw webhook event
 	ctx := c.Request.Context()
 	_, err = bc.DB.Exec(ctx,
 		`INSERT INTO webhook_events (event_type, event_time, raw_payload, processed_at)
