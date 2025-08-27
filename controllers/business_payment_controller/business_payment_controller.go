@@ -156,20 +156,52 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-// verifyWebhookSignature validates the Cashfree webhook signature.
+// Fixed verifyWebhookSignature function - the critical fix is adding the dot between timestamp and body
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
+
 	if timestamp == "" || signature == "" {
+		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
 		return false
 	}
 
-	// Compute the signature
+	// Validate timestamp format and age
+	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
+		timestampTime := time.Unix(ts, 0)
+		timeDiff := time.Since(timestampTime)
+
+		// Allow reasonable time window (5 minutes)
+		if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
+			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
+			return false
+		}
+	} else {
+		logger.ErrorLogger.Errorf("Invalid timestamp format: %s", timestamp)
+		return false
+	}
+
+	// CRITICAL FIX: Cashfree uses timestamp.body format (note the dot)
+	message := timestamp + "." + string(bodyBytes)
+
+	// Generate HMAC-SHA256 signature
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(timestamp))
-	mac.Write(bodyBytes)
+	mac.Write([]byte(message))
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
+	// Debug logs (remove in production)
+	fmt.Printf("\n=== FIXED CASHFREE SIGNATURE DEBUG ===\n")
+	fmt.Printf("Timestamp: %s\n", timestamp)
+	fmt.Printf("Body Length: %d bytes\n", len(bodyBytes))
+	fmt.Printf("Message Format: timestamp.body\n")
+	fmt.Printf("Message: %s\n", message)
+	fmt.Printf("Secret Length: %d\n", len(pc.WebhookSecret))
+	fmt.Printf("Expected: %s\n", expected)
+	fmt.Printf("Received: %s\n", signature)
+	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expected), []byte(signature)))
+	fmt.Printf("======================================\n\n")
+
+	// Secure comparison
 	return hmac.Equal([]byte(expected), []byte(signature))
 }
 
