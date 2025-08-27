@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -71,7 +72,7 @@ func NewPaymentController(db *pgxpool.Pool) *PaymentController {
 		ClientSecret:  clientSecret,
 		APIVersion:    apiVersion,
 		BaseURL:       baseURL,
-		WebhookSecret: webhookSecret,
+		WebhookSecret: clientSecret, // Cashfree uses Client Secret for HMAC
 		// Initialize a single, reusable HTTP client
 		HttpClient: &http.Client{Timeout: 15 * time.Second},
 	}
@@ -176,12 +177,12 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte)
 		}
 	}
 
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac := hmac.New(sha256.New, []byte(pc.ClientSecret)) // Use Client Secret
 	mac.Write(body)
 	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(expectedSig), []byte(signature)) {
-		logger.ErrorLogger.Errorf("Signature mismatch | Expected=%s | Received=%s", expectedSig, signature)
+		fmt.Printf("Signature mismatch | Expected=%s | Received=%s", expectedSig, signature)
 		return false
 	}
 	return true
