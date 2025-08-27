@@ -8,7 +8,10 @@ import (
 )
 
 func RegisterBusinessPaymentRoutes(router *gin.Engine) {
-	paymentController := business_payment_controller.NewPaymentController(db.DB)
+	paymentController, err := business_payment_controller.NewPaymentController(db.DB)
+	if err != nil {
+		panic("Failed to initialize PaymentController: " + err.Error())
+	}
 
 	// Public webhook endpoints (no auth required)
 	webhook := router.Group("/webhook")
