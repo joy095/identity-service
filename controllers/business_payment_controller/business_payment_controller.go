@@ -105,13 +105,19 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
+	// Restore body so Gin can re-use it if needed (optional but good practice)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Debug log raw payload (helps confirm signature mismatch cause)
+	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
+
 	// 1. Verify webhook signature (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
 
-	// 2. Parse the generic event structure to determine the type
+	// 2. Parse generic event
 	var event WebhookEvent
 	if err := json.Unmarshal(bodyBytes, &event); err != nil {
 		logger.ErrorLogger.Errorf("Invalid webhook payload: %v", err)
@@ -121,36 +127,28 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// 3. Log the raw event for audit and debugging purposes
-	// This is a best practice, allowing you to replay events if processing fails.
+	// 3. Log event
 	_, err = pc.DB.Exec(ctx,
 		`INSERT INTO webhook_events (event_type, raw_payload) VALUES ($1, $2)`,
 		event.Type, string(bodyBytes))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
-		// Do not stop processing, just log the failure
 	}
 
-	// 4. Route the event to the appropriate handler
+	// 4. Route event
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
 		pc.handlePaymentSuccess(ctx, event.Data)
-
 	case "PAYMENT_FAILED_WEBHOOK", "PAYMENT_USER_DROPPED_WEBHOOK":
 		pc.handlePaymentFailure(ctx, event.Data)
-
 	case "ORDER_EXPIRED", "LINK_EXPIRED":
 		pc.handleOrderExpired(ctx, event.Data)
-
 	case "LINK_CANCELLED":
 		pc.handleOrderCancelled(ctx, event.Data)
-
 	case "REFUND_SUCCESS_WEBHOOK":
 		pc.handleRefundSuccess(ctx, event.Data)
-
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
 		pc.handleRefundFailure(ctx, event.Data, event.Type)
-
 	default:
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
 	}
@@ -161,27 +159,29 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 // verifyWebhookSignature verifies the HMAC-SHA256 signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte) bool {
 	signature := c.GetHeader("x-webhook-signature")
-	if signature == "" {
+	timestamp := c.GetHeader("x-webhook-timestamp")
+
+	if signature == "" || timestamp == "" {
 		return false
 	}
 
-	// Replay protection
-	timestamp := c.GetHeader("x-webhook-timestamp")
-	if timestamp != "" {
-		if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-			if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-				logger.ErrorLogger.Errorf("Expired webhook timestamp: %s", timestamp)
-				return false
-			}
+	// Replay protection: allow only 5 min old events
+	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
+		if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
+			logger.ErrorLogger.Errorf("Expired webhook timestamp: %s", timestamp)
+			return false
 		}
 	}
 
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret)) // // Using Webhook Secret
-	mac.Write(body)
+	// Concatenate body + timestamp before hashing
+	message := append(body, []byte(timestamp)...)
+
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write(message)
 	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(expectedSig), []byte(signature)) {
-		fmt.Printf("Signature mismatch | Expected=%s | Received=%s", expectedSig, signature)
+		fmt.Printf("Signature mismatch | Expected=%s | Received=%s\n", expectedSig, signature)
 		return false
 	}
 	return true
