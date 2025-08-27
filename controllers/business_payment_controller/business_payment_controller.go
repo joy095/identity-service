@@ -51,14 +51,14 @@ type PaymentController struct {
 }
 
 // NewPaymentController creates a new payment controller
-func NewPaymentController(db *pgxpool.Pool) *PaymentController {
+func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 	clientID := os.Getenv("CASHFREE_CLIENT_ID")
 	clientSecret := os.Getenv("CASHFREE_CLIENT_SECRET")
 	apiVersion := os.Getenv("CASHFREE_API_VERSION")
 	webhookSecret := os.Getenv("CASHFREE_WEBHOOK_SECRET")
 
 	if clientID == "" || clientSecret == "" || apiVersion == "" || webhookSecret == "" {
-		panic("Required Cashfree environment variables not set")
+		return nil, fmt.Errorf("required Cashfree environment variables not set")
 	}
 
 	baseURL := os.Getenv("CASHFREE_BASE_URL")
@@ -74,7 +74,7 @@ func NewPaymentController(db *pgxpool.Pool) *PaymentController {
 		BaseURL:       baseURL,
 		WebhookSecret: webhookSecret,
 		HttpClient:    &http.Client{Timeout: 15 * time.Second},
-	}
+	}, nil
 }
 
 // HTTP client helper
@@ -92,8 +92,7 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 	req.Header.Set("x-client-secret", pc.ClientSecret)
 	req.Header.Set("x-api-version", pc.APIVersion)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	return client.Do(req)
+	return pc.HttpClient.Do(req)
 }
 
 // PaymentWebhook is the single entry point for all Cashfree webhooks.
@@ -156,7 +155,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-// Fixed verifyWebhookSignature function - the critical fix is adding the dot between timestamp and body
+// verifyWebhookSignature validates the incoming webhook signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
@@ -166,12 +165,12 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// Validate timestamp format and age
+	// Validate timestamp format and age to prevent replay attacks
 	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
 		timestampTime := time.Unix(ts, 0)
 		timeDiff := time.Since(timestampTime)
 
-		// Allow reasonable time window (5 minutes)
+		// Allow a reasonable time window (e.g., 5 minutes)
 		if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
 			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
 			return false
@@ -181,12 +180,13 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// CRITICAL FIX: Cashfree uses timestamp.body format (note the dot)
-	message := timestamp + "." + string(bodyBytes)
+	// ✅ CRITICAL FIX: Cashfree's signature payload is timestamp concatenated with the body. NO DOT.
+	message := timestamp + string(bodyBytes)
 
-	// Generate HMAC-SHA256 signature
+	// Generate the expected HMAC-SHA256 signature
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(message))
+	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	// Debug logs (remove in production)
@@ -201,8 +201,8 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expected), []byte(signature)))
 	fmt.Printf("======================================\n\n")
 
-	// Secure comparison
-	return hmac.Equal([]byte(expected), []byte(signature))
+	// Use a secure constant-time comparison to prevent timing attacks
+	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
 
 // --- Webhook Handler Implementations ---
