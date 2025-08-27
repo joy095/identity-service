@@ -72,9 +72,8 @@ func NewPaymentController(db *pgxpool.Pool) *PaymentController {
 		ClientSecret:  clientSecret,
 		APIVersion:    apiVersion,
 		BaseURL:       baseURL,
-		WebhookSecret: clientSecret, // Cashfree uses Client Secret for HMAC
-		// Initialize a single, reusable HTTP client
-		HttpClient: &http.Client{Timeout: 15 * time.Second},
+		WebhookSecret: webhookSecret,
+		HttpClient:    &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
