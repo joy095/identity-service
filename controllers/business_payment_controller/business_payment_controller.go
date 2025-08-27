@@ -156,80 +156,190 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-// Correct Cashfree webhook signature verification
+// Improved Cashfree webhook signature verification with better debugging
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte) bool {
 	signature := c.GetHeader("x-webhook-signature")
 	timestamp := c.GetHeader("x-webhook-timestamp")
 
+	// Enhanced validation with better error messages
 	if signature == "" {
-		logger.ErrorLogger.Errorf("Missing webhook signature")
+		logger.ErrorLogger.Errorf("Missing x-webhook-signature header")
 		return false
 	}
 
 	if timestamp == "" {
-		logger.ErrorLogger.Errorf("Missing webhook timestamp")
+		logger.ErrorLogger.Errorf("Missing x-webhook-timestamp header")
 		return false
 	}
 
-	// Replay protection (max 5 minutes)
-	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-		if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-			logger.ErrorLogger.Errorf("Expired webhook timestamp: %s", timestamp)
-			return false
-		}
+	// Parse and validate timestamp
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
+		return false
 	}
 
-	// Cashfree uses: HMAC-SHA256(webhook_secret, timestamp.raw_body)
-	// The format is specifically: timestamp.payload (with a dot)
+	// Check timestamp is reasonable (not too old, not in future)
+	timestampTime := time.Unix(ts, 0)
+	now := time.Now()
+	timeDiff := now.Sub(timestampTime)
+
+	fmt.Printf("\n=== TIMESTAMP VALIDATION ===\n")
+	fmt.Printf("Timestamp: %s (%d)\n", timestamp, ts)
+	fmt.Printf("Timestamp Time: %v\n", timestampTime)
+	fmt.Printf("Current Time: %v\n", now)
+	fmt.Printf("Time Difference: %v\n", timeDiff)
+	fmt.Printf("============================\n")
+
+	// Replay protection (allow up to 5 minutes old, and not in future)
+	if timeDiff > 5*time.Minute {
+		logger.ErrorLogger.Errorf("Webhook timestamp too old: %v", timeDiff)
+		return false
+	}
+	if timeDiff < -1*time.Minute {
+		logger.ErrorLogger.Errorf("Webhook timestamp in future: %v", timeDiff)
+		return false
+	}
+
+	// Create signed payload exactly as Cashfree expects
 	signedPayload := timestamp + "." + string(body)
 
-	// Generate expected signature
+	// Generate expected signature using HMAC-SHA256
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(signedPayload))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	// Debug logging (remove in production)
+	// Enhanced debug logging
 	fmt.Printf("\n=== CASHFREE SIGNATURE DEBUG ===\n")
-	fmt.Printf("Timestamp: %s\n", timestamp)
-	fmt.Printf("Raw Body: %s\n", string(body))
+	fmt.Printf("Headers:\n")
+	fmt.Printf("  x-webhook-signature: %s\n", signature)
+	fmt.Printf("  x-webhook-timestamp: %s\n", timestamp)
+	fmt.Printf("Body Length: %d bytes\n", len(body))
+	fmt.Printf("Webhook Secret Length: %d chars\n", len(pc.WebhookSecret))
+	fmt.Printf("Webhook Secret (masked): %s...%s\n",
+		pc.WebhookSecret[:min(4, len(pc.WebhookSecret))],
+		pc.WebhookSecret[max(0, len(pc.WebhookSecret)-4):])
 	fmt.Printf("Signed Payload: %s\n", signedPayload)
 	fmt.Printf("Expected Signature: %s\n", expectedSignature)
 	fmt.Printf("Received Signature: %s\n", signature)
-	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expectedSignature), []byte(signature)))
+	fmt.Printf("Signatures Match: %v\n", hmac.Equal([]byte(expectedSignature), []byte(signature)))
+
+	// Check for common issues
+	if len(signature) != len(expectedSignature) {
+		fmt.Printf("⚠️  WARNING: Signature lengths don't match!\n")
+	}
+
 	fmt.Printf("===================================\n\n")
 
-	// Verify signature
+	// Secure comparison
 	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
 
-// Test function to verify your webhook secret is correct
-func (pc *PaymentController) TestCashfreeSignature() {
-	// Use your exact webhook payload from logs
-	testPayload := `{"data":{"test_object":{"test_key":"test_value"}},"type":"WEBHOOK","event_time":"2025-08-27T13:09:57.635Z"}`
-	testTimestamp := "1756300199"
-	expectedSignature := "jQtnuNWGSgg25jaG0VUX1EvGXWYpmgpA0RvyjAI5hLQ="
-
-	// Test with your current webhook secret
-	signedPayload := testTimestamp + "." + testPayload
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(signedPayload))
-	calculatedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	fmt.Printf("\n=== WEBHOOK SECRET TEST ===\n")
-	fmt.Printf("Webhook Secret: '%s'\n", pc.WebhookSecret)
-	fmt.Printf("Signed Payload: %s\n", signedPayload)
-	fmt.Printf("Expected Signature: %s\n", expectedSignature)
-	fmt.Printf("Calculated Signature: %s\n", calculatedSig)
-	fmt.Printf("Match: %v\n", calculatedSig == expectedSignature)
-
-	if calculatedSig != expectedSignature {
-		fmt.Printf("\n❌ WEBHOOK SECRET IS INCORRECT!\n")
-		fmt.Printf("Check your CASHFREE_WEBHOOK_SECRET environment variable\n")
-		fmt.Printf("It should match exactly what's in your Cashfree dashboard\n")
-	} else {
-		fmt.Printf("\n✅ WEBHOOK SECRET IS CORRECT!\n")
+// Helper functions for min/max
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	fmt.Printf("===========================\n\n")
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// Test function with multiple test cases
+func (pc *PaymentController) TestCashfreeSignature() {
+	fmt.Printf("\n=== COMPREHENSIVE WEBHOOK SECRET TEST ===\n")
+
+	// Test case 1: From your logs
+	testCases := []struct {
+		name      string
+		payload   string
+		timestamp string
+		expected  string
+	}{
+		{
+			name:      "Current failing case",
+			payload:   `{"data":{"test_object":{"test_key":"test_value"}},"type":"WEBHOOK","event_time":"2025-08-27T13:31:44.563Z"}`,
+			timestamp: "1756301506",
+			expected:  "pqpSTAWDSybFsACzKvVG56cMC1VLza4p+dyjxfhU7f0=",
+		},
+		{
+			name:      "Previous test case",
+			payload:   `{"data":{"test_object":{"test_key":"test_value"}},"type":"WEBHOOK","event_time":"2025-08-27T13:09:57.635Z"}`,
+			timestamp: "1756300199",
+			expected:  "jQtnuNWGSgg25jaG0VUX1EvGXWYpmgpA0RvyjAI5hLQ=",
+		},
+	}
+
+	fmt.Printf("Current Webhook Secret: '%s'\n", pc.WebhookSecret)
+	fmt.Printf("Secret Length: %d characters\n\n", len(pc.WebhookSecret))
+
+	for i, tc := range testCases {
+		fmt.Printf("--- Test Case %d: %s ---\n", i+1, tc.name)
+
+		signedPayload := tc.timestamp + "." + tc.payload
+		mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+		mac.Write([]byte(signedPayload))
+		calculatedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+		fmt.Printf("Timestamp: %s\n", tc.timestamp)
+		fmt.Printf("Payload: %s\n", tc.payload)
+		fmt.Printf("Signed Payload: %s\n", signedPayload)
+		fmt.Printf("Expected: %s\n", tc.expected)
+		fmt.Printf("Calculated: %s\n", calculatedSig)
+		fmt.Printf("Match: %v\n\n", calculatedSig == tc.expected)
+
+		if calculatedSig != tc.expected {
+			fmt.Printf("❌ MISMATCH for %s\n", tc.name)
+		} else {
+			fmt.Printf("✅ SUCCESS for %s\n", tc.name)
+		}
+		fmt.Printf("---\n\n")
+	}
+
+	// Additional diagnostics
+	fmt.Printf("=== DIAGNOSTICS ===\n")
+	fmt.Printf("1. Check if webhook secret contains any hidden characters\n")
+	fmt.Printf("2. Verify the secret is exactly as shown in Cashfree dashboard\n")
+	fmt.Printf("3. Ensure no trailing/leading whitespace in environment variable\n")
+	fmt.Printf("4. Verify you're using the correct environment (sandbox vs production)\n")
+	fmt.Printf("==================\n\n")
+}
+
+// Additional utility to test with a known good signature
+func (pc *PaymentController) DebugSignatureComponents(receivedSig, timestamp string, body []byte) {
+	fmt.Printf("\n=== SIGNATURE COMPONENT ANALYSIS ===\n")
+
+	// Test different possible formats
+	formats := []string{
+		timestamp + "." + string(body), // Standard format
+		timestamp + string(body),       // Without dot
+		string(body) + "." + timestamp, // Reversed
+		string(body) + timestamp,       // Reversed without dot
+	}
+
+	for i, format := range formats {
+		mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+		mac.Write([]byte(format))
+		sig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+		match := hmac.Equal([]byte(sig), []byte(receivedSig))
+		fmt.Printf("Format %d (%s): %s [Match: %v]\n",
+			i+1,
+			[]string{"timestamp.body", "timestamp+body", "body.timestamp", "body+timestamp"}[i],
+			sig,
+			match)
+
+		if match {
+			fmt.Printf("🎉 FOUND CORRECT FORMAT: %s\n",
+				[]string{"timestamp.body", "timestamp+body", "body.timestamp", "body+timestamp"}[i])
+		}
+	}
+	fmt.Printf("=====================================\n\n")
 }
 
 // --- Webhook Handler Implementations ---
