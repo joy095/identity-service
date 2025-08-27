@@ -8,36 +8,36 @@ import (
 )
 
 func RegisterBusinessPaymentRoutes(router *gin.Engine) {
-	businessPaymentController := business_payment_controller.NewBusinessPaymentController(db.DB)
+	paymentController := business_payment_controller.NewPaymentController(db.DB)
 
-	// Unprotected routes
-	router.POST("/payment/webhook", businessPaymentController.PaymentWebhook)
-	router.POST("/payment/webhook/upi", businessPaymentController.UPIWebhook)
-	router.POST("/payment/webhook/card", businessPaymentController.CardWebhook)
-	router.GET("/payment/health", businessPaymentController.WebhookHealthCheck)
-
-	// Protected routes
-	protected := router.Group("/")
-	protected.Use(auth.AuthMiddleware())
+	// Public webhook endpoints (no auth required)
+	webhook := router.Group("/webhook")
 	{
-		// Order and Booking routes
-		protected.POST("/book", businessPaymentController.CreateOrders)
-		protected.GET("/orders/:order_id", businessPaymentController.GetOrder)
-		protected.GET("/bookings", businessPaymentController.GetBookings)
-		protected.GET("/bookings/:booking_id", businessPaymentController.GetBooking)
+		webhook.POST("/payment", paymentController.PaymentWebhook)
+		webhook.GET("/health", paymentController.WebhookHealthCheck)
+	}
 
-		// Payment routes
-		protected.POST("/pay", businessPaymentController.PayPayment)
-		protected.POST("/pay/upi/qr", businessPaymentController.PayUPIQR)
-		protected.POST("/pay/upi/intent", businessPaymentController.PayUPIIntent)
-		protected.POST("/pay/upi/collect", businessPaymentController.PayUPICollect)
-		protected.GET("/payment/status/:order_id", businessPaymentController.GetPaymentStatus)
+	// Protected payment endpoints (require authentication)
+	api := router.Group("")
+	api.Use(auth.AuthMiddleware())
+	{
+		// Order management
+		api.POST("/orders", paymentController.CreateOrder)
+		api.GET("/orders/:order_id/status", paymentController.GetOrderStatus)
+		api.GET("/orders/history", paymentController.GetOrderHistory)
 
-		// Refund routes
-		protected.POST("/orders/:order_id/refunds", businessPaymentController.CreateRefund)
-		protected.GET("/orders/:order_id/refunds/:refund_id", businessPaymentController.GetRefund)
+		// Payment processing
+		api.POST("/payments/process", paymentController.ProcessPayment)
 
-		// Payout routes
-		protected.POST("/payouts", businessPaymentController.CreatePayout)
+		// UPI payments
+		upi := api.Group("/payments/upi")
+		{
+			upi.POST("/qr", paymentController.PayUPIQR)
+			upi.POST("/intent", paymentController.PayUPIIntent)
+			upi.POST("/collect", paymentController.PayUPICollect)
+		}
+
+		// Refunds
+		api.POST("/orders/:order_id/refunds", paymentController.CreateRefund)
 	}
 }
