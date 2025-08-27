@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -163,24 +162,28 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte) bool {
 	signature := c.GetHeader("x-webhook-signature")
 	if signature == "" {
-		logger.ErrorLogger.Error("Missing webhook signature header")
 		return false
+	}
+
+	// Replay protection
+	timestamp := c.GetHeader("x-webhook-timestamp")
+	if timestamp != "" {
+		if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
+			if time.Since(time.Unix(ts, 0)) > 5*time.Minute {
+				logger.ErrorLogger.Errorf("Expired webhook timestamp: %s", timestamp)
+				return false
+			}
+		}
 	}
 
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write(body)
-	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	fmt.Printf("Cashfree Debug | ReceivedSig=%s | ExpectedSig=%s | Body=%s", signature, expectedSignature, string(body))
-
-	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
-		fmt.Errorf(
-			"Signature mismatch | Expected=%s | Received=%s | Body=%s",
-			expectedSignature, signature, string(body),
-		)
+	if !hmac.Equal([]byte(expectedSig), []byte(signature)) {
+		logger.ErrorLogger.Errorf("Signature mismatch | Expected=%s | Received=%s", expectedSig, signature)
 		return false
 	}
-
 	return true
 }
 
