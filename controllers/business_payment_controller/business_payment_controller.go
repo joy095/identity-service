@@ -177,7 +177,7 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte)
 		}
 	}
 
-	mac := hmac.New(sha256.New, []byte(pc.ClientSecret)) // Use Client Secret
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret)) // // Using Webhook Secret
 	mac.Write(body)
 	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
