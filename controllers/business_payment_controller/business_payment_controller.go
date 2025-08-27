@@ -160,30 +160,23 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 // verifyWebhookSignature verifies the HMAC-SHA256 signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte) bool {
-	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
-
-	if timestamp == "" || signature == "" {
-		logger.ErrorLogger.Error("Missing webhook signature headers")
+	if signature == "" {
+		logger.ErrorLogger.Error("Missing webhook signature header")
 		return false
 	}
 
-	// Check if the timestamp is recent (e.g., within 5 minutes) to prevent replay attacks.
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil || time.Since(time.Unix(ts, 0)) > 5*time.Minute {
-		logger.ErrorLogger.Errorf("Invalid or expired webhook timestamp: %s", timestamp)
+	// Compute expected signature using only the raw body
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write(body)
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
+		logger.ErrorLogger.Errorf("Signature mismatch: expected=%s, got=%s", expectedSignature, signature)
 		return false
 	}
 
-	// Generate the expected signature.
-	// The message is a direct concatenation of the timestamp and the raw request body.
-	message := timestamp + string(body)
-	h := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	h.Write([]byte(message))
-	expectedSignature := hex.EncodeToString(h.Sum(nil))
-
-	// Compare signatures in constant time to prevent timing attacks.
-	return hmac.Equal([]byte(expectedSignature), []byte(signature))
+	return true
 }
 
 // --- Webhook Handler Implementations ---
