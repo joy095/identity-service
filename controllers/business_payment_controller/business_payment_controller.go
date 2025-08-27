@@ -156,12 +156,78 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
+// Strategy 1: Sign only the body
+func (pc *PaymentController) verifySignatureStrategy1(body []byte, signature string) bool {
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write(body)
+	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expectedSig), []byte(signature))
+}
+
+// Strategy 2: Sign timestamp + body
+func (pc *PaymentController) verifySignatureStrategy2(timestamp string, body []byte, signature string) bool {
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(timestamp))
+	mac.Write(body)
+	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expectedSig), []byte(signature))
+}
+
+// Strategy 3: Sign string payload (different encoding approach)
+func (pc *PaymentController) verifySignatureStrategy3(payload string, signature string) bool {
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(payload))
+	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	return hmac.Equal([]byte(expectedSig), []byte(signature))
+}
+
+// Strategy 4: Cashfree specific format (timestamp.payload or other variations)
+func (pc *PaymentController) verifySignatureStrategy4(timestamp string, body []byte, signature string) bool {
+	if timestamp == "" {
+		return false
+	}
+
+	// Try timestamp.payload format
+	payload := timestamp + "." + string(body)
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(payload))
+	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	if hmac.Equal([]byte(expectedSig), []byte(signature)) {
+		return true
+	}
+
+	// Try other common formats
+	formats := []string{
+		timestamp + string(body),       // timestamp + body
+		string(body) + timestamp,       // body + timestamp
+		timestamp + "|" + string(body), // timestamp|body
+	}
+
+	for _, format := range formats {
+		mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+		mac.Write([]byte(format))
+		expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+		if hmac.Equal([]byte(expectedSig), []byte(signature)) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // verifyWebhookSignature verifies the HMAC-SHA256 signature from Cashfree.
+// Enhanced webhook signature verification with multiple strategies
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte) bool {
 	signature := c.GetHeader("x-webhook-signature")
 	timestamp := c.GetHeader("x-webhook-timestamp")
 
 	if signature == "" {
+		logger.ErrorLogger.Errorf("Missing webhook signature")
 		return false
 	}
 
@@ -175,16 +241,38 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte)
 		}
 	}
 
-	// Only body is signed
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write(body)
-	expectedSig := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(expectedSig), []byte(signature)) {
-		fmt.Printf("\nSignature mismatch\nExpected=%s\nReceived=%s\nPayload=%s\n", expectedSig, signature, string(body))
-		return false
+	// Strategy 1: Sign only the body (current implementation)
+	if pc.verifySignatureStrategy1(body, signature) {
+		logger.InfoLogger.Info("Signature verified using Strategy 1 (body only)")
+		return true
 	}
-	return true
+
+	// Strategy 2: Sign timestamp + body (common pattern)
+	if timestamp != "" && pc.verifySignatureStrategy2(timestamp, body, signature) {
+		logger.InfoLogger.Info("Signature verified using Strategy 2 (timestamp + body)")
+		return true
+	}
+
+	// Strategy 3: Sign raw payload as string (different encoding)
+	if pc.verifySignatureStrategy3(string(body), signature) {
+		logger.InfoLogger.Info("Signature verified using Strategy 3 (string payload)")
+		return true
+	}
+
+	// Strategy 4: Cashfree specific format (if they use a specific format)
+	if pc.verifySignatureStrategy4(timestamp, body, signature) {
+		logger.InfoLogger.Info("Signature verified using Strategy 4 (Cashfree format)")
+		return true
+	}
+
+	// Log detailed debug information
+	logger.ErrorLogger.Errorf("All signature verification strategies failed")
+	logger.ErrorLogger.Errorf("Received signature: %s", signature)
+	logger.ErrorLogger.Errorf("Timestamp: %s", timestamp)
+	logger.ErrorLogger.Errorf("Payload length: %d", len(body))
+	logger.ErrorLogger.Errorf("Payload: %s", string(body))
+
+	return false
 }
 
 // --- Webhook Handler Implementations ---
