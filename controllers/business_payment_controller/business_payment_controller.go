@@ -180,14 +180,13 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// ✅ CRITICAL FIX: Cashfree's signature payload is timestamp concatenated with the body. NO DOT.
+	// Message is timestamp concatenated with the body (NO DOT)
 	message := timestamp + string(bodyBytes)
 
-	// Generate the expected HMAC-SHA256 signature
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	// Generate the expected HMAC-SHA256 signature using ClientSecret
+	mac := hmac.New(sha256.New, []byte(pc.ClientSecret))
 	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	// Debug logs (remove in production)
 	fmt.Printf("\n=== FIXED CASHFREE SIGNATURE DEBUG ===\n")
@@ -195,10 +194,10 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	fmt.Printf("Body Length: %d bytes\n", len(bodyBytes))
 	fmt.Printf("Message Format: timestamp.body\n")
 	fmt.Printf("Message: %s\n", message)
-	fmt.Printf("Secret Length: %d\n", len(pc.WebhookSecret))
-	fmt.Printf("Expected: %s\n", expected)
+	fmt.Printf("Secret Length: %d\n", len(pc.ClientSecret))
+	fmt.Printf("Expected: %s\n", expectedSignature)
 	fmt.Printf("Received: %s\n", signature)
-	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expected), []byte(signature)))
+	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expectedSignature), []byte(signature)))
 	fmt.Printf("======================================\n\n")
 
 	// Use a secure constant-time comparison to prevent timing attacks
