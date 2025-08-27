@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -169,6 +170,8 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, body []byte)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write(body)
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil)) //  Base64
+
+	fmt.Printf("Cashfree Debug | ReceivedSig=%s | ExpectedSig=%s | Body=%s", signature, expectedSignature, string(body))
 
 	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
 		logger.ErrorLogger.Errorf("Signature mismatch: expected=%s, got=%s", expectedSignature, signature)
