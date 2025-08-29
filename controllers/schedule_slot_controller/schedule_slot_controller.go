@@ -457,6 +457,15 @@ func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 		return
 	}
 
+	// Normalize current date (UTC) to YYYY-MM-DD
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+
+	// Check if booking date is in the past or today
+	if !bookingDate.After(today) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking date must be in the future"})
+		return
+	}
+
 	// UTC day boundaries
 	startOfDay := time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), 0, 0, 0, 0, time.UTC)
 	endOfDay := startOfDay.Add(24 * time.Hour)

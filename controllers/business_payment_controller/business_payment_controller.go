@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/schedule_slot_models"
 	"github.com/joy095/identity/models/user_models"
 )
 
@@ -387,8 +388,9 @@ func updateOrderStatus(ctx context.Context, db *pgxpool.Pool, orderID, status, l
 
 // CreateOrderRequest represents the order creation request
 type CreateOrderRequest struct {
-	Amount   float64 `json:"amount" binding:"required,gt=0"`
-	Currency string  `json:"currency" binding:"required,len=3"`
+	Amount   float64   `json:"amount" binding:"required,gt=0"`
+	Currency string    `json:"currency" binding:"required,len=3"`
+	SlotID   uuid.UUID `json:"slot_id" binding:"required"`
 }
 
 // CreateOrder creates a new payment order
@@ -426,12 +428,18 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Generate unique order ID
-	orderID := "order_" + uuid.New().String()
+	ctx := c.Request.Context()
 
-	// Create Cashfree order
+	// Validate schedule slot
+	_, err = schedule_slot_models.GetScheduleSlotByID(ctx, pc.DB, req.SlotID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get slot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get slot"})
+		return
+	}
+
+	// Create Cashfree order payload
 	payload := map[string]interface{}{
-		"order_id":       orderID,
 		"order_amount":   req.Amount,
 		"order_currency": req.Currency,
 		"customer_details": map[string]string{
@@ -447,7 +455,8 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	resp, err := pc.makeRequest(c.Request.Context(), "POST", "/orders", bytes.NewBuffer(jsonPayload))
+	// Call Cashfree API
+	resp, err := pc.makeRequest(ctx, "POST", "/orders", bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Cashfree request failed: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
@@ -468,28 +477,31 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Save order to database
-	ctx := c.Request.Context()
-	cfOrderID, _ := cfResp["cf_order_id"].(string)
-	paymentSessionID, _ := cfResp["payment_session_id"].(string)
+	// Extract Cashfree response values
+	cfOrderID, _ := cfResp["order_id"].(string)
+	cfPaymentSessionID, _ := cfResp["payment_session_id"].(string)
 
+	// Insert order into DB using Cashfree's order_id
 	var dbOrderID uuid.UUID
 	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO orders (customer_id, order_id, cf_order_id, amount, currency, status, payment_session_id)
-		  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		customerID, orderID, cfOrderID, req.Amount, req.Currency, StatusPending, paymentSessionID,
+		`INSERT INTO orders (order_id, customer_id, slot_id, amount, currency, status, cf_order_id, payment_session_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
+		cfOrderID, customerID, req.SlotID, req.Amount, req.Currency, StatusPending,
+		cfOrderID, cfPaymentSessionID,
 	).Scan(&dbOrderID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to save order: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create order"})
+		logger.ErrorLogger.Errorf("Failed to insert order in DB: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save order"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Order created: %s for customer: %s", orderID, customerID)
+	logger.InfoLogger.Infof("Order created: %s for customer: %s", cfOrderID, customerID)
 
+	// Respond with order_id + Cashfree response
 	c.JSON(http.StatusOK, gin.H{
-		"order_id": orderID,
+		"order_id": cfOrderID,
 		"payment":  cfResp,
 	})
 }
