@@ -56,23 +56,20 @@ func NewWorkingHour(
 func createWorkingHourCore(ctx context.Context, dbConn interface{}, wh *WorkingHour) (*WorkingHour, error) {
 	logger.InfoLogger.Infof("Attempting to create working hour record for BusinessID: %s, Day: %s", wh.BusinessID, wh.DayOfWeek)
 	query := `
-        INSERT INTO working_hours (
-            id, business_id, day_of_week, open_time, close_time,
-            is_closed, created_at, updated_at
-        )
-        VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8
-        ) RETURNING id` // Always use RETURNING for consistency if needed, or just rely on success/failure
+    INSERT INTO working_hours (
+      business_id, day_of_week, open_time, close_time,
+      is_closed, created_at, updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING id`
 
 	var err error
 	switch conn := dbConn.(type) {
 	case *pgxpool.Pool:
-		var returnedID uuid.UUID
-		err = conn.QueryRow(ctx, query, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&returnedID)
+		err = conn.QueryRow(ctx, query, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&wh.ID)
 
 	case pgx.Tx:
-		var returnedID uuid.UUID
-		err = conn.QueryRow(ctx, query, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&returnedID)
+		err = conn.QueryRow(ctx, query, wh.BusinessID, wh.DayOfWeek, wh.OpenTime, wh.CloseTime, wh.IsClosed, wh.CreatedAt, wh.UpdatedAt).Scan(&wh.ID)
 		// Optionally assign returnedID if needed locally, but wh.ID is already set
 	default:
 		return nil, fmt.Errorf("unsupported database connection type")

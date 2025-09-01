@@ -21,7 +21,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/schedule_slot_models"
+	"github.com/joy095/identity/models/service_models"
 	"github.com/joy095/identity/models/user_models"
+	"github.com/joy095/identity/utils"
 )
 
 // Order status constants
@@ -74,7 +76,14 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 		APIVersion:    apiVersion,
 		BaseURL:       baseURL,
 		WebhookSecret: webhookSecret,
-		HttpClient:    &http.Client{Timeout: 15 * time.Second},
+		HttpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}, nil
 }
 
@@ -105,17 +114,13 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
-	// Restore body so Gin can re-use it if needed (optional but good practice)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-	// Debug log raw payload (helps confirm signature mismatch cause)
-	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
-
-	// 1. Verify webhook signature (CRITICAL SECURITY STEP)
+	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
+	// Restore body so Gin can re-use it if needed (optional but good practice)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
 	// 2. Parse generic event
 	var event WebhookEvent
@@ -128,11 +133,18 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 3. Log event
-	_, err = pc.DB.Exec(ctx,
-		`INSERT INTO webhook_events (event_type, raw_payload) VALUES ($1, $2)`,
-		event.Type, string(bodyBytes))
+	var eventID int64
+	err = pc.DB.QueryRow(ctx,
+		`INSERT INTO webhook_events (event_type, raw_payload, processed) VALUES ($1, $2, $3) RETURNING id`,
+		event.Type, string(bodyBytes), false).Scan(&eventID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
+	} else {
+		_, err = pc.DB.Exec(ctx,
+			`UPDATE webhook_events SET processed = true WHERE id = $1`, eventID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to update webhook event as processed: %v", err)
+		}
 	}
 
 	// 4. Route event
@@ -171,8 +183,8 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		timestampTime := time.Unix(ts, 0)
 		timeDiff := time.Since(timestampTime)
 
-		// Allow a reasonable time window (e.g., 5 minutes)
-		if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
+		// Webhooks should only come from the past, allow 5 minutes window
+		if timeDiff > 5*time.Minute || timeDiff < 0 {
 			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
 			return false
 		}
@@ -184,22 +196,10 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	// Message is timestamp concatenated with the body (NO DOT)
 	message := timestamp + string(bodyBytes)
 
-	// Generate the expected HMAC-SHA256 signature using ClientSecret
-	mac := hmac.New(sha256.New, []byte(pc.ClientSecret))
+	// Generate the expected HMAC-SHA256 signature using WebhookSecret
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	// Debug logs (remove in production)
-	fmt.Printf("\n=== FIXED CASHFREE SIGNATURE DEBUG ===\n")
-	fmt.Printf("Timestamp: %s\n", timestamp)
-	fmt.Printf("Body Length: %d bytes\n", len(bodyBytes))
-	fmt.Printf("Message Format: timestamp.body\n")
-	fmt.Printf("Message: %s\n", message)
-	fmt.Printf("Secret Length: %d\n", len(pc.ClientSecret))
-	fmt.Printf("Expected: %s\n", expectedSignature)
-	fmt.Printf("Received: %s\n", signature)
-	fmt.Printf("Match: %v\n", hmac.Equal([]byte(expectedSignature), []byte(signature)))
-	fmt.Printf("======================================\n\n")
 
 	// Use a secure constant-time comparison to prevent timing attacks
 	return hmac.Equal([]byte(expectedSignature), []byte(signature))
@@ -226,9 +226,9 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 
 	_, err = tx.Exec(ctx,
 		`UPDATE orders 
-		 SET status = $1, cf_payment_id = $2, payment_method = $3, payment_time = $4, bank_reference = $5, updated_at = NOW()
-		 WHERE order_id = $6`,
-		StatusPaid, payment.CfPaymentID, payment.PaymentMethod, payment.PaymentTime, payment.BankReference, orderID)
+		 SET status = $1, cf_payment_id = $2, payment_method = $3, bank_reference = $4, updated_at = NOW()
+		 WHERE order_id = $5`,
+		StatusPaid, payment.CfPaymentID, payment.PaymentMethod, payment.BankReference, orderID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
 		return
@@ -239,7 +239,7 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 		return
 	}
 
-	logger.InfoLogger.Infof("✅ Payment success processed for order: %s", orderID)
+	logger.InfoLogger.Infof("Payment success processed for order: %s", orderID)
 }
 
 func (pc *PaymentController) handlePaymentFailure(ctx context.Context, data json.RawMessage) {
@@ -250,7 +250,10 @@ func (pc *PaymentController) handlePaymentFailure(ctx context.Context, data json
 	}
 
 	orderID := webhookData.Order.OrderID
-	updateOrderStatus(ctx, pc.DB, orderID, StatusFailed, "❌ Payment failure/dropped processed for order: %s")
+	if err := updateOrderStatus(ctx, pc.DB, orderID, StatusFailed, "Payment failure/dropped processed for order: %s"); err != nil {
+		logger.ErrorLogger.Errorf("Failed to update order status: %v", err)
+	}
+
 }
 
 type OrderOnlyWebhookData struct {
@@ -362,11 +365,11 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 }
 
 // Helper function to update only the status of an order within a transaction.
-func updateOrderStatus(ctx context.Context, db *pgxpool.Pool, orderID, status, logMessage string) {
+func updateOrderStatus(ctx context.Context, db *pgxpool.Pool, orderID, status, logMessage string) error {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] UpdateOrderStatus for %s: %v", orderID, err)
-		return
+		return err
 	}
 	defer tx.Rollback(ctx)
 
@@ -375,48 +378,51 @@ func updateOrderStatus(ctx context.Context, db *pgxpool.Pool, orderID, status, l
 		status, orderID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order status failed for %s: %v", orderID, err)
-		return
+		return err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] UpdateOrderStatus for %s: %v", orderID, err)
-		return
+		return err
 	}
 
 	logger.InfoLogger.Infof(logMessage, orderID)
+
+	return nil
 }
 
 // CreateOrderRequest represents the order creation request
 type CreateOrderRequest struct {
-	Amount   float64   `json:"amount" binding:"required,gt=0"`
-	Currency string    `json:"currency" binding:"required,len=3"`
-	SlotID   uuid.UUID `json:"slot_id" binding:"required"`
+	Currency      string                 `json:"currency" binding:"required,len=3"`
+	SlotID        uuid.UUID              `json:"slot_id" binding:"required"`
+	UpiID         string                 `json:"upi_id"`
+	PaymentMethod map[string]interface{} `json:"payment_method"`
 }
 
-// CreateOrder creates a new payment order
+// CreateOrder creates a new payment order and optionally initiates payment
 func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Get customer ID from JWT token
-	customerIDStr, exists := c.Get("sub")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	customerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
-	customerID, err := uuid.Parse(customerIDStr.(string))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid customer ID"})
-		return
-	}
+	ctx := c.Request.Context()
 
 	// Get user details
-	user, err := user_models.GetUserByID(c.Request.Context(), pc.DB, customerID)
+	user, err := user_models.GetUserByID(ctx, pc.DB, customerID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user"})
 		return
 	}
 
-	if user.Phone == nil {
+	if user.Phone == nil || *user.Phone == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "user phone required"})
 		return
 	}
@@ -428,7 +434,35 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	ctx := c.Request.Context()
+	Slot, err := schedule_slot_models.GetScheduleSlotByID(c.Request.Context(), pc.DB, req.SlotID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get slot: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get slot"})
+		return
+	}
+
+	// Handle UpiID as shortcut for UPI collect if no payment_method provided
+	if req.UpiID != "" && len(req.PaymentMethod) == 0 {
+		upiRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-_]*[a-zA-Z0-9])?@[a-zA-Z0-9][a-zA-Z0-9]*$`)
+		if !upiRegex.MatchString(req.UpiID) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid UPI ID"})
+			return
+		}
+		req.PaymentMethod = map[string]interface{}{
+			"upi": map[string]string{
+				"channel": "collect",
+				"upi_id":  req.UpiID,
+			},
+		}
+	}
+
+	// Get service
+	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, Slot.ServiceID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get service: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
+		return
+	}
 
 	// Validate schedule slot
 	_, err = schedule_slot_models.GetScheduleSlotByID(ctx, pc.DB, req.SlotID)
@@ -440,7 +474,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	// Create Cashfree order payload
 	payload := map[string]interface{}{
-		"order_amount":   req.Amount,
+		"order_amount":   service.Price,
 		"order_currency": req.Currency,
 		"customer_details": map[string]string{
 			"customer_id":    customerID.String(),
@@ -455,7 +489,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Call Cashfree API
+	// Call Cashfree API to create order
 	resp, err := pc.makeRequest(ctx, "POST", "/orders", bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		logger.ErrorLogger.Errorf("Cashfree request failed: %v", err)
@@ -471,15 +505,15 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	var cfResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
+	var cfOrderResp map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&cfOrderResp); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response from payment gateway"})
 		return
 	}
 
 	// Extract Cashfree response values
-	cfOrderID, _ := cfResp["order_id"].(string)
-	cfPaymentSessionID, _ := cfResp["payment_session_id"].(string)
+	cfOrderID, _ := cfOrderResp["order_id"].(string)
+	cfPaymentSessionID, _ := cfOrderResp["payment_session_id"].(string)
 
 	// Insert order into DB using Cashfree's order_id
 	var dbOrderID uuid.UUID
@@ -487,7 +521,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		`INSERT INTO orders (order_id, customer_id, slot_id, amount, currency, status, cf_order_id, payment_session_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id`,
-		cfOrderID, customerID, req.SlotID, req.Amount, req.Currency, StatusPending,
+		cfOrderID, customerID, req.SlotID, service.Price, req.Currency, StatusPending,
 		cfOrderID, cfPaymentSessionID,
 	).Scan(&dbOrderID)
 
@@ -499,117 +533,53 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	logger.InfoLogger.Infof("Order created: %s for customer: %s", cfOrderID, customerID)
 
-	// Respond with order_id + Cashfree response
-	c.JSON(http.StatusOK, gin.H{
+	var response gin.H = gin.H{
 		"order_id": cfOrderID,
-		"payment":  cfResp,
-	})
-}
-
-// PaymentRequest for processing payments
-type PaymentRequest struct {
-	PaymentSessionID string                 `json:"payment_session_id" binding:"required"`
-	PaymentMethod    map[string]interface{} `json:"payment_method" binding:"required"`
-}
-
-// ProcessPayment handles payment processing
-func (pc *PaymentController) ProcessPayment(c *gin.Context) {
-	var req PaymentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
+		"payment":  cfOrderResp,
 	}
 
-	payload := map[string]interface{}{
-		"payment_session_id": req.PaymentSessionID,
-		"payment_method":     req.PaymentMethod,
-	}
+	// If payment method provided, initiate payment immediately
+	if len(req.PaymentMethod) > 0 {
+		paymentPayload := map[string]interface{}{
+			"payment_session_id": cfPaymentSessionID,
+			"payment_method":     req.PaymentMethod,
+		}
 
-	jsonPayload, _ := json.Marshal(payload)
-	resp, err := pc.makeRequest(c.Request.Context(), "POST", "/orders/sessions", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "payment failed", "details": string(body)})
-		return
-	}
-
-	var cfResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"payment": cfResp})
-}
-
-// UPI payment structures
-type UPIRequest struct {
-	PaymentSessionID string `json:"payment_session_id" binding:"required"`
-	UPIID            string `json:"upi_id"`
-}
-
-// ProcessUPIPayment handles UPI payments with different channels
-func (pc *PaymentController) ProcessUPIPayment(c *gin.Context, channel string, requireUPIID bool) {
-	var req UPIRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-
-	// Validate UPI ID if required
-	if requireUPIID {
-		upiRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-_]*[a-zA-Z0-9])?@[a-zA-Z][a-zA-Z0-9]*$`)
-		if !upiRegex.MatchString(req.UPIID) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid UPI ID"})
+		jsonPaymentPayload, err := json.Marshal(paymentPayload)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to marshal payment payload: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare payment"})
 			return
 		}
+
+		paymentResp, err := pc.makeRequest(ctx, "POST", "/orders/sessions", bytes.NewBuffer(jsonPaymentPayload))
+		if err != nil {
+			logger.ErrorLogger.Errorf("Cashfree payment initiation failed: %v", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
+			return
+		}
+		defer paymentResp.Body.Close()
+
+		if paymentResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(paymentResp.Body)
+			logger.ErrorLogger.Errorf("Cashfree payment error [%d]: %s", paymentResp.StatusCode, string(body))
+			c.JSON(http.StatusBadGateway, gin.H{"error": "payment initiation failed", "details": string(body)})
+			return
+		}
+
+		var cfPaymentResp map[string]interface{}
+		if err := json.NewDecoder(paymentResp.Body).Decode(&cfPaymentResp); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response from payment gateway"})
+			return
+		}
+
+		// Override the payment in response with the initiation response
+		response["payment"] = cfPaymentResp
 	}
 
-	upiData := map[string]string{"channel": channel}
-	if req.UPIID != "" {
-		upiData["upi_id"] = req.UPIID
-	}
-
-	payload := map[string]interface{}{
-		"payment_session_id": req.PaymentSessionID,
-		"payment_method": map[string]interface{}{
-			"upi": upiData,
-		},
-	}
-
-	jsonPayload, _ := json.Marshal(payload)
-	resp, err := pc.makeRequest(c.Request.Context(), "POST", "/orders/sessions", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "UPI payment failed", "details": string(body)})
-		return
-	}
-
-	var cfResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response"})
-		return
-	}
-
-	c.JSON(http.StatusOK, cfResp)
+	// Respond with order_id + payment response
+	c.JSON(http.StatusOK, response)
 }
-
-// UPI payment endpoints
-func (pc *PaymentController) PayUPIQR(c *gin.Context)      { pc.ProcessUPIPayment(c, "qrcode", false) }
-func (pc *PaymentController) PayUPIIntent(c *gin.Context)  { pc.ProcessUPIPayment(c, "link", false) }
-func (pc *PaymentController) PayUPICollect(c *gin.Context) { pc.ProcessUPIPayment(c, "collect", true) }
 
 // Webhook structures based on Cashfree documentation
 type WebhookEvent struct {
@@ -635,59 +605,8 @@ type PaymentData struct {
 	PaymentStatus   string                 `json:"payment_status"`
 	PaymentAmount   float64                `json:"payment_amount"`
 	PaymentCurrency string                 `json:"payment_currency"`
-	PaymentTime     string                 `json:"payment_time"`
 	BankReference   string                 `json:"bank_reference"`
 	PaymentMethod   map[string]interface{} `json:"payment_method"`
-}
-
-// GetOrderStatus retrieves order status with real-time sync
-func (pc *PaymentController) GetOrderStatus(c *gin.Context) {
-	orderID := c.Param("order_id")
-	if orderID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
-		return
-	}
-
-	ctx := c.Request.Context()
-	var order struct {
-		ID            uuid.UUID              `json:"id"`
-		OrderID       string                 `json:"order_id"`
-		Status        string                 `json:"status"`
-		Amount        float64                `json:"amount"`
-		Currency      string                 `json:"currency"`
-		PaymentMethod map[string]interface{} `json:"payment_method,omitempty"`
-		PaymentTime   *string                `json:"payment_time,omitempty"`
-		BankReference *string                `json:"bank_reference,omitempty"`
-		CreatedAt     time.Time              `json:"created_at"`
-	}
-
-	err := pc.DB.QueryRow(ctx,
-		`SELECT id, order_id, status, amount, currency, 
-			    COALESCE(payment_method, '{}'::jsonb), payment_time, bank_reference, created_at
-		 FROM orders WHERE order_id = $1`,
-		orderID).Scan(
-		&order.ID, &order.OrderID, &order.Status, &order.Amount, &order.Currency,
-		&order.PaymentMethod, &order.PaymentTime, &order.BankReference, &order.CreatedAt)
-
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
-		} else {
-			logger.ErrorLogger.Errorf("Failed to get order: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
-		}
-		return
-	}
-
-	// If order is still pending and older than 5 minutes, sync with Cashfree as a fallback.
-	// Webhooks should handle most cases, but this adds resilience.
-	if order.Status == StatusPending && time.Since(order.CreatedAt) > 5*time.Minute {
-		pc.syncOrderStatus(ctx, orderID)
-		// Re-fetch updated status
-		pc.DB.QueryRow(ctx, `SELECT status FROM orders WHERE order_id = $1`, orderID).Scan(&order.Status)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"order": order})
 }
 
 // syncOrderStatus syncs order status with Cashfree
@@ -812,7 +731,7 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 	_, err = pc.DB.Exec(ctx,
 		`INSERT INTO refunds (order_id, refund_id, amount, status, note)
 		 VALUES ($1, $2, $3, $4, $5)`,
-		orderID, refundID, req.Amount, StatusPending, req.Note)
+		orderID, refundID, req.Amount, StatusRefundPending, req.Note)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save refund: %v", err)
 	}
@@ -825,15 +744,79 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 	})
 }
 
-// GetOrderHistory gets order history for a customer
-func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
-	customerIDStr, exists := c.Get("sub")
-	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+// GetOrder retrieves an order by ID for the authenticated user
+func (pc *PaymentController) GetOrder(c *gin.Context) {
+	orderID := c.Param("order_id")
+	if orderID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
 		return
 	}
 
-	customerID, _ := uuid.Parse(customerIDStr.(string))
+	// Get authenticated user ID
+	customerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
+		return
+	}
+
+	ctx := c.Request.Context()
+	var order struct {
+		ID               uuid.UUID `db:"id"`
+		OrderID          string    `db:"order_id"`
+		Amount           float64   `db:"amount"`
+		PaymentSessionID string    `db:"payment_session_id"`
+		Currency         string    `db:"currency"`
+		Status           string    `db:"status"`
+		CreatedAt        time.Time `db:"created_at"`
+	}
+
+	err = pc.DB.QueryRow(ctx,
+		`SELECT id, order_id, amount, payment_session_id, currency, status, created_at
+         FROM orders 
+         WHERE customer_id = $1 AND order_id = $2`,
+		customerID, orderID).Scan(
+		&order.ID, &order.OrderID, &order.Amount, &order.PaymentSessionID,
+		&order.Currency, &order.Status, &order.CreatedAt,
+	)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"order_id":           order.OrderID,
+		"amount":             order.Amount,
+		"currency":           order.Currency,
+		"status":             order.Status,
+		"created_at":         order.CreatedAt,
+		"payment_session_id": order.PaymentSessionID,
+		"payment": gin.H{
+			"order_amount":   order.Amount,
+			"order_currency": order.Currency,
+		},
+	})
+}
+
+// GetOrderHistory gets order history for a customer
+func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
+
+	customerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
+		return
+	}
 
 	// Pagination
 	limit := 20
@@ -844,7 +827,7 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 		}
 	}
 	if o := c.Query("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 && parsed <= 100000 {
 			offset = parsed
 		}
 	}

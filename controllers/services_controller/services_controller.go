@@ -33,11 +33,11 @@ func NewServiceController(db *pgxpool.Pool) (*ServiceController, error) {
 }
 
 type CreateServiceRequest struct {
-	BusinessID  string  `form:"businessId" binding:"required"`
-	Name        string  `form:"name" binding:"required"`
-	Description string  `form:"description,omitempty"`
-	Duration    int     `form:"duration" binding:"required"`
-	Price       float64 `form:"price" binding:"required"`
+	BusinessID  string  `form:"businessId" json:"businessId" binding:"required,uuid4"`
+	Name        string  `form:"name" json:"name" binding:"required,min=1,max=128"`
+	Description string  `form:"description" json:"description" binding:"omitempty,max=1024"`
+	Duration    int     `form:"duration" json:"duration" binding:"required,min=1"`
+	Price       float64 `form:"price" json:"price" binding:"required,min=1"`
 	IsActive    bool    `form:"isActive,omitempty"`
 }
 

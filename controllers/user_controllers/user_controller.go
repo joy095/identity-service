@@ -36,17 +36,13 @@ func NewUserController() *UserController {
 func (uc *UserController) UpdateProfile(c *gin.Context) {
 	logger.InfoLogger.Info("UpdateProfile function called")
 
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -122,17 +118,13 @@ func (uc *UserController) UpdateEmailWithPassword(c *gin.Context) {
 		return
 	}
 
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -231,17 +223,13 @@ func (uc *UserController) VerifyEmailChangeOTP(c *gin.Context) {
 	req.Email = strings.ToLower(strings.Trim(req.Email, " "))
 
 	// Get user ID from JWT token
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -648,7 +636,11 @@ func (uc *UserController) ChangePassword(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
-	defer tx.Rollback(context.Background()) // Rollback on error
+	defer func() {
+		if err := tx.Rollback(context.Background()); err != nil && err != pgx.ErrTxClosed {
+			logger.ErrorLogger.Errorf("Failed to rollback transaction: %v", err)
+		}
+	}()
 
 	// 1. Update the password in the database
 	_, err = tx.Exec(context.Background(), `UPDATE users SET password_hash = $1 WHERE id = $2`, hashedNewPassword, user.ID)
@@ -823,17 +815,13 @@ func (uc *UserController) RefreshToken(c *gin.Context) {
 func (uc *UserController) Logout(c *gin.Context) {
 	logger.InfoLogger.Info("Logout controller called")
 
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDFromToken.(string))
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -912,24 +900,13 @@ func (uc *UserController) GetMyProfile(c *gin.Context) {
 	logger.InfoLogger.Info("GetMyProfile called")
 
 	// Get user ID from JWT token (set by AuthMiddleware)
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userIDStr, ok := userIDFromToken.(string)
-	if !ok {
-		logger.ErrorLogger.Error("Invalid user ID type in context (not a string)")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid UUID format in sub: %v", err)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 

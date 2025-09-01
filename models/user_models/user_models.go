@@ -123,6 +123,8 @@ func ComparePasswords(db *pgxpool.Pool, password, email string) (bool, error) {
 	user, err := GetUserByEmail(context.Background(), db, email)
 	if err != nil {
 		logger.ErrorLogger.Errorf("user not found for email %s: %v", email, err)
+		// Perform a dummy hash operation to prevent timing attacks
+		_, _ = HashPassword(password)
 		return false, errors.New("invalid credentials")
 	}
 
@@ -234,6 +236,12 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 		return nil, "", "", errors.New("invalid credentials")
 	}
 
+	// Check if email is verified
+	if !user.IsVerifiedEmail {
+		logger.ErrorLogger.Errorf("Unverified email login attempt for user %s", user.ID)
+		return nil, "", "", errors.New("email not verified")
+	}
+
 	currentTokenVersion := user.TokenVersion
 
 	accessToken, err := shared_models.GenerateAccessToken(user.ID, currentTokenVersion, shared_models.ACCESS_TOKEN_EXPIRY)
@@ -292,12 +300,15 @@ func LoginUser(db *pgxpool.Pool, email, password string) (*User, string, string,
 func LogoutUser(db *pgxpool.Pool, userID uuid.UUID) error {
 	ctx := context.Background()
 
-	// Remove from database (if refresh_token column is still used for old sessions or backup)
+	// Remove from Redis (best effort - don't fail the entire operation)
 	key := shared_utils.REFRESH_TOKEN_PREFIX + userID.String()
-	if rdb, err := redisclient.GetRedisClient(ctx); err != nil {
-		return err
-	} else if delErr := rdb.Del(ctx, key).Err(); delErr != nil {
-		return delErr
+	if rdb, err := redisclient.GetRedisClient(ctx); err == nil {
+		if delErr := rdb.Del(ctx, key).Err(); delErr != nil {
+			logger.ErrorLogger.Errorf("Failed to delete refresh tokens from Redis: %v", delErr)
+			// Continue - don't fail the logout
+		}
+	} else {
+		logger.ErrorLogger.Errorf("Failed to connect to Redis during logout: %v", err)
 	}
 
 	return nil

@@ -47,11 +47,8 @@ func StoreOTP(ctx context.Context, key string, otp string) error {
 
 	err = rdb.Set(ctx, key, hashedOTP, OTP_EXPIRATION_MINUTES*time.Minute).Err()
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to store OTP (key redacted): %v", err)
 		return fmt.Errorf("failed to store OTP in redis: %w", err)
-	}
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to store OTP with key %s: %v", key, err)
-		return fmt.Errorf("failed to store OTP: %w", err)
 	}
 	return nil
 }

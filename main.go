@@ -40,7 +40,6 @@ func main() {
 	mail.InitTemplates(embeddedEmailTemplates)
 	logger.InfoLogger.Info("Application: Email templates initialized.")
 
-	badwords.LoadBadWords("badwords/en.txt")
 	if err := badwords.LoadBadWords("badwords/en.txt"); err != nil {
 		logger.ErrorLogger.Fatalf("Failed to load bad words: %v", err)
 	}

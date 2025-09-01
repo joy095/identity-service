@@ -12,21 +12,6 @@ import (
 	"github.com/joy095/identity/logger"
 )
 
-const (
-	StatusPending   = "pending"
-	StatusConfirmed = "confirmed"
-	StatusCancelled = "cancelled"
-	StatusRefunded  = "refunded"
-)
-
-// validStatuses ensures only allowed values are stored in DB
-var validStatuses = map[string]bool{
-	StatusPending:   true,
-	StatusConfirmed: true,
-	StatusCancelled: true,
-	StatusRefunded:  true,
-}
-
 type UnavailableTime struct {
 	OpenTime  time.Time `json:"open_time"`
 	CloseTime time.Time `json:"close_time"`
@@ -41,7 +26,6 @@ type ScheduleSlot struct {
 	CloseTime time.Time `json:"close_time"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Status    string    `json:"status"` // pending, confirmed, cancelled, refunded
 }
 
 // GetScheduleSlotByID fetches a schedule slot by its ID.
@@ -50,13 +34,13 @@ func GetScheduleSlotByID(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID
 
 	slot := &ScheduleSlot{}
 	query := `
-	SELECT id, service_id, user_id, open_time, close_time, created_at, updated_at, status
+	SELECT id, service_id, user_id, open_time, close_time, created_at, updated_at
 	FROM schedule_slots
 	WHERE id = $1`
 
 	err := db.QueryRow(ctx, query, slotID).Scan(
 		&slot.ID, &slot.ServiceID, &slot.UserID, &slot.OpenTime, &slot.CloseTime,
-		&slot.CreatedAt, &slot.UpdatedAt, &slot.Status,
+		&slot.CreatedAt, &slot.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -71,38 +55,8 @@ func GetScheduleSlotByID(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID
 	return slot, nil
 }
 
-// UpdateScheduleSlotStatus updates the status of a schedule slot.
-func UpdateScheduleSlotStatus(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID, status string) error {
-	if !validStatuses[status] {
-		return fmt.Errorf("invalid status: %s", status)
-	}
-
-	query := `
-		UPDATE schedule_slots
-		SET status = $2, updated_at = NOW()
-		WHERE id = $1`
-
-	cmdTag, err := db.Exec(ctx, query, slotID, status)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update slot %s status: %v", slotID, err)
-		return fmt.Errorf("failed to update slot status: %w", err)
-	}
-	if cmdTag.RowsAffected() == 0 {
-		return fmt.Errorf("slot with ID %s not found for update", slotID)
-	}
-
-	logger.InfoLogger.Infof("Slot %s status updated to %s", slotID, status)
-	return nil
-}
-
 // NewScheduleSlot creates a new ScheduleSlot instance.
-func NewScheduleSlot(serviceID, userID uuid.UUID, openTime, closeTime time.Time, status string) (*ScheduleSlot, error) {
-	if status == "" {
-		status = StatusPending
-	}
-	if !validStatuses[status] {
-		return nil, fmt.Errorf("invalid status: %s", status)
-	}
+func NewScheduleSlot(serviceID, userID uuid.UUID, openTime, closeTime time.Time) (*ScheduleSlot, error) {
 
 	if serviceID == uuid.Nil {
 		return nil, fmt.Errorf("ServiceID must be provided")
@@ -128,7 +82,6 @@ func NewScheduleSlot(serviceID, userID uuid.UUID, openTime, closeTime time.Time,
 		CloseTime: closeTime,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-		Status:    status,
 	}, nil
 }
 
@@ -140,12 +93,6 @@ func CreateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slot *ScheduleSlo
 	// Validate and normalize input before insert
 	if slot.ServiceID == uuid.Nil {
 		return nil, fmt.Errorf("ServiceID must be provided")
-	}
-	if slot.Status == "" {
-		slot.Status = StatusPending
-	}
-	if !validStatuses[slot.Status] {
-		return nil, fmt.Errorf("invalid status: %s", slot.Status)
 	}
 	if slot.OpenTime.IsZero() || slot.CloseTime.IsZero() {
 		return nil, fmt.Errorf("openTime and closeTime must be provided")
@@ -167,17 +114,17 @@ func CreateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slot *ScheduleSlo
 	logger.InfoLogger.Infof("Creating new schedule slot for service %s", slot.ServiceID)
 
 	query := `
-		INSERT INTO schedule_slots (id, service_id, user_id, open_time, close_time, created_at, updated_at, status)
-		VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), $6)
-		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
+		INSERT INTO schedule_slots (id, service_id, user_id, open_time, close_time, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at`
 
 	var createdSlot ScheduleSlot
 	err := db.QueryRow(ctx, query,
-		slot.ID, slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime, slot.Status,
+		slot.ID, slot.ServiceID, slot.UserID, slot.OpenTime, slot.CloseTime,
 	).Scan(
 		&createdSlot.ID, &createdSlot.ServiceID, &createdSlot.UserID,
 		&createdSlot.OpenTime, &createdSlot.CloseTime,
-		&createdSlot.CreatedAt, &createdSlot.UpdatedAt, &createdSlot.Status,
+		&createdSlot.CreatedAt, &createdSlot.UpdatedAt,
 	)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to create schedule slot: %v", err)
@@ -189,7 +136,7 @@ func CreateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slot *ScheduleSlo
 }
 
 // UpdateScheduleSlot updates an existing schedule slot in the database.
-func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID, openTime, closeTime *time.Time, status *string) (*ScheduleSlot, error) {
+func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID, openTime, closeTime *time.Time) (*ScheduleSlot, error) {
 	logger.InfoLogger.Infof("Updating schedule slot %s", slotID)
 
 	// If updating either time, validate the final [open, close) window
@@ -222,25 +169,21 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 		}
 	}
 
-	if status != nil && !validStatuses[*status] {
-		return nil, fmt.Errorf("invalid status: %s", *status)
-	}
-
 	// Use COALESCE to handle optional updates
 	query := `
 		UPDATE schedule_slots
 		SET 
 			open_time = COALESCE($2, open_time),
 			close_time = COALESCE($3, close_time),
-			status = COALESCE($4, status),
 			updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at, status`
+		AND (COALESCE($2, open_time) < COALESCE($3, close_time))
+		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at`
 
 	var updatedSlot ScheduleSlot
-	err := db.QueryRow(ctx, query, slotID, openTime, closeTime, status).Scan(
+	err := db.QueryRow(ctx, query, slotID, openTime, closeTime).Scan(
 		&updatedSlot.ID, &updatedSlot.ServiceID, &updatedSlot.UserID, &updatedSlot.OpenTime, &updatedSlot.CloseTime,
-		&updatedSlot.CreatedAt, &updatedSlot.UpdatedAt, &updatedSlot.Status)
+		&updatedSlot.CreatedAt, &updatedSlot.UpdatedAt)
 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

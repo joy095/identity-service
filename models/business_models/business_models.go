@@ -350,8 +350,8 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, search string) 
             owner_id,
             public_id,
             CASE 
-                WHEN name ILIKE '%' || $1 || '%' THEN 1
-                WHEN public_id ILIKE '%' || $1 || '%' THEN 2
+                WHEN public_id ILIKE '%' || $1 || '%' THEN 1
+                WHEN name ILIKE '%' || $1 || '%' THEN 2
                 ELSE 3 
             END AS rank_score
         FROM businesses
@@ -364,7 +364,7 @@ func SearchBusinessModels(ctx context.Context, db *pgxpool.Pool, search string) 
                 OR city ILIKE '%' || $1 || '%'
                 OR state ILIKE '%' || $1 || '%'
                 OR country ILIKE '%' || $1 || '%'
-                OR (city || ', ' || state || ', ' || country) ILIKE '%' || $1 || '%'
+                OR CONCAT_WS(', ', city, state, country) ILIKE '%' || $1 || '%'
             )
         ORDER BY rank_score, name ASC
         LIMIT 50;
@@ -651,7 +651,11 @@ func DeleteImageAndReferences(ctx context.Context, db *pgxpool.Pool, imageID uui
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction for image deletion: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+			logger.ErrorLogger.Errorf("Failed to rollback transaction: %v", err)
+		}
+	}()
 
 	// Delete from business_images table
 	_, err = tx.Exec(ctx, `DELETE FROM business_images WHERE image_id = $1`, imageID)
