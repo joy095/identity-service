@@ -49,17 +49,8 @@ func InitTemplates(fs embed.FS) {
 		log.Fatalf("Mail Package: failed to parse email templates: %v", err)
 	}
 
-	// --- TEMPORARY DEBUGGING CODE START ---
-	// log.Println("Mail Package: Listing parsed template names:")
-	// for _, t := range parsedTemplates.Templates() {
-	// 	log.Printf("  - %s\n", t.Name())
-	// }
-	// --- TEMPORARY DEBUGGING CODE END ---
-
 	log.Println("Mail Package: Templates loaded successfully.")
 }
-
-var ctx = context.Background()
 
 // ErrOTPNotFound is returned when an OTP is not found or expired.
 var ErrOTPNotFound = errors.New("otp not found or expired")
@@ -274,7 +265,7 @@ func ResendOTP(c *gin.Context) {
 		return
 	}
 
-	user, err := user_models.GetUserByEmail(ctx, db.DB, request.Email)
+	user, err := user_models.GetUserByEmail(c.Request.Context(), db.DB, request.Email)
 	if user == nil || err != nil {
 		logger.InfoLogger.Info("ResendOTP: Email not found, sending generic message.")
 		c.JSON(http.StatusOK, gin.H{"message": "A verification email has been sent to your email address."})
@@ -366,7 +357,7 @@ func VerifyEmail(c *gin.Context) {
 
 	// Fetch user
 	user, err := user_models.GetUserByEmail(ctx, db.DB, request.Email)
-	if err != nil || user.Email != request.Email {
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User not found or email mismatch"})
 		return
 	}

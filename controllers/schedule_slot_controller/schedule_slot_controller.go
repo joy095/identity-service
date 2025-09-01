@@ -10,6 +10,7 @@ import (
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/models/schedule_slot_models"
+	"github.com/joy095/identity/utils"
 )
 
 // Status constants
@@ -91,25 +92,13 @@ func (sc *ScheduleSlotController) CreateScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	// Get authenticated user ID
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userIDStr, ok := userIDFromToken.(string)
-	if !ok {
-		logger.ErrorLogger.Error("User ID from context is not a string")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -150,21 +139,15 @@ func (sc *ScheduleSlotController) GetScheduleSlot(c *gin.Context) {
 	}
 
 	// Get authenticated user ID
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
-
-	userIDStr, ok := userIDFromToken.(string)
-	if !ok {
-		logger.ErrorLogger.Error("User ID from context is not a string")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
@@ -216,21 +199,15 @@ func (sc *ScheduleSlotController) UpdateScheduleSlot(c *gin.Context) {
 		}
 	}
 
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+	userID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
-
-	userIDStr, ok := userIDFromToken.(string)
-	if !ok {
-		logger.ErrorLogger.Error("User ID from context is not a string")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
@@ -279,24 +256,13 @@ func (sc *ScheduleSlotController) DeleteScheduleSlot(c *gin.Context) {
 		return
 	}
 
-	userIDFromToken, exists := c.Get("sub")
-	if !exists {
-		logger.ErrorLogger.Error("Unauthorized: User ID not found in context")
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-
-	userIDStr, ok := userIDFromToken.(string)
-	if !ok {
-		logger.ErrorLogger.Error("User ID from context is not a string")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
+	userID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid user ID from token: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		if err.Error() == "unauthorized" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		}
 		return
 	}
 
@@ -351,12 +317,13 @@ func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 		return
 	}
 
-	// Normalize current date (UTC) to YYYY-MM-DD
-	today := time.Now().UTC().Truncate(24 * time.Hour)
+	// Get start of today in UTC
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// Check if booking date is in the past or today
-	if !bookingDate.After(today) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking date must be in the future"})
+	// Check if booking date is in the past (before today)
+	if bookingDate.Before(today) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking date cannot be in the past"})
 		return
 	}
 
@@ -367,7 +334,7 @@ func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 	logger.InfoLogger.Infof("Fetching unavailable times for business=%s, date=%s, UTC range=%s - %s",
 		ServiceID, dateStr, startOfDay.Format(time.RFC3339), endOfDay.Format(time.RFC3339))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
 	// Overlap-safe query: returns slots that start or end within the day
@@ -396,7 +363,9 @@ func (sc *ScheduleSlotController) GetUnavailableTimes(c *gin.Context) {
 
 		if err := rows.Scan(&t.OpenTime, &t.CloseTime, &status, &dbServiceID); err != nil {
 			logger.ErrorLogger.Errorf("Scan error: %v", err)
-			continue
+			// Return error instead of silently continuing
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading unavailable times"})
+			return
 		}
 
 		logger.InfoLogger.Infof("Row found: service_id=%s, status=%s, open=%s, close=%s",

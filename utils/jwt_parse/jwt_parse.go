@@ -61,7 +61,14 @@ func ParseJWTToken() gin.HandlerFunc {
 			// Extract and set sub claim
 			if sub, exists := claims["sub"]; exists {
 				if subStr, ok := sub.(string); ok {
+					if strings.TrimSpace(subStr) == "" {
+						logger.ErrorLogger.Error("Sub claim is empty")
+						c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
+						c.Abort()
+						return
+					}
 					c.Set("sub", subStr)
+
 				} else {
 					logger.ErrorLogger.Error("Sub claim is not a string")
 					c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})

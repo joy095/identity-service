@@ -177,6 +177,7 @@ func UpdateScheduleSlot(ctx context.Context, db *pgxpool.Pool, slotID uuid.UUID,
 			close_time = COALESCE($3, close_time),
 			updated_at = NOW()
 		WHERE id = $1
+		AND (COALESCE($2, open_time) < COALESCE($3, close_time))
 		RETURNING id, service_id, user_id, open_time, close_time, created_at, updated_at`
 
 	var updatedSlot ScheduleSlot

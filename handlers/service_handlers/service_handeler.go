@@ -1,4 +1,5 @@
-// handlers/service_handlers/service_handeler.go
+// handlers/service_handlers/service_handler.go
+
 package service_handlers
 
 import (
@@ -255,7 +256,6 @@ func processImageResponse(resp *http.Response) (uuid.UUID, error) {
 	return imgResp.ImageID, nil
 }
 
-// handlers/service_handlers.go
 func UpdateService(c *gin.Context) {
 	logger.InfoLogger.Info("Received new request for /update-service")
 
@@ -297,9 +297,17 @@ func UpdateService(c *gin.Context) {
 		existingService.Description = *req.Description
 	}
 	if req.Duration != nil {
+		if *req.Duration <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Duration must be greater than 0"})
+			return
+		}
 		existingService.Duration = *req.Duration
 	}
 	if req.Price != nil {
+		if *req.Price < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Price cannot be negative"})
+			return
+		}
 		existingService.Price = *req.Price
 	}
 	if req.IsActive != nil {

@@ -116,6 +116,12 @@ func RemoveJWTCookie(c *gin.Context, name, path string) error {
 	// Determine if we should use secure cookies
 	useSecure := shouldUseSecureCookies()
 
+	sameSite := http.SameSiteNoneMode
+	if !useSecure {
+		// Browsers reject SameSite=None cookies without Secure, so fallback
+		sameSite = http.SameSiteLaxMode
+	}
+
 	cookie := &http.Cookie{
 		Name:     name,
 		Value:    "",
@@ -124,7 +130,7 @@ func RemoveJWTCookie(c *gin.Context, name, path string) error {
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   useSecure,
-		SameSite: http.SameSiteNoneMode,
+		SameSite: sameSite,
 	}
 
 	// Add domain only if explicitly configured
@@ -280,6 +286,11 @@ func ParseToken(tokenString string, userTokenVersionFetcher func(userID uuid.UUI
 		// Depending on your error handling, you might return an error or consider it invalid.
 		// For security, usually, if you can't verify the version, it's invalid.
 		return nil, fmt.Errorf("token validation failed: cannot retrieve user token version")
+	}
+
+	if currentUserTokenVersion < 0 {
+		logger.ErrorLogger.Errorf("Invalid token version %d for user %s", currentUserTokenVersion, claims.UserID)
+		return nil, fmt.Errorf("token validation failed: invalid user token version")
 	}
 
 	if claims.TokenVersion != currentUserTokenVersion {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger" // Assuming this path is correct for your logger
 )
@@ -94,10 +95,6 @@ func GetAllImagesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.UU
 // AddBusinessImages adds multiple image associations for a given business.
 // It now includes a 'position' for each image.
 func AddBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID, imageIDs []uuid.UUID) error {
-
-	if len(imageIDs) == 0 {
-		return fmt.Errorf("imageIDs cannot be empty")
-	}
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -211,7 +208,6 @@ func DeleteBusinessImage(ctx context.Context, db *pgxpool.Pool, businessID, imag
 			UNION ALL
 			SELECT 1 FROM services WHERE image_id = $1 -- Assuming 'services' also has an image_id foreign key
 		) as refs
-		FOR UPDATE
 	`, imageID).Scan(&count)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to check image references for image %s: %v", imageID, err)
@@ -301,13 +297,9 @@ func ReorderBusinessImages(ctx context.Context, db *pgxpool.Pool, businessID uui
 		return fmt.Errorf("failed to begin transaction for reordering: %w", err)
 	}
 	defer func() {
-		if err != nil {
-			// If an error occurred during the process, rollback
-			rollbackErr := tx.Rollback(ctx)
-			if rollbackErr != nil {
-				// Log rollback error, don't override the original error
-				logger.ErrorLogger.Errorf("Failed to rollback transaction during reorder: %v", rollbackErr)
-			}
+		// Always attempt rollback; it's a no-op if already committed
+		if rollbackErr := tx.Rollback(ctx); rollbackErr != nil && rollbackErr != pgx.ErrTxClosed {
+			logger.ErrorLogger.Errorf("Failed to rollback transaction during reorder: %v", rollbackErr)
 		}
 	}()
 

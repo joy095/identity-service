@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5" // Use pgx for scanning/rows operations
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger" // Adjust import path for your logger
@@ -109,13 +108,6 @@ func CreateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to insert service into database: %v", err)
-
-		// Check for PostgreSQL error codes
-		if pgErr, ok := err.(*pgconn.PgError); ok {
-			if pgErr.Code == "23502" && pgErr.ColumnName == "image_id" {
-				return nil, fmt.Errorf("image is required for service creation")
-			}
-		}
 
 		return nil, fmt.Errorf("failed to create service: %w", err)
 	}
@@ -344,9 +336,11 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 			updated_at = NOW()
 		WHERE
 			id = $1 AND business_id = $8
+			RETURNING updated_at
 		`
 
-	res, err := db.Exec(ctx, query,
+	var updatedAt time.Time
+	err := db.QueryRow(ctx, query,
 		service.ID,
 		service.Name,
 		service.Description,
@@ -355,16 +349,15 @@ func UpdateServiceModel(ctx context.Context, db *pgxpool.Pool, service *Service)
 		service.ImageID,
 		service.IsActive,
 		service.BusinessID,
-	)
+	).Scan(&updatedAt)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to update service %s in database: %v", service.ID, err)
 		return nil, fmt.Errorf("failed to update service: %w", err)
 	}
 
-	if res.RowsAffected() == 0 {
-		return nil, fmt.Errorf("service with ID %s (for business %s) not found for update", service.ID, service.BusinessID)
-	}
+	// Update the timestamp to reflect the database change
+	service.UpdatedAt = updatedAt
 
 	logger.InfoLogger.Infof("Service with ID %s updated successfully", service.ID)
 	return service, nil

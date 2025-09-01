@@ -77,10 +77,7 @@ type InitializeWorkingHoursRequest struct {
 
 // validateWorkingHoursTimes ensures open_time < close_time if not closed
 func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) error {
-	if isClosed {
-		logger.InfoLogger.Debug("Working hour is closed, skipping time validation.")
-		return nil // No time validation needed if the slot is closed
-	}
+
 	openTime, err := time.Parse("15:04:05", openTimeStr)
 	if err != nil {
 		logger.WarnLogger.Warnf("Invalid open time format '%s': %v", openTimeStr, err)
@@ -90,6 +87,10 @@ func validateWorkingHoursTimes(openTimeStr, closeTimeStr string, isClosed bool) 
 	if err != nil {
 		logger.WarnLogger.Warnf("Invalid close time format '%s': %v", closeTimeStr, err)
 		return fmt.Errorf("invalid close time format: %w", err)
+	}
+	if isClosed {
+		logger.InfoLogger.Debug("Working hour is closed, skipping time comparison validation.")
+		return nil // No time comparison needed if the slot is closed
 	}
 	if closeTime.Before(openTime) || closeTime.Equal(openTime) {
 		logger.WarnLogger.Warnf("Close time '%s' is not after open time '%s'", closeTimeStr, openTimeStr)
@@ -380,31 +381,24 @@ func (whc *WorkingHourController) BulkUpsertWorkingHours(c *gin.Context) {
 			// Day exists, perform UPDATE
 			logger.InfoLogger.Debugf("Updating existing working hour for %s (ID: %s) for business %s.", dayReq.DayOfWeek, existing.ID, businessID)
 
-			var openTime, closeTime time.Time
-			if !dayReq.IsClosed {
-				openTime, err = utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
-				if err != nil {
-					tx.Rollback(c.Request.Context())
-					logger.ErrorLogger.Errorf("Failed to parse open time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.OpenTime, dayReq.DayOfWeek, err) // Add this log
-					c.JSON(http.StatusBadRequest, gin.H{
-						"error": fmt.Sprintf("Invalid openTime for %s: %v", dayReq.DayOfWeek, err), // Include %v to show the underlying error
-					})
-					return
-				}
+			openTime, err := utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
+			if err != nil {
+				tx.Rollback(c.Request.Context())
+				logger.ErrorLogger.Errorf("Failed to parse open time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.OpenTime, dayReq.DayOfWeek, err)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": fmt.Sprintf("Invalid openTime for %s: %v", dayReq.DayOfWeek, err),
+				})
+				return
+			}
 
-				closeTime, err = utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
-				if err != nil {
-					tx.Rollback(c.Request.Context())
-					logger.ErrorLogger.Errorf("Failed to parse close time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.CloseTime, dayReq.DayOfWeek, err) // Add this log
-					c.JSON(http.StatusBadRequest, gin.H{
-						"error": fmt.Sprintf("Invalid closeTime for %s: %v", dayReq.DayOfWeek, err),
-					})
-					return
-				}
-			} else {
-				// For closed days, parse the times anyway to maintain data consistency
-				openTime, _ = utils.ParseTimeToUTC(dayReq.OpenTime, dayReq.DayOfWeek)
-				closeTime, _ = utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
+			closeTime, err := utils.ParseTimeToUTC(dayReq.CloseTime, dayReq.DayOfWeek)
+			if err != nil {
+				tx.Rollback(c.Request.Context())
+				logger.ErrorLogger.Errorf("Failed to parse close time '%s' for %s using utils.ParseTimeToUTC: %v", dayReq.CloseTime, dayReq.DayOfWeek, err)
+				c.JSON(http.StatusBadRequest, gin.H{
+					"error": fmt.Sprintf("Invalid closeTime for %s: %v", dayReq.DayOfWeek, err),
+				})
+				return
 			}
 
 			// Update existing record directly
@@ -692,7 +686,8 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		logger.InfoLogger.Debugf("Updating DayOfWeek for %s from %s to %s", whID, existingWH.DayOfWeek, updatedDayOfWeek)
 	}
 	if req.OpenTime != nil {
-		parsedTime, err := time.Parse("15:04:05", *req.OpenTime)
+		parsedTime, err := utils.ParseTimeToUTC(*req.OpenTime, updatedDayOfWeek)
+		// parsedTime, err := time.Parse("15:04:05", *req.OpenTime)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to parse open time: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid open time format"})
@@ -702,7 +697,7 @@ func (whc *WorkingHourController) UpdateWorkingHour(c *gin.Context) {
 		logger.InfoLogger.Debugf("Updating OpenTime for %s from %s to %s", whID, existingWH.OpenTime, updatedOpenTime)
 	}
 	if req.CloseTime != nil {
-		parsedTime, err := time.Parse("15:04:05", *req.CloseTime)
+		parsedTime, err := utils.ParseTimeToUTC(*req.CloseTime, updatedDayOfWeek)
 		if err != nil {
 			logger.ErrorLogger.Errorf("Failed to parse close time: %v", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid close time format"})

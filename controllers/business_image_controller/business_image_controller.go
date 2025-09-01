@@ -192,8 +192,6 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 		if p := recover(); p != nil {
 			tx.Rollback(c.Request.Context())
 			panic(p) // re-panic after rollback
-		} else if err != nil {
-			tx.Rollback(c.Request.Context())
 		}
 	}()
 
@@ -204,6 +202,7 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 	`, business.ID, oldImageID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to remove old image association (old image ID: %s): %v", oldImageID, err)
+		tx.Rollback(c.Request.Context())
 		// Try to delete the newly uploaded image if DB operation fails
 		image_handlers.DeleteImage(newImageID, accessToken)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove old image association"})
@@ -221,18 +220,6 @@ func (bc *BusinessImageController) ReplaceBusinessImage(c *gin.Context) {
 			VALUES ($1, $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM business_images WHERE business_id = $1))
 			RETURNING position
 		`, business.ID, newImageID).Scan(&newPosition)
-	}
-	// Ensure the query matches the number of values
-	_, err = tx.Exec(c.Request.Context(), `
-    INSERT INTO business_images (business_id, image_id, position) -- Remove is_primary column
-    VALUES ($1, $2, $3) -- Match placeholders to values
-`, business.ID, newImageID, newPosition) // Pass 3 values
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to associate new image (new image ID: %s) with business: %v", newImageID, err)
-		// Clean up the new image if DB insertion fails
-		image_handlers.DeleteImage(newImageID, accessToken)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to associate new image with business"})
-		return
 	}
 
 	// Commit the transaction
