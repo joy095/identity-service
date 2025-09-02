@@ -113,6 +113,12 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
+	// Restore body so Gin can re-use it if needed (optional but good practice)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	// Debug log raw payload (helps confirm signature mismatch cause)
+	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
+
 	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
