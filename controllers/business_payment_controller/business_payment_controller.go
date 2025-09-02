@@ -68,6 +68,9 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 		baseURL = "https://sandbox.cashfree.com/pg" // Default to sandbox
 	}
 
+	// Log webhook secret length for debugging (never log the actual secret!)
+	logger.InfoLogger.Infof("Webhook secret configured with length: %d", len(webhookSecret))
+
 	return &PaymentController{
 		DB:            db,
 		ClientID:      clientID,
@@ -106,6 +109,7 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 
 // PaymentWebhook is the single entry point for all Cashfree webhooks.
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
+	// Read the body once
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
@@ -113,19 +117,26 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
-	// Restore body so Gin can re-use it if needed (optional but good practice)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// Debug logging (remove in production)
+	logger.InfoLogger.Infof("=== WEBHOOK DEBUG START ===")
+	logger.InfoLogger.Infof("Headers - Timestamp: %s", c.GetHeader("x-webhook-timestamp"))
+	logger.InfoLogger.Infof("Headers - Signature present: %v", c.GetHeader("x-webhook-signature") != "")
+	logger.InfoLogger.Infof("Body length: %d", len(bodyBytes))
+	logger.InfoLogger.Infof("Webhook secret configured: %v", pc.WebhookSecret != "")
 
-	// Debug log raw payload (helps confirm signature mismatch cause)
-	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
+	// Log first 100 chars of body for debugging
+	if len(bodyBytes) > 100 {
+		logger.InfoLogger.Infof("Body preview: %s...", string(bodyBytes[:100]))
+	}
 
 	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
+		logger.ErrorLogger.Errorf("Webhook signature verification failed")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
-	// Restore body so Gin can re-use it if needed (optional but good practice)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+	logger.InfoLogger.Infof("✅ Webhook signature verified successfully")
 
 	// 2. Parse generic event
 	var event WebhookEvent
@@ -135,30 +146,43 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
+	logger.InfoLogger.Infof("Webhook event type: %s", event.Type)
+
 	ctx := c.Request.Context()
 
-	// 3. Log event
+	// 3. Log event to database (with better error handling)
 	var eventID int64
 	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO webhook_events (event_type, raw_payload, processed) VALUES ($1, $2, $3) RETURNING id`,
+		`INSERT INTO webhook_events (event_type, raw_payload, processed, created_at) 
+		 VALUES ($1, $2, $3, NOW()) RETURNING id`,
 		event.Type, string(bodyBytes), false).Scan(&eventID)
+
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
+		logger.ErrorLogger.Errorf("Failed to log webhook event to database: %v", err)
+		// Don't return here - continue processing the webhook
 	} else {
-		_, err = pc.DB.Exec(ctx,
-			`UPDATE webhook_events SET processed = true WHERE id = $1`, eventID)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to update webhook event as processed: %v", err)
-		}
+		logger.InfoLogger.Infof("Webhook event logged with ID: %d", eventID)
+
+		// Mark as processed after handling
+		defer func() {
+			_, updateErr := pc.DB.Exec(ctx,
+				`UPDATE webhook_events SET processed = true, updated_at = NOW() WHERE id = $1`, eventID)
+			if updateErr != nil {
+				logger.ErrorLogger.Errorf("Failed to mark webhook event %d as processed: %v", eventID, updateErr)
+			}
+		}()
 	}
 
 	// 4. Route event
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID", "PAYMENT_CHARGES_WEBHOOK":
+		logger.InfoLogger.Infof("Processing payment success event")
 		pc.handlePaymentSuccess(ctx, event.Data)
 	case "REFUND_SUCCESS_WEBHOOK":
+		logger.InfoLogger.Infof("Processing refund success event")
 		pc.handleRefundSuccess(ctx, event.Data)
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
+		logger.InfoLogger.Infof("Processing refund failure/reversal event")
 		pc.handleRefundFailure(ctx, event.Data, event.Type)
 	default:
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
@@ -177,31 +201,50 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// Validate timestamp format and age to prevent replay attacks
-	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-		timestampTime := time.UnixMilli(ts)
-		timeDiff := time.Since(timestampTime)
-
-		// Webhooks should only come from the past, allow 5 minutes window
-		if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
-			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
-			return false
-		}
-	} else {
-		logger.ErrorLogger.Errorf("Invalid timestamp format: %s", timestamp)
+	// Validate timestamp format
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
 		return false
 	}
 
-	// Message is timestamp concatenated with the body (NO DOT)
+	// Check timestamp age (allow 5 minute window)
+	timestampTime := time.UnixMilli(ts)
+	timeDiff := time.Since(timestampTime)
+
+	logger.InfoLogger.Infof("Timestamp validation - TS: %d, Time: %v, Diff: %v", ts, timestampTime, timeDiff)
+
+	if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
+		logger.ErrorLogger.Errorf("Timestamp outside valid window: %v", timeDiff)
+		return false
+	}
+
+	// Create the message to sign (timestamp + body)
 	message := timestamp + string(bodyBytes)
 
-	// Generate the expected HMAC-SHA256 signature using WebhookSecret
+	// Generate HMAC-SHA256 signature
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	// Use a secure constant-time comparison to prevent timing attacks
-	return hmac.Equal([]byte(expectedSignature), []byte(signature))
+	// Debug logging (remove in production)
+	logger.InfoLogger.Infof("Signature debug - Message length: %d", len(message))
+	logger.InfoLogger.Infof("Expected signature length: %d, Received signature length: %d",
+		len(expectedSignature), len(signature))
+
+	// Use constant-time comparison
+	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
+
+	if !isValid {
+		logger.ErrorLogger.Errorf("Signature mismatch - check webhook secret configuration")
+		// In development, you might want to log partial signatures for debugging
+		if len(expectedSignature) > 10 && len(signature) > 10 {
+			logger.ErrorLogger.Errorf("Expected signature prefix: %s...", expectedSignature[:10])
+			logger.ErrorLogger.Errorf("Received signature prefix: %s...", signature[:10])
+		}
+	}
+
+	return isValid
 }
 
 // --- Webhook Handler Implementations ---
@@ -216,6 +259,8 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 	orderID := webhookData.Order.OrderID
 	payment := webhookData.Payment
 
+	logger.InfoLogger.Infof("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
+
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
@@ -223,13 +268,21 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx,
+	// Update order with payment details
+	result, err := tx.Exec(ctx,
 		`UPDATE orders 
 		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
 		 WHERE order_id = $5`,
 		payment.CfPaymentID, payment.PaymentMethod, payment.BankReference, OrderStatusPaid, orderID)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
+		return
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		logger.ErrorLogger.Errorf("No order found with order_id: %s", orderID)
 		return
 	}
 
@@ -238,7 +291,7 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 		return
 	}
 
-	logger.InfoLogger.Infof("Payment success processed for order: %s", orderID)
+	logger.InfoLogger.Infof("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
 }
 
 type RefundWebhookData struct {
@@ -264,6 +317,10 @@ func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.
 	}
 
 	refund := webhookData.Refund
+
+	logger.InfoLogger.Infof("Processing refund success for refund_id: %s, order: %s",
+		refund.RefundID, webhookData.Order.OrderID)
+
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
@@ -271,31 +328,41 @@ func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx,
+	// Update refund status
+	result, err := tx.Exec(ctx,
 		`UPDATE refunds 
 		 SET status = $1, cf_refund_id = $2, processed_at = $3, updated_at = NOW()
 		 WHERE refund_id = $4`,
 		StatusRefundSuccess, refund.CfRefundID, refund.ProcessedAt, refund.RefundID)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refund.RefundID, err)
 		return
 	}
 
-	_, err = tx.Exec(ctx,
+	refundRowsAffected := result.RowsAffected()
+
+	// Update order status
+	result, err = tx.Exec(ctx,
 		`UPDATE orders 
 		 SET status = $1, updated_at = NOW()
 		 WHERE order_id = $2`,
 		OrderStatusRefunded, webhookData.Order.OrderID)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", webhookData.Order.OrderID, err)
 		return
 	}
 
+	orderRowsAffected := result.RowsAffected()
+
 	if err := tx.Commit(ctx); err != nil {
 		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
 		return
 	}
-	logger.InfoLogger.Infof("✅ Refund success processed for refund_id: %s", refund.RefundID)
+
+	logger.InfoLogger.Infof("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
+		refund.RefundID, refundRowsAffected, orderRowsAffected)
 }
 
 func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.RawMessage, eventType string) {
@@ -311,6 +378,8 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 		newStatus = StatusRefundReversed
 	}
 
+	logger.InfoLogger.Infof("Processing refund %s for refund_id: %s", newStatus, refundID)
+
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] RefundFailure for %s: %v", refundID, err)
@@ -318,20 +387,28 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx,
+	result, err := tx.Exec(ctx,
 		`UPDATE refunds SET status = $1, updated_at = NOW() WHERE refund_id = $2`,
 		newStatus, refundID)
+
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
 		return
 	}
 
+	rowsAffected := result.RowsAffected()
+
 	if err := tx.Commit(ctx); err != nil {
 		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] RefundFailure for %s: %v", refundID, err)
 		return
 	}
-	logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s", newStatus, refundID)
+
+	logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s (rows: %d)",
+		newStatus, refundID, rowsAffected)
 }
+
+// Rest of the controller methods remain the same...
+// (CreateOrder, GetOrder, CreateRefund, GetOrderHistory, WebhookHealthCheck, GetUnavailableTimes)
 
 // CreateOrderRequest represents the order creation request
 type CreateOrderRequest struct {
@@ -472,8 +549,8 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Insert order into DB using Cashfree's order_id
 	var dbOrderID uuid.UUID
 	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
          RETURNING id`,
 		cfOrderID, customerID, req.ServiceID, req.StartTime.UTC(), req.EndTime.UTC(), service.Price, req.Currency,
 		cfOrderID, cfPaymentSessionID, OrderStatusPending,
@@ -649,8 +726,8 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 	// Save refund to database
 	_, err = pc.DB.Exec(ctx,
-		`INSERT INTO refunds (order_id, refund_id, amount, status, note)
-		 VALUES ($1, $2, $3, $4, $5)`,
+		`INSERT INTO refunds (order_id, refund_id, amount, status, note, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
 		orderID, refundID, req.Amount, StatusRefundPending, req.Note)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to save refund for order %s: %v", orderID, err)
