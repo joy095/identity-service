@@ -31,8 +31,11 @@ func RegisterBusinessPaymentRoutes(router *gin.Engine) error {
 		api.GET("/orders/history", paymentController.GetOrderHistory)
 		api.GET("/orders/:order_id", paymentController.GetOrder)
 
-		// Refunds
+		// Refunds (initiates refund, status updated via webhook)
 		api.POST("/orders/:order_id/refunds", paymentController.CreateRefund)
+
+		// Schedule slot availability
+		api.GET("/public/services/:service_id/unavailable-times", paymentController.GetUnavailableTimes) // /public/services/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 	}
 
 	return nil

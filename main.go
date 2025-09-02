@@ -56,7 +56,7 @@ func main() {
 	routes.RegisterBusinessImageRoutes(r)
 	routes.RegisterServicesRoutes(r)
 	routes.RegisterWorkingHoursRoutes(r)
-	routes.RegisterScheduleSlotRoutes(r)
+	// routes.RegisterScheduleSlotRoutes(r)
 	routes.RegisterBusinessPaymentRoutes(r)
 
 	r.GET("/health", func(c *gin.Context) {
