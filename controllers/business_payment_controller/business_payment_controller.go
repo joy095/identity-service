@@ -154,7 +154,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	// 4. Route event
 	switch event.Type {
-	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
+	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID", "PAYMENT_CHARGES_WEBHOOK":
 		pc.handlePaymentSuccess(ctx, event.Data)
 	case "REFUND_SUCCESS_WEBHOOK":
 		pc.handleRefundSuccess(ctx, event.Data)
@@ -179,11 +179,11 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 
 	// Validate timestamp format and age to prevent replay attacks
 	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-		timestampTime := time.Unix(ts, 0)
+		timestampTime := time.UnixMilli(ts)
 		timeDiff := time.Since(timestampTime)
 
 		// Webhooks should only come from the past, allow 5 minutes window
-		if timeDiff > 5*time.Minute || timeDiff < 0 {
+		if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
 			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
 			return false
 		}
