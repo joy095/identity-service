@@ -100,9 +100,9 @@ func SetJWTCookie(c *gin.Context, name, value string, expiry time.Duration, path
 	}
 
 	// Add domain only if explicitly configured
-	if domain := getCookieDomain(); domain != "" {
-		cookie.Domain = domain
-	}
+	// if domain := getCookieDomain(); domain != "" {
+	// 	cookie.Domain = domain
+	// }
 
 	http.SetCookie(c.Writer, cookie)
 
@@ -134,9 +134,9 @@ func RemoveJWTCookie(c *gin.Context, name, path string) error {
 	}
 
 	// Add domain only if explicitly configured
-	if domain := getCookieDomain(); domain != "" {
-		cookie.Domain = domain
-	}
+	// if domain := getCookieDomain(); domain != "" {
+	// 	cookie.Domain = domain
+	// }
 
 	http.SetCookie(c.Writer, cookie)
 

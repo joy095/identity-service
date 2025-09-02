@@ -20,18 +20,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger"
-	"github.com/joy095/identity/models/schedule_slot_models"
+	"github.com/joy095/identity/models/payment_models"
 	"github.com/joy095/identity/models/service_models"
 	"github.com/joy095/identity/models/user_models"
 	"github.com/joy095/identity/utils"
-)
-
-// Order status constants
-const (
-	StatusPending = "pending"
-	StatusPaid    = "paid"
-	StatusFailed  = "failed"
-	StatusExpired = "expired"
 )
 
 // Refund status constants
@@ -40,6 +32,13 @@ const (
 	StatusRefundSuccess  = "success"
 	StatusRefundFailed   = "failed"
 	StatusRefundReversed = "reversed"
+)
+
+// Order status constants
+const (
+	OrderStatusPending  = "pending"
+	OrderStatusPaid     = "paid"
+	OrderStatusRefunded = "refunded"
 )
 
 // PaymentController handles all payment operations
@@ -151,12 +150,6 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
 		pc.handlePaymentSuccess(ctx, event.Data)
-	case "PAYMENT_FAILED_WEBHOOK", "PAYMENT_USER_DROPPED_WEBHOOK":
-		pc.handlePaymentFailure(ctx, event.Data)
-	case "ORDER_EXPIRED", "LINK_EXPIRED":
-		pc.handleOrderExpired(ctx, event.Data)
-	case "LINK_CANCELLED":
-		pc.handleOrderCancelled(ctx, event.Data)
 	case "REFUND_SUCCESS_WEBHOOK":
 		pc.handleRefundSuccess(ctx, event.Data)
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
@@ -226,9 +219,9 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 
 	_, err = tx.Exec(ctx,
 		`UPDATE orders 
-		 SET status = $1, cf_payment_id = $2, payment_method = $3, bank_reference = $4, updated_at = NOW()
+		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
 		 WHERE order_id = $5`,
-		StatusPaid, payment.CfPaymentID, payment.PaymentMethod, payment.BankReference, orderID)
+		payment.CfPaymentID, payment.PaymentMethod, payment.BankReference, OrderStatusPaid, orderID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
 		return
@@ -240,46 +233,6 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 	}
 
 	logger.InfoLogger.Infof("Payment success processed for order: %s", orderID)
-}
-
-func (pc *PaymentController) handlePaymentFailure(ctx context.Context, data json.RawMessage) {
-	var webhookData PaymentWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse payment failure data: %v", err)
-		return
-	}
-
-	orderID := webhookData.Order.OrderID
-	if err := updateOrderStatus(ctx, pc.DB, orderID, StatusFailed, "Payment failure/dropped processed for order: %s"); err != nil {
-		logger.ErrorLogger.Errorf("Failed to update order status: %v", err)
-	}
-
-}
-
-type OrderOnlyWebhookData struct {
-	Order OrderData `json:"order"`
-}
-
-func (pc *PaymentController) handleOrderExpired(ctx context.Context, data json.RawMessage) {
-	var webhookData OrderOnlyWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse order expired data: %v", err)
-		return
-	}
-
-	orderID := webhookData.Order.OrderID
-	updateOrderStatus(ctx, pc.DB, orderID, StatusExpired, "⌛ Order expired for: %s")
-}
-
-func (pc *PaymentController) handleOrderCancelled(ctx context.Context, data json.RawMessage) {
-	var webhookData OrderOnlyWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse order cancelled data: %v", err)
-		return
-	}
-
-	orderID := webhookData.Order.OrderID
-	updateOrderStatus(ctx, pc.DB, orderID, StatusFailed, "🚫 Order cancelled for: %s")
 }
 
 type RefundWebhookData struct {
@@ -319,6 +272,16 @@ func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.
 		StatusRefundSuccess, refund.CfRefundID, refund.ProcessedAt, refund.RefundID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refund.RefundID, err)
+		return
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE orders 
+		 SET status = $1, updated_at = NOW()
+		 WHERE order_id = $2`,
+		OrderStatusRefunded, webhookData.Order.OrderID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", webhookData.Order.OrderID, err)
 		return
 	}
 
@@ -364,37 +327,12 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 	logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s", newStatus, refundID)
 }
 
-// Helper function to update only the status of an order within a transaction.
-func updateOrderStatus(ctx context.Context, db *pgxpool.Pool, orderID, status, logMessage string) error {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] UpdateOrderStatus for %s: %v", orderID, err)
-		return err
-	}
-	defer tx.Rollback(ctx)
-
-	_, err = tx.Exec(ctx,
-		`UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2 AND status = 'pending'`,
-		status, orderID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order status failed for %s: %v", orderID, err)
-		return err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] UpdateOrderStatus for %s: %v", orderID, err)
-		return err
-	}
-
-	logger.InfoLogger.Infof(logMessage, orderID)
-
-	return nil
-}
-
 // CreateOrderRequest represents the order creation request
 type CreateOrderRequest struct {
 	Currency      string                 `json:"currency" binding:"required,len=3"`
-	SlotID        uuid.UUID              `json:"slot_id" binding:"required"`
+	ServiceID     uuid.UUID              `json:"service_id" binding:"required"`
+	StartTime     time.Time              `json:"start_time" binding:"required"`
+	EndTime       time.Time              `json:"end_time" binding:"required"`
 	UpiID         string                 `json:"upi_id"`
 	PaymentMethod map[string]interface{} `json:"payment_method"`
 }
@@ -434,10 +372,28 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	Slot, err := schedule_slot_models.GetScheduleSlotByID(c.Request.Context(), pc.DB, req.SlotID)
+	// Validate start time < end time
+	if req.StartTime.After(req.EndTime) || req.StartTime.Equal(req.EndTime) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Start time must be before end time"})
+		return
+	}
+
+	// Validate slot date/time is not in the past
+	now := time.Now().UTC()
+	if req.StartTime.Before(now) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Slot date/time cannot be in the past"})
+		return
+	}
+
+	// Check for overlapping bookings
+	hasOverlap, err := payment_models.HasBookingOverlap(ctx, pc.DB, req.ServiceID, req.StartTime, req.EndTime)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get slot: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get slot"})
+		logger.ErrorLogger.Errorf("Failed to check overlap: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check availability"})
+		return
+	}
+	if hasOverlap {
+		c.JSON(http.StatusConflict, gin.H{"error": "This time slot is already booked by another user"})
 		return
 	}
 
@@ -457,18 +413,10 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	}
 
 	// Get service
-	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, Slot.ServiceID)
+	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, req.ServiceID)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to get service: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
-		return
-	}
-
-	// Validate schedule slot
-	_, err = schedule_slot_models.GetScheduleSlotByID(ctx, pc.DB, req.SlotID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get slot: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get slot"})
 		return
 	}
 
@@ -518,11 +466,11 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Insert order into DB using Cashfree's order_id
 	var dbOrderID uuid.UUID
 	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO orders (order_id, customer_id, slot_id, amount, currency, status, cf_order_id, payment_session_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING id`,
-		cfOrderID, customerID, req.SlotID, service.Price, req.Currency, StatusPending,
-		cfOrderID, cfPaymentSessionID,
+		cfOrderID, customerID, req.ServiceID, req.StartTime.UTC(), req.EndTime.UTC(), service.Price, req.Currency,
+		cfOrderID, cfPaymentSessionID, OrderStatusPending,
 	).Scan(&dbOrderID)
 
 	if err != nil {
@@ -609,53 +557,6 @@ type PaymentData struct {
 	PaymentMethod   map[string]interface{} `json:"payment_method"`
 }
 
-// syncOrderStatus syncs order status with Cashfree
-func (pc *PaymentController) syncOrderStatus(ctx context.Context, orderID string) {
-	resp, err := pc.makeRequest(ctx, "GET", "/orders/"+orderID, nil)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to sync order status: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
-	var cfResp map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		return
-	}
-
-	orderStatus, ok := cfResp["order_status"].(string)
-	if !ok {
-		return
-	}
-
-	// Map Cashfree status to internal status
-	var dbStatus string
-	switch orderStatus {
-	case "PAID":
-		dbStatus = StatusPaid
-	case "EXPIRED", "TERMINATED":
-		dbStatus = StatusExpired
-	default:
-		return // No update needed
-	}
-
-	// Update database
-	_, err = pc.DB.Exec(ctx,
-		`UPDATE orders SET status = $1, updated_at = NOW() WHERE order_id = $2`,
-		dbStatus, orderID)
-
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to update order status for %s: %v", orderID, err)
-		return
-	}
-
-	logger.InfoLogger.Infof("Order status synced: %s -> %s", orderID, dbStatus)
-}
-
 // CreateRefundRequest represents refund creation request
 type CreateRefundRequest struct {
 	Amount float64 `json:"amount" binding:"required,gt=0"`
@@ -666,38 +567,47 @@ type CreateRefundRequest struct {
 func (pc *PaymentController) CreateRefund(c *gin.Context) {
 	orderID := c.Param("order_id")
 	if orderID == "" {
+		logger.DebugLogger.Debug("Missing order_id in request path")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
 		return
 	}
 
 	var req CreateRefundRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.DebugLogger.Debugf("Invalid refund request payload: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	logger.DebugLogger.Debugf("Refund request received for order %s: %+v", orderID, req)
 
 	// Check if order exists and is paid
 	ctx := c.Request.Context()
 	var orderAmount float64
 	err := pc.DB.QueryRow(ctx,
-		`SELECT amount FROM orders WHERE order_id = $1 AND status = $2`,
-		orderID, StatusPaid).Scan(&orderAmount)
+		`SELECT amount FROM orders WHERE order_id = $1 AND cf_payment_id IS NOT NULL`,
+		orderID).Scan(&orderAmount)
+
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			logger.DebugLogger.Debugf("No paid order found for order_id=%s", orderID)
 			c.JSON(http.StatusNotFound, gin.H{"error": "paid order not found"})
 		} else {
+			logger.ErrorLogger.Errorf("DB query error checking order %s: %v", orderID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return
 	}
+	logger.DebugLogger.Debugf("Order %s found with amount=%.2f", orderID, orderAmount)
 
 	if req.Amount > orderAmount {
+		logger.DebugLogger.Debugf("Refund amount %.2f exceeds order amount %.2f for order %s", req.Amount, orderAmount, orderID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "refund amount exceeds order amount"})
 		return
 	}
 
 	// Generate refund ID
 	refundID := "refund_" + uuid.New().String()
+	logger.DebugLogger.Debugf("Generated refund_id=%s for order_id=%s", refundID, orderID)
 
 	// Create refund with Cashfree
 	payload := map[string]interface{}{
@@ -705,10 +615,12 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 		"refund_id":     refundID,
 		"refund_note":   req.Note,
 	}
-
 	jsonPayload, _ := json.Marshal(payload)
+	logger.DebugLogger.Debugf("Sending refund request to Cashfree for order %s: %s", orderID, string(jsonPayload))
+
 	resp, err := pc.makeRequest(ctx, "POST", "/orders/"+orderID+"/refunds", bytes.NewBuffer(jsonPayload))
 	if err != nil {
+		logger.ErrorLogger.Errorf("Refund gateway error for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund gateway error"})
 		return
 	}
@@ -716,16 +628,18 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logger.ErrorLogger.Errorf("Refund creation failed: %s", string(body))
+		logger.ErrorLogger.Errorf("Refund creation failed for order %s: status=%d body=%s", orderID, resp.StatusCode, string(body))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund creation failed"})
 		return
 	}
 
 	var cfResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
+		logger.ErrorLogger.Errorf("Failed to decode refund response for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid refund response"})
 		return
 	}
+	logger.DebugLogger.Debugf("Cashfree refund response for order %s: %+v", orderID, cfResp)
 
 	// Save refund to database
 	_, err = pc.DB.Exec(ctx,
@@ -733,10 +647,12 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 		 VALUES ($1, $2, $3, $4, $5)`,
 		orderID, refundID, req.Amount, StatusRefundPending, req.Note)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to save refund: %v", err)
+		logger.ErrorLogger.Errorf("Failed to save refund for order %s: %v", orderID, err)
+	} else {
+		logger.DebugLogger.Debugf("Refund record saved for order %s with refund_id=%s", orderID, refundID)
 	}
 
-	logger.InfoLogger.Infof("Refund created: %s for order: %s", refundID, orderID)
+	logger.InfoLogger.Infof("Refund created: %s for order: %s amount=%.2f", refundID, orderID, req.Amount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"refund_id": refundID,
@@ -767,20 +683,22 @@ func (pc *PaymentController) GetOrder(c *gin.Context) {
 	var order struct {
 		ID               uuid.UUID `db:"id"`
 		OrderID          string    `db:"order_id"`
+		ServiceID        uuid.UUID `db:"service_id"`
+		StartTime        time.Time `db:"start_time"`
+		EndTime          time.Time `db:"end_time"`
 		Amount           float64   `db:"amount"`
 		PaymentSessionID string    `db:"payment_session_id"`
 		Currency         string    `db:"currency"`
-		Status           string    `db:"status"`
 		CreatedAt        time.Time `db:"created_at"`
 	}
 
 	err = pc.DB.QueryRow(ctx,
-		`SELECT id, order_id, amount, payment_session_id, currency, status, created_at
+		`SELECT id, order_id, service_id, start_time, end_time, amount, payment_session_id, currency, created_at
          FROM orders 
          WHERE customer_id = $1 AND order_id = $2`,
 		customerID, orderID).Scan(
-		&order.ID, &order.OrderID, &order.Amount, &order.PaymentSessionID,
-		&order.Currency, &order.Status, &order.CreatedAt,
+		&order.ID, &order.OrderID, &order.ServiceID, &order.StartTime, &order.EndTime, &order.Amount, &order.PaymentSessionID,
+		&order.Currency, &order.CreatedAt,
 	)
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" {
@@ -793,9 +711,11 @@ func (pc *PaymentController) GetOrder(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"order_id":           order.OrderID,
+		"service_id":         order.ServiceID,
+		"start_time":         order.StartTime,
+		"end_time":           order.EndTime,
 		"amount":             order.Amount,
 		"currency":           order.Currency,
-		"status":             order.Status,
 		"created_at":         order.CreatedAt,
 		"payment_session_id": order.PaymentSessionID,
 		"payment": gin.H{
@@ -834,7 +754,7 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	rows, err := pc.DB.Query(ctx,
-		`SELECT id, order_id, amount, currency, status, created_at
+		`SELECT id, order_id, service_id, start_time, end_time, amount, currency, created_at
 		 FROM orders 
 		 WHERE customer_id = $1 
 		 ORDER BY created_at DESC 
@@ -850,21 +770,25 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 	for rows.Next() {
 		var id uuid.UUID
 		var orderID string
+		var serviceID uuid.UUID
+		var startTime time.Time
+		var endTime time.Time
 		var amount float64
 		var currency string
-		var status string
 		var createdAt time.Time
 
-		if err := rows.Scan(&id, &orderID, &amount, &currency, &status, &createdAt); err != nil {
+		if err := rows.Scan(&id, &orderID, &serviceID, &startTime, &endTime, &amount, &currency, &createdAt); err != nil {
 			continue
 		}
 
 		orders = append(orders, map[string]interface{}{
 			"id":         id,
 			"order_id":   orderID,
+			"service_id": serviceID,
+			"start_time": startTime,
+			"end_time":   endTime,
 			"amount":     amount,
 			"currency":   currency,
-			"status":     status,
 			"created_at": createdAt,
 		})
 	}
@@ -926,4 +850,60 @@ func (pc *PaymentController) WebhookHealthCheck(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+// GetUnavailableTimes retrieves all confirmed (booked) time slots for a service on a specific date
+func (pc *PaymentController) GetUnavailableTimes(c *gin.Context) {
+	serviceIDStr := c.Param("service_id")
+	serviceID, err := uuid.Parse(serviceIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid service ID format"})
+		return
+	}
+
+	dateStr := c.Query("date")
+	if dateStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Query parameter 'date' is required in YYYY-MM-DD format"})
+		return
+	}
+
+	// Parse date in YYYY-MM-DD format (UTC)
+	bookingDate, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format, use YYYY-MM-DD"})
+		return
+	}
+
+	// Get start of today in UTC
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Check if booking date is in the past (before today)
+	if bookingDate.Before(today) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking date cannot be in the past"})
+		return
+	}
+
+	// UTC day boundaries
+	startOfDay := time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), 0, 0, 0, 0, time.UTC)
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	logger.InfoLogger.Infof("Fetching unavailable times for service=%s, date=%s, UTC range=%s - %s",
+		serviceID, dateStr, startOfDay.Format(time.RFC3339), endOfDay.Format(time.RFC3339))
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	times, err := payment_models.GetBookedTimesForServiceDate(ctx, pc.DB, serviceID, startOfDay, endOfDay)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Query error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch unavailable times"})
+		return
+	}
+
+	if len(times) == 0 {
+		logger.InfoLogger.Infof("No unavailable slots found for service=%s on date=%s", serviceID, dateStr)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"times": times})
 }
