@@ -118,7 +118,9 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // Restore body
+	bodyBytes = bytes.TrimSpace(bodyBytes)                          // Remove leading/trailing whitespace
+	bodyBytes = bytes.TrimPrefix(bodyBytes, []byte("\xEF\xBB\xBF")) // Remove BOM
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))       // Restore body
 
 	fmt.Printf("Raw body: %s\n", string(bodyBytes))
 
@@ -192,7 +194,15 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			fmt.Printf("Order %s updated successfully.\n", webhookData.Order.OrderID)
 		}
 
-	// Handle other cases as in original code
+	case "WEBHOOK": // Handle test webhook explicitly
+		fmt.Printf("Received test webhook, logging and marking as processed\n")
+		_, err = tx.Exec(ctx,
+			`UPDATE webhook_events SET processed = true WHERE event_type = $1 AND raw_payload = $2`,
+			event.Type, string(bodyBytes))
+		if err != nil {
+			fmt.Printf("Failed to mark test webhook as processed: %v\n", err)
+		}
+
 	default:
 		fmt.Printf("Unhandled webhook event type received: %s\n", event.Type)
 	}
@@ -225,8 +235,9 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	if time.Since(time.Unix(tsInt/1000, 0)) > 10*time.Minute {
-		fmt.Printf("Webhook timestamp expired: %v\n", time.Since(time.Unix(tsInt/1000, 0)))
+	// Treat timestamp as seconds
+	if time.Since(time.Unix(tsInt, 0)) > 10*time.Minute {
+		fmt.Printf("Webhook timestamp expired: %v\n", time.Since(time.Unix(tsInt, 0)))
 		return false
 	}
 
