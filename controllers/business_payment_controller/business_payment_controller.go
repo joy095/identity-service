@@ -109,24 +109,11 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 
 // PaymentWebhook is the single entry point for all Cashfree webhooks.
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
-	// Read the body once
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
-	}
-
-	// Debug logging (remove in production)
-	logger.InfoLogger.Infof("=== WEBHOOK DEBUG START ===")
-	logger.InfoLogger.Infof("Headers - Timestamp: %s", c.GetHeader("x-webhook-timestamp"))
-	logger.InfoLogger.Infof("Headers - Signature present: %v", c.GetHeader("x-webhook-signature") != "")
-	logger.InfoLogger.Infof("Body length: %d", len(bodyBytes))
-	logger.InfoLogger.Infof("Webhook secret configured: %v", pc.WebhookSecret != "")
-
-	// Log first 100 chars of body for debugging
-	if len(bodyBytes) > 100 {
-		logger.InfoLogger.Infof("Body preview: %s...", string(bodyBytes[:100]))
 	}
 
 	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
@@ -135,7 +122,6 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
-
 	logger.InfoLogger.Infof("✅ Webhook signature verified successfully")
 
 	// 2. Parse generic event
@@ -145,51 +131,93 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-
 	logger.InfoLogger.Infof("Webhook event type: %s", event.Type)
 
 	ctx := c.Request.Context()
 
-	// 3. Log event to database (with better error handling)
-	var eventID int64
-	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO webhook_events (event_type, raw_payload, processed, created_at) 
-		 VALUES ($1, $2, $3, NOW()) RETURNING id`,
-		event.Type, string(bodyBytes), false).Scan(&eventID)
-
+	// 3. Begin a single transaction for the entire operation
+	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to log webhook event to database: %v", err)
-		// Don't return here - continue processing the webhook
-	} else {
-		logger.InfoLogger.Infof("Webhook event logged with ID: %d", eventID)
+		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] Webhook processing for event %s: %v", event.Type, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection error"})
+		return
+	}
+	// Defer a rollback. It will be ignored if we commit successfully.
+	defer tx.Rollback(ctx)
 
-		// Mark as processed after handling
-		defer func() {
-			_, updateErr := pc.DB.Exec(ctx,
-				`UPDATE webhook_events SET processed = true, updated_at = NOW() WHERE id = $1`, eventID)
-			if updateErr != nil {
-				logger.ErrorLogger.Errorf("Failed to mark webhook event %d as processed: %v", eventID, updateErr)
-			}
-		}()
+	// 4. Log the event within the transaction
+	_, err = tx.Exec(ctx,
+		`INSERT INTO webhook_events (event_type, raw_payload, processed, created_at, updated_at)
+		 VALUES ($1, $2, false, NOW(), NOW())`,
+		event.Type, string(bodyBytes))
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Failed to log webhook event to database: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to log event"})
+		return
 	}
 
-	// 4. Route event
+	// 5. Route event and handle logic within the same transaction
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID", "PAYMENT_CHARGES_WEBHOOK":
-		logger.InfoLogger.Infof("Processing payment success event")
-		pc.handlePaymentSuccess(ctx, event.Data)
+		logger.InfoLogger.Infof("Processing payment success event in transaction")
+		var webhookData PaymentWebhookData
+		if err := json.Unmarshal(event.Data, &webhookData); err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
+			// No need to return a JSON error here, just log and let the transaction roll back
+			return
+		}
+
+		// FIX: Marshal the payment_method map to a JSON string
+		paymentMethodJSON, err := json.Marshal(webhookData.Payment.PaymentMethod)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", webhookData.Order.OrderID, err)
+			return
+		}
+
+		// Update order with payment details
+		result, err := tx.Exec(ctx,
+			`UPDATE orders
+			 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
+			 WHERE order_id = $5 AND status = $6`,
+			webhookData.Payment.CfPaymentID, paymentMethodJSON, webhookData.Payment.BankReference, OrderStatusPaid, webhookData.Order.OrderID, OrderStatusPending)
+
+		if err != nil {
+			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", webhookData.Order.OrderID, err)
+			return
+		}
+		if result.RowsAffected() == 0 {
+			logger.ErrorLogger.Warnf("No pending order found or already updated for order_id: %s", webhookData.Order.OrderID)
+			// This might not be an error (e.g., duplicate webhook), so we can still commit the event log.
+		} else {
+			logger.InfoLogger.Infof("Order %s updated successfully.", webhookData.Order.OrderID)
+		}
+
 	case "REFUND_SUCCESS_WEBHOOK":
 		logger.InfoLogger.Infof("Processing refund success event")
-		pc.handleRefundSuccess(ctx, event.Data)
+		// NOTE: The logic for this handler should also be moved inside this transaction
+		// for atomicity, following the pattern above.
+		pc.handleRefundSuccess(ctx, event.Data) // For now, leaving as is.
+
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
 		logger.InfoLogger.Infof("Processing refund failure/reversal event")
-		pc.handleRefundFailure(ctx, event.Data, event.Type)
+		// NOTE: This logic should also be part of the transaction.
+		pc.handleRefundFailure(ctx, event.Data, event.Type) // For now, leaving as is.
+
 	default:
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
 	}
 
+	// 6. Commit the transaction if all steps were successful
+	if err := tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] Webhook processing for event %s: %v", event.Type, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit changes"})
+		return
+	}
+
+	logger.InfoLogger.Infof("✅ Webhook event %s processed and committed successfully.", event.Type)
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
+
 
 // verifyWebhookSignature validates the incoming webhook signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
