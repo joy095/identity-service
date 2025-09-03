@@ -110,6 +110,12 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 	return pc.HttpClient.Do(req)
 }
 
+type WebhookPayload struct {
+	Data      map[string]interface{} `json:"data"`
+	Type      string                 `json:"type"`
+	EventTime string                 `json:"event_time"`
+}
+
 // PaymentWebhook is the single entry point for all Cashfree webhooks.
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
@@ -240,20 +246,17 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// Normalize JSON body with minimal whitespace
-	var temp interface{}
-	if err := json.Unmarshal(bodyBytes, &temp); err != nil {
+	// Parse into struct to enforce field order
+	var payload WebhookPayload
+	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		fmt.Printf("Failed to parse JSON body: %v\n", err)
 		return false
 	}
-	buf := new(bytes.Buffer)
-	encoder := json.NewEncoder(buf)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(temp); err != nil {
+	normalizedBody, err := json.Marshal(payload)
+	if err != nil {
 		fmt.Printf("Failed to normalize JSON body: %v\n", err)
 		return false
 	}
-	normalizedBody := bytes.TrimSpace(buf.Bytes()) // Remove trailing newline
 
 	signStr := timestamp + string(normalizedBody)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
