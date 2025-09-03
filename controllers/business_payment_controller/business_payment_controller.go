@@ -58,6 +58,9 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 	clientSecret := os.Getenv("CASHFREE_CLIENT_SECRET")
 	apiVersion := os.Getenv("CASHFREE_API_VERSION")
 	webhookSecret := os.Getenv("CASHFREE_WEBHOOK_SECRET")
+	if webhookSecret == "" {
+		return nil, fmt.Errorf("required Cashfree environment variables not set")
+	}
 
 	if clientID == "" || clientSecret == "" || apiVersion == "" || webhookSecret == "" {
 		return nil, fmt.Errorf("required Cashfree environment variables not set")
@@ -69,7 +72,7 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 	}
 
 	// Log webhook secret length for debugging (never log the actual secret!)
-	logger.InfoLogger.Infof("Webhook secret configured with length: %d", len(webhookSecret))
+	fmt.Printf("Webhook secret configured with length: %d", len(webhookSecret))
 
 	return &PaymentController{
 		DB:            db,
@@ -111,34 +114,34 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
+		fmt.Errorf("Failed to read webhook body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
 
 	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
-		logger.ErrorLogger.Errorf("Webhook signature verification failed")
+		fmt.Errorf("Webhook signature verification failed")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
-	logger.InfoLogger.Infof("✅ Webhook signature verified successfully")
+	fmt.Printf("✅ Webhook signature verified successfully")
 
 	// 2. Parse generic event
 	var event WebhookEvent
 	if err := json.Unmarshal(bodyBytes, &event); err != nil {
-		logger.ErrorLogger.Errorf("Invalid webhook payload: %v", err)
+		fmt.Errorf("Invalid webhook payload: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	logger.InfoLogger.Infof("Webhook event type: %s", event.Type)
+	fmt.Printf("Webhook event type: %s", event.Type)
 
 	ctx := c.Request.Context()
 
 	// 3. Begin a single transaction for the entire operation
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] Webhook processing for event %s: %v", event.Type, err)
+		fmt.Errorf("[TX_BEGIN_FAIL] Webhook processing for event %s: %v", event.Type, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection error"})
 		return
 	}
@@ -151,7 +154,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		 VALUES ($1, $2, false, NOW(), NOW())`,
 		event.Type, string(bodyBytes))
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Failed to log webhook event to database: %v", err)
+		fmt.Errorf("[TX_EXEC_FAIL] Failed to log webhook event to database: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to log event"})
 		return
 	}
@@ -159,10 +162,10 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	// 5. Route event and handle logic within the same transaction
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID", "PAYMENT_CHARGES_WEBHOOK":
-		logger.InfoLogger.Infof("Processing payment success event in transaction")
+		fmt.Printf("Processing payment success event in transaction")
 		var webhookData PaymentWebhookData
 		if err := json.Unmarshal(event.Data, &webhookData); err != nil {
-			logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
+			fmt.Errorf("Failed to parse payment success data: %v", err)
 			// No need to return a JSON error here, just log and let the transaction roll back
 			return
 		}
@@ -170,7 +173,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		// FIX: Marshal the payment_method map to a JSON string
 		paymentMethodJSON, err := json.Marshal(webhookData.Payment.PaymentMethod)
 		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", webhookData.Order.OrderID, err)
+			fmt.Errorf("Failed to marshal payment method for order %s: %v", webhookData.Order.OrderID, err)
 			return
 		}
 
@@ -182,21 +185,21 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			webhookData.Payment.CfPaymentID, paymentMethodJSON, webhookData.Payment.BankReference, OrderStatusPaid, webhookData.Order.OrderID, OrderStatusPending)
 
 		if err != nil {
-			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", webhookData.Order.OrderID, err)
+			fmt.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", webhookData.Order.OrderID, err)
 			return
 		}
 		if result.RowsAffected() == 0 {
 			logger.ErrorLogger.Warnf("No pending order found or already updated for order_id: %s", webhookData.Order.OrderID)
 			// This might not be an error (e.g., duplicate webhook), so we can still commit the event log.
 		} else {
-			logger.InfoLogger.Infof("Order %s updated successfully.", webhookData.Order.OrderID)
+			fmt.Printf("Order %s updated successfully.", webhookData.Order.OrderID)
 		}
 
 	case "REFUND_SUCCESS_WEBHOOK":
-		logger.InfoLogger.Infof("Processing refund success event in transaction")
+		fmt.Printf("Processing refund success event in transaction")
 		var refundWebhookData RefundWebhookData
 		if err := json.Unmarshal(event.Data, &refundWebhookData); err != nil {
-			logger.ErrorLogger.Errorf("Failed to parse refund success data: %v", err)
+			fmt.Errorf("Failed to parse refund success data: %v", err)
 			return
 		}
 
@@ -208,7 +211,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			StatusRefundSuccess, refundWebhookData.Refund.CfRefundID, refundWebhookData.Refund.ProcessedAt, refundWebhookData.Refund.RefundID)
 
 		if err != nil {
-			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refundWebhookData.Refund.RefundID, err)
+			fmt.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refundWebhookData.Refund.RefundID, err)
 			return
 		}
 
@@ -222,19 +225,19 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			OrderStatusRefunded, refundWebhookData.Order.OrderID)
 
 		if err != nil {
-			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", refundWebhookData.Order.OrderID, err)
+			fmt.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", refundWebhookData.Order.OrderID, err)
 			return
 		}
 
 		orderRowsAffected := result.RowsAffected()
-		logger.InfoLogger.Infof("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
+		fmt.Printf("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
 			refundWebhookData.Refund.RefundID, refundRowsAffected, orderRowsAffected)
 
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
-		logger.InfoLogger.Infof("Processing refund failure/reversal event in transaction")
+		fmt.Printf("Processing refund failure/reversal event in transaction")
 		var refundWebhookData RefundWebhookData
 		if err := json.Unmarshal(event.Data, &refundWebhookData); err != nil {
-			logger.ErrorLogger.Errorf("Failed to parse refund failure/reversal data: %v", err)
+			fmt.Errorf("Failed to parse refund failure/reversal data: %v", err)
 			return
 		}
 
@@ -249,29 +252,28 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			newStatus, refundID)
 
 		if err != nil {
-			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
+			fmt.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
 			return
 		}
 
 		rowsAffected := result.RowsAffected()
-		logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s (rows: %d)",
+		fmt.Printf("❌ Refund %s processed for refund_id: %s (rows: %d)",
 			newStatus, refundID, rowsAffected)
 
 	default:
-		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
+		fmt.Printf("Unhandled webhook event type received: %s", event.Type)
 	}
 
 	// 6. Commit the transaction if all steps were successful
 	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] Webhook processing for event %s: %v", event.Type, err)
+		fmt.Errorf("[TX_COMMIT_FAIL] Webhook processing for event %s: %v", event.Type, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit changes"})
 		return
 	}
 
-	logger.InfoLogger.Infof("✅ Webhook event %s processed and committed successfully.", event.Type)
+	fmt.Printf("✅ Webhook event %s processed and committed successfully.", event.Type)
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
-
 
 // verifyWebhookSignature validates the incoming webhook signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
@@ -279,25 +281,29 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	signature := c.GetHeader("x-webhook-signature")
 
 	if timestamp == "" || signature == "" {
-		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
+		fmt.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
 		return false
 	}
 
 	// Validate timestamp format
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
+		fmt.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
 		return false
 	}
 
 	// Check timestamp age (allow 5 minute window)
 	timestampTime := time.UnixMilli(ts)
 	timeDiff := time.Since(timestampTime)
-
-	logger.InfoLogger.Infof("Timestamp validation - TS: %d, Time: %v, Diff: %v", ts, timestampTime, timeDiff)
-
 	if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
-		logger.ErrorLogger.Errorf("Timestamp outside valid window: %v", timeDiff)
+		fmt.Errorf("Timestamp outside valid window: %v", timeDiff)
+		return false
+	}
+
+	fmt.Printf("Timestamp validation - TS: %d, Time: %v, Diff: %v", ts, timestampTime, timeDiff)
+
+	if timeDiff > 10*time.Minute || timeDiff < -2*time.Minute {
+		fmt.Errorf("Timestamp outside valid window: %v", timeDiff)
 		return false
 	}
 
@@ -310,19 +316,19 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	// Debug logging (remove in production)
-	logger.InfoLogger.Infof("Signature debug - Message length: %d", len(message))
-	logger.InfoLogger.Infof("Expected signature length: %d, Received signature length: %d",
+	fmt.Printf("Signature debug - Message length: %d", len(message))
+	fmt.Printf("Expected signature length: %d, Received signature length: %d",
 		len(expectedSignature), len(signature))
 
 	// Use constant-time comparison
 	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
 
 	if !isValid {
-		logger.ErrorLogger.Errorf("Signature mismatch - check webhook secret configuration")
+		fmt.Errorf("Signature mismatch - check webhook secret configuration")
 		// In development, you might want to log partial signatures for debugging
 		if len(expectedSignature) > 10 && len(signature) > 10 {
-			logger.ErrorLogger.Errorf("Expected signature prefix: %s...", expectedSignature[:10])
-			logger.ErrorLogger.Errorf("Received signature prefix: %s...", signature[:10])
+			fmt.Errorf("Expected signature prefix: %s...", expectedSignature[:10])
+			fmt.Errorf("Received signature prefix: %s...", signature[:10])
 		}
 	}
 
@@ -334,18 +340,18 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
 	var webhookData PaymentWebhookData
 	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
+		fmt.Errorf("Failed to parse payment success data: %v", err)
 		return
 	}
 
 	orderID := webhookData.Order.OrderID
 	payment := webhookData.Payment
 
-	logger.InfoLogger.Infof("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
+	fmt.Printf("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
 
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
+		fmt.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -353,7 +359,7 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 	// FIX: Marshal the payment_method map to a JSON string for consistency
 	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
+		fmt.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
 		return
 	}
 
@@ -365,22 +371,22 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
+		fmt.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 	if rowsAffected == 0 {
-		logger.ErrorLogger.Errorf("No order found with order_id: %s", orderID)
+		fmt.Errorf("No order found with order_id: %s", orderID)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
+		fmt.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
 		return
 	}
 
-	logger.InfoLogger.Infof("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
+	fmt.Printf("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
 }
 
 type RefundWebhookData struct {
@@ -401,18 +407,18 @@ type RefundData struct {
 func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.RawMessage) {
 	var webhookData RefundWebhookData
 	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse refund success data: %v", err)
+		fmt.Errorf("Failed to parse refund success data: %v", err)
 		return
 	}
 
 	refund := webhookData.Refund
 
-	logger.InfoLogger.Infof("Processing refund success for refund_id: %s, order: %s",
+	fmt.Printf("Processing refund success for refund_id: %s, order: %s",
 		refund.RefundID, webhookData.Order.OrderID)
 
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
+		fmt.Errorf("[TX_BEGIN_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -425,7 +431,7 @@ func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.
 		StatusRefundSuccess, refund.CfRefundID, refund.ProcessedAt, refund.RefundID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refund.RefundID, err)
+		fmt.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refund.RefundID, err)
 		return
 	}
 
@@ -439,25 +445,25 @@ func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.
 		OrderStatusRefunded, webhookData.Order.OrderID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", webhookData.Order.OrderID, err)
+		fmt.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", webhookData.Order.OrderID, err)
 		return
 	}
 
 	orderRowsAffected := result.RowsAffected()
 
 	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
+		fmt.Errorf("[TX_COMMIT_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
 		return
 	}
 
-	logger.InfoLogger.Infof("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
+	fmt.Printf("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
 		refund.RefundID, refundRowsAffected, orderRowsAffected)
 }
 
 func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.RawMessage, eventType string) {
 	var webhookData RefundWebhookData
 	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse refund failure/reversal data: %v", err)
+		fmt.Errorf("Failed to parse refund failure/reversal data: %v", err)
 		return
 	}
 
@@ -467,11 +473,11 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 		newStatus = StatusRefundReversed
 	}
 
-	logger.InfoLogger.Infof("Processing refund %s for refund_id: %s", newStatus, refundID)
+	fmt.Printf("Processing refund %s for refund_id: %s", newStatus, refundID)
 
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] RefundFailure for %s: %v", refundID, err)
+		fmt.Errorf("[TX_BEGIN_FAIL] RefundFailure for %s: %v", refundID, err)
 		return
 	}
 	defer tx.Rollback(ctx)
@@ -481,18 +487,18 @@ func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.
 		newStatus, refundID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
+		fmt.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
 
 	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] RefundFailure for %s: %v", refundID, err)
+		fmt.Errorf("[TX_COMMIT_FAIL] RefundFailure for %s: %v", refundID, err)
 		return
 	}
 
-	logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s (rows: %d)",
+	fmt.Printf("❌ Refund %s processed for refund_id: %s (rows: %d)",
 		newStatus, refundID, rowsAffected)
 }
 
@@ -527,7 +533,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Get user details
 	user, err := user_models.GetUserByID(ctx, pc.DB, customerID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get user: %v", err)
+		fmt.Errorf("Failed to get user: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user"})
 		return
 	}
@@ -560,7 +566,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Check for overlapping bookings
 	hasOverlap, err := payment_models.HasBookingOverlap(ctx, pc.DB, req.ServiceID, req.StartTime, req.EndTime)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to check overlap: %v", err)
+		fmt.Errorf("Failed to check overlap: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check availability"})
 		return
 	}
@@ -587,7 +593,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Get service
 	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, req.ServiceID)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get service: %v", err)
+		fmt.Errorf("Failed to get service: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
 		return
 	}
@@ -604,7 +610,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to marshal order payload: %v", err)
+		fmt.Errorf("Failed to marshal order payload: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare order"})
 		return
 	}
@@ -612,7 +618,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	// Call Cashfree API to create order
 	resp, err := pc.makeRequest(ctx, "POST", "/orders", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		logger.ErrorLogger.Errorf("Cashfree request failed: %v", err)
+		fmt.Errorf("Cashfree request failed: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 		return
 	}
@@ -620,7 +626,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logger.ErrorLogger.Errorf("Cashfree error [%d]: %s", resp.StatusCode, string(body))
+		fmt.Errorf("Cashfree error [%d]: %s", resp.StatusCode, string(body))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 		return
 	}
@@ -646,12 +652,12 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	).Scan(&dbOrderID)
 
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to insert order in DB: %v", err)
+		fmt.Errorf("Failed to insert order in DB: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save order"})
 		return
 	}
 
-	logger.InfoLogger.Infof("Order created: %s for customer: %s", cfOrderID, customerID)
+	fmt.Printf("Order created: %s for customer: %s", cfOrderID, customerID)
 
 	var response gin.H = gin.H{
 		"order_id": cfOrderID,
@@ -667,14 +673,14 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 		jsonPaymentPayload, err := json.Marshal(paymentPayload)
 		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to marshal payment payload: %v", err)
+			fmt.Errorf("Failed to marshal payment payload: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare payment"})
 			return
 		}
 
 		paymentResp, err := pc.makeRequest(ctx, "POST", "/orders/sessions", bytes.NewBuffer(jsonPaymentPayload))
 		if err != nil {
-			logger.ErrorLogger.Errorf("Cashfree payment initiation failed: %v", err)
+			fmt.Errorf("Cashfree payment initiation failed: %v", err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 			return
 		}
@@ -682,7 +688,7 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 		if paymentResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(paymentResp.Body)
-			logger.ErrorLogger.Errorf("Cashfree payment error [%d]: %s", paymentResp.StatusCode, string(body))
+			fmt.Errorf("Cashfree payment error [%d]: %s", paymentResp.StatusCode, string(body))
 			c.JSON(http.StatusBadGateway, gin.H{"error": "payment initiation failed", "details": string(body)})
 			return
 		}
@@ -764,7 +770,7 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 			logger.DebugLogger.Debugf("No paid order found for order_id=%s", orderID)
 			c.JSON(http.StatusNotFound, gin.H{"error": "paid order not found"})
 		} else {
-			logger.ErrorLogger.Errorf("DB query error checking order %s: %v", orderID, err)
+			fmt.Errorf("DB query error checking order %s: %v", orderID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return
@@ -792,7 +798,7 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 	resp, err := pc.makeRequest(ctx, "POST", "/orders/"+orderID+"/refunds", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		logger.ErrorLogger.Errorf("Refund gateway error for order %s: %v", orderID, err)
+		fmt.Errorf("Refund gateway error for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund gateway error"})
 		return
 	}
@@ -800,14 +806,14 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		logger.ErrorLogger.Errorf("Refund creation failed for order %s: status=%d body=%s", orderID, resp.StatusCode, string(body))
+		fmt.Errorf("Refund creation failed for order %s: status=%d body=%s", orderID, resp.StatusCode, string(body))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund creation failed"})
 		return
 	}
 
 	var cfResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		logger.ErrorLogger.Errorf("Failed to decode refund response for order %s: %v", orderID, err)
+		fmt.Errorf("Failed to decode refund response for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid refund response"})
 		return
 	}
@@ -819,12 +825,12 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
 		orderID, refundID, req.Amount, StatusRefundPending, req.Note)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to save refund for order %s: %v", orderID, err)
+		fmt.Errorf("Failed to save refund for order %s: %v", orderID, err)
 	} else {
 		logger.DebugLogger.Debugf("Refund record saved for order %s with refund_id=%s", orderID, refundID)
 	}
 
-	logger.InfoLogger.Infof("Refund created: %s for order: %s amount=%.2f", refundID, orderID, req.Amount)
+	fmt.Printf("Refund created: %s for order: %s amount=%.2f", refundID, orderID, req.Amount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"refund_id": refundID,
@@ -999,7 +1005,7 @@ func (pc *PaymentController) WebhookHealthCheck(c *gin.Context) {
 	err = pc.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webhook_events WHERE created_at > NOW() - INTERVAL '24 hours'`).Scan(&count)
 	if err != nil && err != pgx.ErrNoRows {
-		logger.ErrorLogger.Errorf("Failed to count recent webhook events: %v", err)
+		fmt.Errorf("Failed to count recent webhook events: %v", err)
 	}
 
 	// Count unprocessed events
@@ -1007,7 +1013,7 @@ func (pc *PaymentController) WebhookHealthCheck(c *gin.Context) {
 	err = pc.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webhook_events WHERE NOT processed`).Scan(&unprocessed)
 	if err != nil && err != pgx.ErrNoRows {
-		logger.ErrorLogger.Errorf("Failed to count unprocessed events: %v", err)
+		fmt.Errorf("Failed to count unprocessed events: %v", err)
 	}
 
 	response := gin.H{
@@ -1060,7 +1066,7 @@ func (pc *PaymentController) GetUnavailableTimes(c *gin.Context) {
 	startOfDay := time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), 0, 0, 0, 0, time.UTC)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	logger.InfoLogger.Infof("Fetching unavailable times for service=%s, date=%s, UTC range=%s - %s",
+	fmt.Printf("Fetching unavailable times for service=%s, date=%s, UTC range=%s - %s",
 		serviceID, dateStr, startOfDay.Format(time.RFC3339), endOfDay.Format(time.RFC3339))
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -1068,13 +1074,13 @@ func (pc *PaymentController) GetUnavailableTimes(c *gin.Context) {
 
 	times, err := payment_models.GetBookedTimesForServiceDate(ctx, pc.DB, serviceID, startOfDay, endOfDay)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Query error: %v", err)
+		fmt.Errorf("Query error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch unavailable times"})
 		return
 	}
 
 	if len(times) == 0 {
-		logger.InfoLogger.Infof("No unavailable slots found for service=%s on date=%s", serviceID, dateStr)
+		fmt.Printf("No unavailable slots found for service=%s on date=%s", serviceID, dateStr)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"times": times})
