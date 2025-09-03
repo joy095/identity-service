@@ -194,7 +194,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 			fmt.Printf("Order %s updated successfully.\n", webhookData.Order.OrderID)
 		}
 
-	case "WEBHOOK": // Handle test webhook explicitly
+	case "WEBHOOK":
 		fmt.Printf("Received test webhook, logging and marking as processed\n")
 		_, err = tx.Exec(ctx,
 			`UPDATE webhook_events SET processed = true WHERE event_type = $1 AND raw_payload = $2`,
@@ -235,23 +235,25 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	// Treat timestamp as seconds
 	if time.Since(time.Unix(tsInt, 0)) > 10*time.Minute {
 		fmt.Printf("Webhook timestamp expired: %v\n", time.Since(time.Unix(tsInt, 0)))
 		return false
 	}
 
-	// Normalize JSON body
+	// Normalize JSON body with minimal whitespace
 	var temp interface{}
 	if err := json.Unmarshal(bodyBytes, &temp); err != nil {
 		fmt.Printf("Failed to parse JSON body: %v\n", err)
 		return false
 	}
-	normalizedBody, err := json.Marshal(temp)
-	if err != nil {
+	buf := new(bytes.Buffer)
+	encoder := json.NewEncoder(buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(temp); err != nil {
 		fmt.Printf("Failed to normalize JSON body: %v\n", err)
 		return false
 	}
+	normalizedBody := bytes.TrimSpace(buf.Bytes()) // Remove trailing newline
 
 	signStr := timestamp + string(normalizedBody)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
