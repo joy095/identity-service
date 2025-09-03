@@ -281,58 +281,33 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	signature := c.GetHeader("x-webhook-signature")
 
 	if timestamp == "" || signature == "" {
-		fmt.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
+		fmt.Println("Missing webhook headers")
 		return false
 	}
 
-	// Validate timestamp format
-	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	tsInt, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
-		fmt.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
+		fmt.Printf("Invalid timestamp: %s, err: %v\n", timestamp, err)
 		return false
 	}
 
-	// Check timestamp age (allow 5 minute window)
-	timestampTime := time.UnixMilli(ts)
-	timeDiff := time.Since(timestampTime)
-	if timeDiff > 5*time.Minute || timeDiff < -1*time.Minute {
-		fmt.Errorf("Timestamp outside valid window: %v", timeDiff)
+	// allow 5 min window
+	if time.Since(time.Unix(tsInt/1000, 0)) > 5*time.Minute {
+		fmt.Println("Webhook timestamp expired")
 		return false
 	}
 
-	fmt.Printf("Timestamp validation - TS: %d, Time: %v, Diff: %v", ts, timestampTime, timeDiff)
-
-	if timeDiff > 10*time.Minute || timeDiff < -2*time.Minute {
-		fmt.Errorf("Timestamp outside valid window: %v", timeDiff)
-		return false
-	}
-
-	// Create the message to sign (timestamp + body)
-	message := timestamp + string(bodyBytes)
-
-	// Generate HMAC-SHA256 signature
+	// signing string
+	signStr := strconv.FormatInt(tsInt, 10) + string(bodyBytes)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(message))
+	mac.Write([]byte(signStr))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	// Debug logging (remove in production)
-	fmt.Printf("Signature debug - Message length: %d", len(message))
-	fmt.Printf("Expected signature length: %d, Received signature length: %d",
-		len(expectedSignature), len(signature))
+	fmt.Printf("Signing string: %s\n", signStr)
+	fmt.Printf("Expected signature: %s\n", expectedSignature)
+	fmt.Printf("Received signature: %s\n", signature)
 
-	// Use constant-time comparison
-	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
-
-	if !isValid {
-		fmt.Errorf("Signature mismatch - check webhook secret configuration")
-		// In development, you might want to log partial signatures for debugging
-		if len(expectedSignature) > 10 && len(signature) > 10 {
-			fmt.Errorf("Expected signature prefix: %s...", expectedSignature[:10])
-			fmt.Errorf("Received signature prefix: %s...", signature[:10])
-		}
-	}
-
-	return isValid
+	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
 
 // --- Webhook Handler Implementations ---
