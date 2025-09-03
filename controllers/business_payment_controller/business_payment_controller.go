@@ -193,15 +193,69 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		}
 
 	case "REFUND_SUCCESS_WEBHOOK":
-		logger.InfoLogger.Infof("Processing refund success event")
-		// NOTE: The logic for this handler should also be moved inside this transaction
-		// for atomicity, following the pattern above.
-		pc.handleRefundSuccess(ctx, event.Data) // For now, leaving as is.
+		logger.InfoLogger.Infof("Processing refund success event in transaction")
+		var refundWebhookData RefundWebhookData
+		if err := json.Unmarshal(event.Data, &refundWebhookData); err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse refund success data: %v", err)
+			return
+		}
+
+		// Update refund status within transaction
+		result, err := tx.Exec(ctx,
+			`UPDATE refunds 
+			 SET status = $1, cf_refund_id = $2, processed_at = $3, updated_at = NOW()
+			 WHERE refund_id = $4`,
+			StatusRefundSuccess, refundWebhookData.Refund.CfRefundID, refundWebhookData.Refund.ProcessedAt, refundWebhookData.Refund.RefundID)
+
+		if err != nil {
+			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refundWebhookData.Refund.RefundID, err)
+			return
+		}
+
+		refundRowsAffected := result.RowsAffected()
+
+		// Update order status
+		result, err = tx.Exec(ctx,
+			`UPDATE orders 
+			 SET status = $1, updated_at = NOW()
+			 WHERE order_id = $2`,
+			OrderStatusRefunded, refundWebhookData.Order.OrderID)
+
+		if err != nil {
+			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", refundWebhookData.Order.OrderID, err)
+			return
+		}
+
+		orderRowsAffected := result.RowsAffected()
+		logger.InfoLogger.Infof("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
+			refundWebhookData.Refund.RefundID, refundRowsAffected, orderRowsAffected)
 
 	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
-		logger.InfoLogger.Infof("Processing refund failure/reversal event")
-		// NOTE: This logic should also be part of the transaction.
-		pc.handleRefundFailure(ctx, event.Data, event.Type) // For now, leaving as is.
+		logger.InfoLogger.Infof("Processing refund failure/reversal event in transaction")
+		var refundWebhookData RefundWebhookData
+		if err := json.Unmarshal(event.Data, &refundWebhookData); err != nil {
+			logger.ErrorLogger.Errorf("Failed to parse refund failure/reversal data: %v", err)
+			return
+		}
+
+		refundID := refundWebhookData.Refund.RefundID
+		newStatus := StatusRefundFailed
+		if event.Type == "REFUND_REVERSED_WEBHOOK" {
+			newStatus = StatusRefundReversed
+		}
+
+		result, err := tx.Exec(ctx,
+			`UPDATE refunds SET status = $1, updated_at = NOW() WHERE refund_id = $2`,
+			newStatus, refundID)
+
+		if err != nil {
+			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
+			return
+		}
+
+		rowsAffected := result.RowsAffected()
+		logger.InfoLogger.Infof("❌ Refund %s processed for refund_id: %s (rows: %d)",
+			newStatus, refundID, rowsAffected)
 
 	default:
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
@@ -296,12 +350,19 @@ func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json
 	}
 	defer tx.Rollback(ctx)
 
+	// FIX: Marshal the payment_method map to a JSON string for consistency
+	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
+		return
+	}
+
 	// Update order with payment details
 	result, err := tx.Exec(ctx,
 		`UPDATE orders 
 		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
 		 WHERE order_id = $5`,
-		payment.CfPaymentID, payment.PaymentMethod, payment.BankReference, OrderStatusPaid, orderID)
+		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID)
 
 	if err != nil {
 		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
