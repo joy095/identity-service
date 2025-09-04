@@ -233,6 +233,11 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	}
 
 	signedPayload := timestamp + string(bodyBytes)
+	fmt.Printf("Timestamp: %s\n", timestamp)
+	fmt.Printf("Raw body: %s\n", string(bodyBytes))
+	fmt.Printf("Signed payload: %s\n", signedPayload)
+	fmt.Printf("Webhook secret length: %d\n", len(pc.WebhookSecret))
+
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(signedPayload))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
