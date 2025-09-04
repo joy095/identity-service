@@ -6,12 +6,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/business_payment_controller"
+	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
 func RegisterBusinessPaymentRoutes(router *gin.Engine) error {
 	paymentController, err := business_payment_controller.NewPaymentController(db.DB)
 	if err != nil {
+		logger.ErrorLogger.Errorf("payment routes init: %w", err)
 		return fmt.Errorf("payment routes init: %w", err)
 	}
 

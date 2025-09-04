@@ -6,12 +6,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/business_image_controller"
+	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
 func RegisterBusinessImageRoutes(router *gin.Engine) {
 	businessImageController, err := business_image_controller.NewBusinessImageController(db.DB)
 	if err != nil {
+		logger.ErrorLogger.Errorf("RegisterBusinessImageRoutes: failed to init BusinessImageController: %v", err)
 		log.Printf("RegisterBusinessImageRoutes: failed to init BusinessImageController: %v", err)
 		return
 	}

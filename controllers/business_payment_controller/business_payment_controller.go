@@ -108,9 +108,6 @@ func (pc *PaymentController) ValidateConfig() error {
 	if pc.WebhookSecret == "" {
 		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required")
 	}
-	if len(pc.WebhookSecret) < 32 {
-		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET should be at least 32 characters")
-	}
 	return nil
 }
 
