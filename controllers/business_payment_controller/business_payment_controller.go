@@ -58,9 +58,6 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 	clientSecret := os.Getenv("CASHFREE_CLIENT_SECRET")
 	apiVersion := os.Getenv("CASHFREE_API_VERSION")
 	webhookSecret := os.Getenv("CASHFREE_WEBHOOK_SECRET")
-	if webhookSecret == "" {
-		return nil, fmt.Errorf("required Cashfree environment variables not set")
-	}
 
 	if clientID == "" || clientSecret == "" || apiVersion == "" || webhookSecret == "" {
 		return nil, fmt.Errorf("required Cashfree environment variables not set")
@@ -71,10 +68,7 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 		baseURL = "https://sandbox.cashfree.com/pg" // Default to sandbox
 	}
 
-	// Log webhook secret length for debugging (never log the actual secret!)
-	fmt.Printf("Webhook secret configured with length: %d", len(webhookSecret))
-
-	return &PaymentController{
+	pc := &PaymentController{
 		DB:            db,
 		ClientID:      clientID,
 		ClientSecret:  clientSecret,
@@ -89,7 +83,35 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
-	}, nil
+	}
+
+	if err := pc.ValidateConfig(); err != nil {
+		return nil, err
+	}
+
+	logger.InfoLogger.Infof("Webhook secret configured with length: %d", len(webhookSecret))
+
+	return pc, nil
+}
+
+// ValidateConfig validates the payment controller configuration
+func (pc *PaymentController) ValidateConfig() error {
+	if pc.ClientID == "" {
+		return fmt.Errorf("CASHFREE_CLIENT_ID is required")
+	}
+	if pc.ClientSecret == "" {
+		return fmt.Errorf("CASHFREE_CLIENT_SECRET is required")
+	}
+	if pc.APIVersion == "" {
+		return fmt.Errorf("CASHFREE_API_VERSION is required")
+	}
+	if pc.WebhookSecret == "" {
+		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required")
+	}
+	if len(pc.WebhookSecret) < 32 {
+		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET should be at least 32 characters")
+	}
+	return nil
 }
 
 // HTTP client helper
@@ -110,22 +132,7 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 	return pc.HttpClient.Do(req)
 }
 
-type WebhookPayload struct {
-	Data      map[string]interface{} `json:"data"`
-	Type      string                 `json:"type"`
-	EventTime string                 `json:"event_time"`
-}
-
-// Suggested improvements for your payment controller
-
-// 1. Add proper error handling wrapper
-func (pc *PaymentController) logAndReturnError(operation, orderID string, err error) {
-	if err != nil {
-		logger.ErrorLogger.Errorf("[%s] Error for order %s: %v", operation, orderID, err)
-	}
-}
-
-// 2. Improved webhook signature verification with better logging
+// verifyWebhookSignature verifies the webhook signature
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
@@ -147,14 +154,14 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	timeDiff := time.Since(timestampTime)
 
 	// Allow 5 minutes window, reject future timestamps
-	if timeDiff > 5*time.Minute || timeDiff < 0 {
+	if timeDiff > 5*time.Minute || timeDiff < -time.Minute {
 		logger.ErrorLogger.Errorf("Invalid timestamp age: %v (timestamp: %s)",
 			timeDiff, timestampTime.Format(time.RFC3339))
 		return false
 	}
 
 	// Generate expected signature
-	message := timestamp + string(bodyBytes)
+	message := timestamp + "." + string(bodyBytes)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
@@ -164,7 +171,6 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 
 	if !isValid {
 		logger.ErrorLogger.Errorf("Webhook signature verification failed")
-		// Log signature lengths for debugging (never log actual signatures)
 		logger.DebugLogger.Debugf("Expected signature length: %d, Received: %d",
 			len(expectedSignature), len(signature))
 	}
@@ -172,89 +178,23 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	return isValid
 }
 
-// 3. Enhanced payment success handler with better error handling
-func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
-	var webhookData PaymentWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
-		return
-	}
-
-	orderID := webhookData.Order.OrderID
-	payment := webhookData.Payment
-
-	logger.InfoLogger.Infof("Processing payment success for order: %s, payment_id: %d",
-		orderID, payment.CfPaymentID)
-
-	// Validate required fields
-	if orderID == "" || payment.CfPaymentID == 0 {
-		logger.ErrorLogger.Errorf("Missing required fields in payment webhook: orderID=%s, paymentID=%d",
-			orderID, payment.CfPaymentID)
-		return
-	}
-
-	tx, err := pc.DB.Begin(ctx)
-	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
-		return
-	}
-	defer func() {
-		if p := recover(); p != nil {
-			tx.Rollback(ctx)
-			logger.ErrorLogger.Errorf("Panic in payment success handler for order %s: %v", orderID, p)
-		}
-	}()
-
-	// Marshal payment method with error handling
-	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
-		tx.Rollback(ctx)
-		return
-	}
-
-	// Update order with payment details
-	result, err := tx.Exec(ctx,
-		`UPDATE orders 
-         SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
-         WHERE order_id = $5 AND status = $6`, // Add status check to prevent duplicate processing
-		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID, OrderStatusPending)
-
-	if err != nil {
-		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
-		tx.Rollback(ctx)
-		return
-	}
-
-	rowsAffected := result.RowsAffected()
-	if rowsAffected == 0 {
-		logger.ErrorLogger.Errorf("No pending order found with order_id: %s (possible duplicate webhook)", orderID)
-		tx.Rollback(ctx)
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
-		return
-	}
-
-	logger.InfoLogger.Infof("✅ Payment success processed for order: %s (rows updated: %d)",
-		orderID, rowsAffected)
-}
-
-// 4. Add webhook event deduplication
+// isEventProcessed checks if the webhook event has already been processed
 func (pc *PaymentController) isEventProcessed(ctx context.Context, eventType, orderID string, eventTime string) (bool, error) {
 	var count int
 	err := pc.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webhook_events 
-         WHERE event_type = $1 AND raw_payload::json->>'order'->>'order_id' = $2 
+         WHERE event_type = $1 AND raw_payload::json->>'data'->>'order'->>'order_id' = $2 
          AND event_time = $3 AND processed = true`,
 		eventType, orderID, eventTime).Scan(&count)
+
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to check if event processed: %v", err)
+	}
 
 	return count > 0, err
 }
 
-// 5. Enhanced webhook handler with deduplication
+// PaymentWebhook handles incoming Cashfree webhooks
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -268,6 +208,7 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	// Verify signature first
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
+		logger.ErrorLogger.Errorf("Invalid webhook signature")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
@@ -282,12 +223,15 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Check for duplicate events (optional)
+	// Extract orderID for deduplication
+	orderID := ""
 	var orderData map[string]interface{}
 	if err := json.Unmarshal(event.Data, &orderData); err == nil {
 		if order, ok := orderData["order"].(map[string]interface{}); ok {
-			if orderID, ok := order["order_id"].(string); ok {
-				if processed, _ := pc.isEventProcessed(ctx, event.Type, orderID, event.EventTime); processed {
+			if id, ok := order["order_id"].(string); ok {
+				orderID = id
+				processed, err := pc.isEventProcessed(ctx, event.Type, orderID, event.EventTime)
+				if err == nil && processed {
 					logger.InfoLogger.Infof("Duplicate webhook event ignored: %s for order %s", event.Type, orderID)
 					c.JSON(http.StatusOK, gin.H{"status": "duplicate_ignored"})
 					return
@@ -310,12 +254,10 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	// Route event
 	switch event.Type {
-	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
+	case "PAYMENT_SUCCESS_WEBHOOK":
 		pc.handlePaymentSuccess(ctx, event.Data)
-	case "REFUND_SUCCESS_WEBHOOK":
-		pc.handleRefundSuccess(ctx, event.Data)
-	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
-		pc.handleRefundFailure(ctx, event.Data, event.Type)
+	case "REFUND_STATUS_WEBHOOK", "AUTO_REFUND_STATUS_WEBHOOK":
+		pc.handleRefundWebhook(ctx, event.Data, event.Type)
 	default:
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
 	}
@@ -332,212 +274,168 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-
-// 7. Add proper configuration validation
-func (pc *PaymentController) ValidateConfig() error {
-	if pc.ClientID == "" {
-		return fmt.Errorf("CASHFREE_CLIENT_ID is required")
-	}
-	if pc.ClientSecret == "" {
-		return fmt.Errorf("CASHFREE_CLIENT_SECRET is required")
-	}
-	if pc.APIVersion == "" {
-		return fmt.Errorf("CASHFREE_API_VERSION is required")
-	}
-	if pc.WebhookSecret == "" {
-		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required")
-	}
-	if len(pc.WebhookSecret) < 32 {
-		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET should be at least 32 characters")
-	}
-	return nil
-}
-
-// --- Webhook Handler Implementations ---
-
-// --- Webhook Handler Implementations ---
-
-// func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
-// 	var webhookData PaymentWebhookData
-// 	if err := json.Unmarshal(data, &webhookData); err != nil {
-// 		fmt.Errorf("Failed to parse payment success data: %v", err)
-// 		return
-// 	}
-
-// 	orderID := webhookData.Order.OrderID
-// 	payment := webhookData.Payment
-
-// 	fmt.Printf("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
-
-// 	tx, err := pc.DB.Begin(ctx)
-// 	if err != nil {
-// 		fmt.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
-// 		return
-// 	}
-// 	defer tx.Rollback(ctx)
-
-// 	// FIX: Marshal the payment_method map to a JSON string for consistency
-// 	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
-// 	if err != nil {
-// 		fmt.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
-// 		return
-// 	}
-
-// 	// Update order with payment details
-// 	result, err := tx.Exec(ctx,
-// 		`UPDATE orders 
-// 		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
-// 		 WHERE order_id = $5`,
-// 		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID)
-
-// 	if err != nil {
-// 		fmt.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
-// 		return
-// 	}
-
-// 	rowsAffected := result.RowsAffected()
-// 	if rowsAffected == 0 {
-// 		fmt.Errorf("No order found with order_id: %s", orderID)
-// 		return
-// 	}
-
-// 	if err := tx.Commit(ctx); err != nil {
-// 		fmt.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
-// 		return
-// 	}
-
-// 	fmt.Printf("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
-// }
-
-type RefundWebhookData struct {
-	Order  OrderData  `json:"order"`
-	Refund RefundData `json:"refund"`
-}
-
-type RefundData struct {
-	CfRefundID      string                   `json:"cf_refund_id"`
-	RefundID        string                   `json:"refund_id"`
-	RefundStatus    string                   `json:"refund_status"`
-	RefundAmount    float64                  `json:"refund_amount"`
-	RefundNote      string                   `json:"refund_note"`
-	ProcessedAt     string                   `json:"processed_at"`
-	RefundReversals []map[string]interface{} `json:"refund_reversals"`
-}
-
-func (pc *PaymentController) handleRefundSuccess(ctx context.Context, data json.RawMessage) {
-	var webhookData RefundWebhookData
+// handlePaymentSuccess processes payment success webhooks
+func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
+	var webhookData PaymentWebhookData
 	if err := json.Unmarshal(data, &webhookData); err != nil {
-		fmt.Errorf("Failed to parse refund success data: %v", err)
+		logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
 		return
 	}
 
-	refund := webhookData.Refund
+	orderID := webhookData.Order.OrderID
+	payment := webhookData.Payment
 
-	fmt.Printf("Processing refund success for refund_id: %s, order: %s",
-		refund.RefundID, webhookData.Order.OrderID)
+	if orderID == "" || payment.CfPaymentID == 0 {
+		logger.ErrorLogger.Errorf("Missing required fields in payment webhook: orderID=%s, paymentID=%d",
+			orderID, payment.CfPaymentID)
+		return
+	}
+
+	logger.InfoLogger.Infof("Processing payment success for order: %s, payment_id: %d",
+		orderID, payment.CfPaymentID)
 
 	tx, err := pc.DB.Begin(ctx)
 	if err != nil {
-		fmt.Errorf("[TX_BEGIN_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
+		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
 		return
 	}
-	defer tx.Rollback(ctx)
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
+			logger.ErrorLogger.Errorf("Failed to rollback transaction for order %s: %v", orderID, err)
+		}
+	}()
 
-	// Update refund status
-	result, err := tx.Exec(ctx,
-		`UPDATE refunds 
-		 SET status = $1, cf_refund_id = $2, processed_at = $3, updated_at = NOW()
-		 WHERE refund_id = $4`,
-		StatusRefundSuccess, refund.CfRefundID, refund.ProcessedAt, refund.RefundID)
-
+	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
 	if err != nil {
-		fmt.Errorf("[TX_EXEC_FAIL] Update refund for success failed for %s: %v", refund.RefundID, err)
+		logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
 		return
 	}
 
-	refundRowsAffected := result.RowsAffected()
-
-	// Update order status
-	result, err = tx.Exec(ctx,
+	result, err := tx.Exec(ctx,
 		`UPDATE orders 
-		 SET status = $1, updated_at = NOW()
-		 WHERE order_id = $2`,
-		OrderStatusRefunded, webhookData.Order.OrderID)
+         SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
+         WHERE order_id = $5 AND status = $6`,
+		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID, OrderStatusPending)
 
 	if err != nil {
-		fmt.Errorf("[TX_EXEC_FAIL] Update order for refund success failed for %s: %v", webhookData.Order.OrderID, err)
-		return
-	}
-
-	orderRowsAffected := result.RowsAffected()
-
-	if err := tx.Commit(ctx); err != nil {
-		fmt.Errorf("[TX_COMMIT_FAIL] RefundSuccess for %s: %v", refund.RefundID, err)
-		return
-	}
-
-	fmt.Printf("✅ Refund success processed - refund_id: %s (refund rows: %d, order rows: %d)",
-		refund.RefundID, refundRowsAffected, orderRowsAffected)
-}
-
-func (pc *PaymentController) handleRefundFailure(ctx context.Context, data json.RawMessage, eventType string) {
-	var webhookData RefundWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		fmt.Errorf("Failed to parse refund failure/reversal data: %v", err)
-		return
-	}
-
-	refundID := webhookData.Refund.RefundID
-	newStatus := StatusRefundFailed
-	if eventType == "REFUND_REVERSED_WEBHOOK" {
-		newStatus = StatusRefundReversed
-	}
-
-	fmt.Printf("Processing refund %s for refund_id: %s", newStatus, refundID)
-
-	tx, err := pc.DB.Begin(ctx)
-	if err != nil {
-		fmt.Errorf("[TX_BEGIN_FAIL] RefundFailure for %s: %v", refundID, err)
-		return
-	}
-	defer tx.Rollback(ctx)
-
-	result, err := tx.Exec(ctx,
-		`UPDATE refunds SET status = $1, updated_at = NOW() WHERE refund_id = $2`,
-		newStatus, refundID)
-
-	if err != nil {
-		fmt.Errorf("[TX_EXEC_FAIL] Update refund for failure failed for %s: %v", refundID, err)
+		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
 		return
 	}
 
 	rowsAffected := result.RowsAffected()
-
-	if err := tx.Commit(ctx); err != nil {
-		fmt.Errorf("[TX_COMMIT_FAIL] RefundFailure for %s: %v", refundID, err)
+	if rowsAffected == 0 {
+		logger.ErrorLogger.Errorf("No pending order found with order_id: %s (possible duplicate webhook)", orderID)
 		return
 	}
 
-	fmt.Printf("❌ Refund %s processed for refund_id: %s (rows: %d)",
-		newStatus, refundID, rowsAffected)
+	if err := tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
+		return
+	}
+
+	logger.InfoLogger.Infof("✅ Payment success processed for order: %s (rows updated: %d)",
+		orderID, rowsAffected)
 }
 
-// Rest of the controller methods remain the same...
-// (CreateOrder, GetOrder, CreateRefund, GetOrderHistory, WebhookHealthCheck, GetUnavailableTimes)
+// handleRefundWebhook processes refund-related webhooks
+func (pc *PaymentController) handleRefundWebhook(ctx context.Context, data json.RawMessage, eventType string) {
+	var webhookData RefundWebhookData
+	if err := json.Unmarshal(data, &webhookData); err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse refund data: %v", err)
+		return
+	}
 
-// CreateOrderRequest represents the order creation request
-type CreateOrderRequest struct {
-	Currency      string                 `json:"currency" binding:"required,len=3"`
-	ServiceID     uuid.UUID              `json:"service_id" binding:"required"`
-	StartTime     time.Time              `json:"start_time" binding:"required"`
-	EndTime       time.Time              `json:"end_time" binding:"required"`
-	UpiID         string                 `json:"upi_id"`
-	PaymentMethod map[string]interface{} `json:"payment_method"`
+	refund := webhookData.Refund
+	orderID := webhookData.Order.OrderID
+	refundID := refund.RefundID
+
+	if refundID == "" || orderID == "" {
+		logger.ErrorLogger.Errorf("Missing required fields in refund webhook: refundID=%s, orderID=%s",
+			refundID, orderID)
+		return
+	}
+
+	logger.InfoLogger.Infof("Processing refund webhook type=%s status=%s for refund_id: %s, order: %s",
+		eventType, refund.RefundStatus, refundID, orderID)
+
+	tx, err := pc.DB.Begin(ctx)
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] Refund for %s: %v", refundID, err)
+		return
+	}
+	defer func() {
+		if err := tx.Rollback(ctx); err != nil && err != pgx.ErrTxClosed {
+			logger.ErrorLogger.Errorf("Failed to rollback transaction for refund %s: %v", refundID, err)
+		}
+	}()
+
+	var newRefundStatus string
+	var updateOrder bool
+	switch refund.RefundStatus {
+	case "SUCCESS":
+		newRefundStatus = StatusRefundSuccess
+		updateOrder = true
+	case "FAILED":
+		newRefundStatus = StatusRefundFailed
+		updateOrder = false
+	case "CANCELLED":
+		newRefundStatus = StatusRefundReversed // Mapping cancelled to reversed as per original code
+		updateOrder = false
+	default:
+		logger.InfoLogger.Infof("Unhandled refund status: %s for refund_id: %s", refund.RefundStatus, refundID)
+		return
+	}
+
+	// Update refund
+	result, err := tx.Exec(ctx,
+		`UPDATE refunds 
+         SET status = $1, cf_refund_id = $2, processed_at = $3, updated_at = NOW()
+         WHERE refund_id = $4`,
+		newRefundStatus, refund.CfRefundID, refund.ProcessedAt, refundID)
+
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update refund failed for %s: %v", refundID, err)
+		return
+	}
+
+	refundRowsAffected := result.RowsAffected()
+	if refundRowsAffected == 0 {
+		logger.ErrorLogger.Errorf("No refund found with refund_id: %s", refundID)
+		return
+	}
+
+	var orderRowsAffected int64
+	if updateOrder {
+		// Update order status to refunded only on success
+		result, err = tx.Exec(ctx,
+			`UPDATE orders 
+             SET status = $1, updated_at = NOW()
+             WHERE order_id = $2 AND status = $3`,
+			OrderStatusRefunded, orderID, OrderStatusPaid)
+
+		if err != nil {
+			logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for refund failed for %s: %v", orderID, err)
+			return
+		}
+
+		orderRowsAffected = result.RowsAffected()
+		if orderRowsAffected == 0 {
+			logger.ErrorLogger.Errorf("No paid order found for refund success: %s", orderID)
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] Refund for %s: %v", refundID, err)
+		return
+	}
+
+	logger.InfoLogger.Infof("✅ Refund %s processed for refund_id: %s (refund rows: %d, order rows: %d)",
+		newRefundStatus, refundID, refundRowsAffected, orderRowsAffected)
 }
 
 // CreateOrder creates a new payment order and optionally initiates payment
 func (pc *PaymentController) CreateOrder(c *gin.Context) {
-	// Get customer ID from JWT token
 	customerID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "unauthorized" {
@@ -550,10 +448,9 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Get user details
 	user, err := user_models.GetUserByID(ctx, pc.DB, customerID)
 	if err != nil {
-		fmt.Errorf("Failed to get user: %v", err)
+		logger.ErrorLogger.Errorf("Failed to get user %s: %v", customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user"})
 		return
 	}
@@ -563,30 +460,26 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Parse request
 	var req CreateOrderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	// Validate start time < end time
 	if req.StartTime.After(req.EndTime) || req.StartTime.Equal(req.EndTime) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Start time must be before end time"})
 		return
 	}
 
-	// Validate slot date/time is not in the past
 	now := time.Now().UTC()
 	if req.StartTime.Before(now) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Slot date/time cannot be in the past"})
 		return
 	}
 
-	// Check for overlapping bookings
 	hasOverlap, err := payment_models.HasBookingOverlap(ctx, pc.DB, req.ServiceID, req.StartTime, req.EndTime)
 	if err != nil {
-		fmt.Errorf("Failed to check overlap: %v", err)
+		logger.ErrorLogger.Errorf("Failed to check overlap for service %s: %v", req.ServiceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check availability"})
 		return
 	}
@@ -595,7 +488,6 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// Handle UpiID as shortcut for UPI collect if no payment_method provided
 	if req.UpiID != "" && len(req.PaymentMethod) == 0 {
 		upiRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-_]*[a-zA-Z0-9])?@[a-zA-Z0-9][a-zA-Z0-9]*$`)
 		if !upiRegex.MatchString(req.UpiID) {
@@ -610,15 +502,13 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 		}
 	}
 
-	// Get service
 	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, req.ServiceID)
 	if err != nil {
-		fmt.Errorf("Failed to get service: %v", err)
+		logger.ErrorLogger.Errorf("Failed to get service %s: %v", req.ServiceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
 		return
 	}
 
-	// Create Cashfree order payload
 	payload := map[string]interface{}{
 		"order_amount":   service.Price,
 		"order_currency": req.Currency,
@@ -630,15 +520,14 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		fmt.Errorf("Failed to marshal order payload: %v", err)
+		logger.ErrorLogger.Errorf("Failed to marshal order payload: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare order"})
 		return
 	}
 
-	// Call Cashfree API to create order
 	resp, err := pc.makeRequest(ctx, "POST", "/orders", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		fmt.Errorf("Cashfree request failed: %v", err)
+		logger.ErrorLogger.Errorf("Cashfree request failed: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 		return
 	}
@@ -646,22 +535,21 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Errorf("Cashfree error [%d]: %s", resp.StatusCode, string(body))
+		logger.ErrorLogger.Errorf("Cashfree error [%d]: %s", resp.StatusCode, string(body))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 		return
 	}
 
 	var cfOrderResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&cfOrderResp); err != nil {
+		logger.ErrorLogger.Errorf("Failed to decode Cashfree order response: %v", err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response from payment gateway"})
 		return
 	}
 
-	// Extract Cashfree response values
 	cfOrderID, _ := cfOrderResp["order_id"].(string)
 	cfPaymentSessionID, _ := cfOrderResp["payment_session_id"].(string)
 
-	// Insert order into DB using Cashfree's order_id
 	var dbOrderID uuid.UUID
 	err = pc.DB.QueryRow(ctx,
 		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status, created_at, updated_at)
@@ -672,19 +560,18 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 	).Scan(&dbOrderID)
 
 	if err != nil {
-		fmt.Errorf("Failed to insert order in DB: %v", err)
+		logger.ErrorLogger.Errorf("Failed to insert order in DB: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save order"})
 		return
 	}
 
-	fmt.Printf("Order created: %s for customer: %s", cfOrderID, customerID)
+	logger.InfoLogger.Infof("Order created: %s for customer: %s", cfOrderID, customerID)
 
-	var response gin.H = gin.H{
+	response := gin.H{
 		"order_id": cfOrderID,
 		"payment":  cfOrderResp,
 	}
 
-	// If payment method provided, initiate payment immediately
 	if len(req.PaymentMethod) > 0 {
 		paymentPayload := map[string]interface{}{
 			"payment_session_id": cfPaymentSessionID,
@@ -693,14 +580,14 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 		jsonPaymentPayload, err := json.Marshal(paymentPayload)
 		if err != nil {
-			fmt.Errorf("Failed to marshal payment payload: %v", err)
+			logger.ErrorLogger.Errorf("Failed to marshal payment payload: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare payment"})
 			return
 		}
 
 		paymentResp, err := pc.makeRequest(ctx, "POST", "/orders/sessions", bytes.NewBuffer(jsonPaymentPayload))
 		if err != nil {
-			fmt.Errorf("Cashfree payment initiation failed: %v", err)
+			logger.ErrorLogger.Errorf("Cashfree payment initiation failed: %v", err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "payment gateway error"})
 			return
 		}
@@ -708,117 +595,74 @@ func (pc *PaymentController) CreateOrder(c *gin.Context) {
 
 		if paymentResp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(paymentResp.Body)
-			fmt.Errorf("Cashfree payment error [%d]: %s", paymentResp.StatusCode, string(body))
+			logger.ErrorLogger.Errorf("Cashfree payment error [%d]: %s", paymentResp.StatusCode, string(body))
 			c.JSON(http.StatusBadGateway, gin.H{"error": "payment initiation failed", "details": string(body)})
 			return
 		}
 
 		var cfPaymentResp map[string]interface{}
 		if err := json.NewDecoder(paymentResp.Body).Decode(&cfPaymentResp); err != nil {
+			logger.ErrorLogger.Errorf("Failed to decode Cashfree payment response: %v", err)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "invalid response from payment gateway"})
 			return
 		}
 
-		// Override the payment in response with the initiation response
 		response["payment"] = cfPaymentResp
 	}
 
-	// Respond with order_id + payment response
 	c.JSON(http.StatusOK, response)
-}
-
-// Webhook structures based on Cashfree documentation
-type WebhookEvent struct {
-	Type      string          `json:"type"`
-	EventTime string          `json:"event_time"`
-	Data      json.RawMessage `json:"data"`
-}
-
-type PaymentWebhookData struct {
-	Order   OrderData   `json:"order"`
-	Payment PaymentData `json:"payment"`
-}
-
-type OrderData struct {
-	OrderID       string  `json:"order_id"`
-	OrderAmount   float64 `json:"order_amount"`
-	OrderCurrency string  `json:"order_currency"`
-	OrderStatus   string  `json:"order_status"`
-}
-
-type PaymentData struct {
-	CfPaymentID     int64                  `json:"cf_payment_id"`
-	PaymentStatus   string                 `json:"payment_status"`
-	PaymentAmount   float64                `json:"payment_amount"`
-	PaymentCurrency string                 `json:"payment_currency"`
-	BankReference   string                 `json:"bank_reference"`
-	PaymentMethod   map[string]interface{} `json:"payment_method"`
-}
-
-// CreateRefundRequest represents refund creation request
-type CreateRefundRequest struct {
-	Amount float64 `json:"amount" binding:"required,gt=0"`
-	Note   string  `json:"note"`
 }
 
 // CreateRefund creates a refund for an order
 func (pc *PaymentController) CreateRefund(c *gin.Context) {
 	orderID := c.Param("order_id")
 	if orderID == "" {
-		logger.DebugLogger.Debug("Missing order_id in request path")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
 		return
 	}
 
 	var req CreateRefundRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		logger.DebugLogger.Debugf("Invalid refund request payload: %v", err)
+		logger.ErrorLogger.Errorf("Invalid refund request for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	logger.DebugLogger.Debugf("Refund request received for order %s: %+v", orderID, req)
 
-	// Check if order exists and is paid
 	ctx := c.Request.Context()
+
 	var orderAmount float64
 	err := pc.DB.QueryRow(ctx,
-		`SELECT amount FROM orders WHERE order_id = $1 AND cf_payment_id IS NOT NULL`,
-		orderID).Scan(&orderAmount)
+		`SELECT amount FROM orders WHERE order_id = $1 AND cf_payment_id IS NOT NULL AND status = $2`,
+		orderID, OrderStatusPaid).Scan(&orderAmount)
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			logger.DebugLogger.Debugf("No paid order found for order_id=%s", orderID)
+			logger.ErrorLogger.Errorf("No paid order found for order_id=%s", orderID)
 			c.JSON(http.StatusNotFound, gin.H{"error": "paid order not found"})
 		} else {
-			fmt.Errorf("DB query error checking order %s: %v", orderID, err)
+			logger.ErrorLogger.Errorf("DB query error checking order %s: %v", orderID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return
 	}
-	logger.DebugLogger.Debugf("Order %s found with amount=%.2f", orderID, orderAmount)
 
 	if req.Amount > orderAmount {
-		logger.DebugLogger.Debugf("Refund amount %.2f exceeds order amount %.2f for order %s", req.Amount, orderAmount, orderID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "refund amount exceeds order amount"})
 		return
 	}
 
-	// Generate refund ID
 	refundID := "refund_" + uuid.New().String()
-	logger.DebugLogger.Debugf("Generated refund_id=%s for order_id=%s", refundID, orderID)
 
-	// Create refund with Cashfree
 	payload := map[string]interface{}{
 		"refund_amount": req.Amount,
 		"refund_id":     refundID,
 		"refund_note":   req.Note,
 	}
 	jsonPayload, _ := json.Marshal(payload)
-	logger.DebugLogger.Debugf("Sending refund request to Cashfree for order %s: %s", orderID, string(jsonPayload))
 
 	resp, err := pc.makeRequest(ctx, "POST", "/orders/"+orderID+"/refunds", bytes.NewBuffer(jsonPayload))
 	if err != nil {
-		fmt.Errorf("Refund gateway error for order %s: %v", orderID, err)
+		logger.ErrorLogger.Errorf("Refund gateway error for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund gateway error"})
 		return
 	}
@@ -826,31 +670,29 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		fmt.Errorf("Refund creation failed for order %s: status=%d body=%s", orderID, resp.StatusCode, string(body))
+		logger.ErrorLogger.Errorf("Refund creation failed for order %s: status=%d body=%s", orderID, resp.StatusCode, string(body))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "refund creation failed"})
 		return
 	}
 
 	var cfResp map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&cfResp); err != nil {
-		fmt.Errorf("Failed to decode refund response for order %s: %v", orderID, err)
+		logger.ErrorLogger.Errorf("Failed to decode refund response for order %s: %v", orderID, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid refund response"})
 		return
 	}
-	logger.DebugLogger.Debugf("Cashfree refund response for order %s: %+v", orderID, cfResp)
 
-	// Save refund to database
 	_, err = pc.DB.Exec(ctx,
 		`INSERT INTO refunds (order_id, refund_id, amount, status, note, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
 		orderID, refundID, req.Amount, StatusRefundPending, req.Note)
 	if err != nil {
-		fmt.Errorf("Failed to save refund for order %s: %v", orderID, err)
-	} else {
-		logger.DebugLogger.Debugf("Refund record saved for order %s with refund_id=%s", orderID, refundID)
+		logger.ErrorLogger.Errorf("Failed to save refund for order %s: %v", orderID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save refund"})
+		return
 	}
 
-	fmt.Printf("Refund created: %s for order: %s amount=%.2f", refundID, orderID, req.Amount)
+	logger.InfoLogger.Infof("Refund created: %s for order: %s amount=%.2f", refundID, orderID, req.Amount)
 
 	c.JSON(http.StatusOK, gin.H{
 		"refund_id": refundID,
@@ -866,7 +708,6 @@ func (pc *PaymentController) GetOrder(c *gin.Context) {
 		return
 	}
 
-	// Get authenticated user ID
 	customerID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "unauthorized" {
@@ -899,9 +740,10 @@ func (pc *PaymentController) GetOrder(c *gin.Context) {
 		&order.Currency, &order.CreatedAt,
 	)
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
+		if err == pgx.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		} else {
+			logger.ErrorLogger.Errorf("Failed to get order %s for customer %s: %v", orderID, customerID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return
@@ -925,7 +767,6 @@ func (pc *PaymentController) GetOrder(c *gin.Context) {
 
 // GetOrderHistory gets order history for a customer
 func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
-
 	customerID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "unauthorized" {
@@ -936,7 +777,6 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 		return
 	}
 
-	// Pagination
 	limit := 20
 	offset := 0
 	if l := c.Query("limit"); l != "" {
@@ -945,7 +785,7 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 		}
 	}
 	if o := c.Query("offset"); o != "" {
-		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 && parsed <= 100000 {
+		if parsed, err := strconv.Atoi(o); err == nil && parsed >= 0 {
 			offset = parsed
 		}
 	}
@@ -953,12 +793,13 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 	ctx := c.Request.Context()
 	rows, err := pc.DB.Query(ctx,
 		`SELECT id, order_id, service_id, start_time, end_time, amount, currency, created_at
-		 FROM orders 
-		 WHERE customer_id = $1 
-		 ORDER BY created_at DESC 
-		 LIMIT $2 OFFSET $3`,
+         FROM orders 
+         WHERE customer_id = $1 
+         ORDER BY created_at DESC 
+         LIMIT $2 OFFSET $3`,
 		customerID, limit, offset)
 	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to query order history for customer %s: %v", customerID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		return
 	}
@@ -976,6 +817,7 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 		var createdAt time.Time
 
 		if err := rows.Scan(&id, &orderID, &serviceID, &startTime, &endTime, &amount, &currency, &createdAt); err != nil {
+			logger.ErrorLogger.Errorf("Failed to scan order row: %v", err)
 			continue
 		}
 
@@ -1002,7 +844,6 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 func (pc *PaymentController) WebhookHealthCheck(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// Check last webhook received
 	var lastEvent struct {
 		EventType string    `json:"event_type"`
 		CreatedAt time.Time `json:"created_at"`
@@ -1011,29 +852,28 @@ func (pc *PaymentController) WebhookHealthCheck(c *gin.Context) {
 
 	err := pc.DB.QueryRow(ctx,
 		`SELECT event_type, created_at, processed 
-		 FROM webhook_events 
-		 ORDER BY created_at DESC 
-		 LIMIT 1`).Scan(&lastEvent.EventType, &lastEvent.CreatedAt, &lastEvent.Processed)
+         FROM webhook_events 
+         ORDER BY created_at DESC 
+         LIMIT 1`).Scan(&lastEvent.EventType, &lastEvent.CreatedAt, &lastEvent.Processed)
 
 	if err != nil && err != pgx.ErrNoRows {
+		logger.ErrorLogger.Errorf("Failed to get last webhook event: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "health check failed"})
 		return
 	}
 
-	// Count events in last 24 hours
 	var count int
 	err = pc.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webhook_events WHERE created_at > NOW() - INTERVAL '24 hours'`).Scan(&count)
 	if err != nil && err != pgx.ErrNoRows {
-		fmt.Errorf("Failed to count recent webhook events: %v", err)
+		logger.ErrorLogger.Errorf("Failed to count recent webhook events: %v", err)
 	}
 
-	// Count unprocessed events
 	var unprocessed int
 	err = pc.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM webhook_events WHERE NOT processed`).Scan(&unprocessed)
 	if err != nil && err != pgx.ErrNoRows {
-		fmt.Errorf("Failed to count unprocessed events: %v", err)
+		logger.ErrorLogger.Errorf("Failed to count unprocessed events: %v", err)
 	}
 
 	response := gin.H{
@@ -1065,28 +905,24 @@ func (pc *PaymentController) GetUnavailableTimes(c *gin.Context) {
 		return
 	}
 
-	// Parse date in YYYY-MM-DD format (UTC)
 	bookingDate, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date format, use YYYY-MM-DD"})
 		return
 	}
 
-	// Get start of today in UTC
 	now := time.Now().UTC()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
-	// Check if booking date is in the past (before today)
 	if bookingDate.Before(today) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Booking date cannot be in the past"})
 		return
 	}
 
-	// UTC day boundaries
 	startOfDay := time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), 0, 0, 0, 0, time.UTC)
 	endOfDay := startOfDay.Add(24 * time.Hour)
 
-	fmt.Printf("Fetching unavailable times for service=%s, date=%s, UTC range=%s - %s",
+	logger.InfoLogger.Infof("Fetching unavailable times for service=%s, date=%s, UTC range=%s - %s",
 		serviceID, dateStr, startOfDay.Format(time.RFC3339), endOfDay.Format(time.RFC3339))
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -1094,14 +930,74 @@ func (pc *PaymentController) GetUnavailableTimes(c *gin.Context) {
 
 	times, err := payment_models.GetBookedTimesForServiceDate(ctx, pc.DB, serviceID, startOfDay, endOfDay)
 	if err != nil {
-		fmt.Errorf("Query error: %v", err)
+		logger.ErrorLogger.Errorf("Failed to fetch unavailable times for service %s on %s: %v", serviceID, dateStr, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch unavailable times"})
 		return
 	}
 
-	if len(times) == 0 {
-		fmt.Printf("No unavailable slots found for service=%s on date=%s", serviceID, dateStr)
-	}
-
 	c.JSON(http.StatusOK, gin.H{"times": times})
+}
+
+// WebhookEvent structure
+type WebhookEvent struct {
+	Type      string          `json:"type"`
+	EventTime string          `json:"event_time"`
+	Data      json.RawMessage `json:"data"`
+}
+
+// PaymentWebhookData structure
+type PaymentWebhookData struct {
+	Order   OrderData   `json:"order"`
+	Payment PaymentData `json:"payment"`
+}
+
+// OrderData structure
+type OrderData struct {
+	OrderID       string  `json:"order_id"`
+	OrderAmount   float64 `json:"order_amount"`
+	OrderCurrency string  `json:"order_currency"`
+	OrderStatus   string  `json:"order_status"`
+}
+
+// PaymentData structure
+type PaymentData struct {
+	CfPaymentID     int64                  `json:"cf_payment_id"`
+	PaymentStatus   string                 `json:"payment_status"`
+	PaymentAmount   float64                `json:"payment_amount"`
+	PaymentCurrency string                 `json:"payment_currency"`
+	BankReference   string                 `json:"bank_reference"`
+	PaymentMethod   map[string]interface{} `json:"payment_method"`
+}
+
+// RefundWebhookData structure
+type RefundWebhookData struct {
+	Order  OrderData  `json:"order"`
+	Refund RefundData `json:"refund"`
+}
+
+// RefundData structure
+type RefundData struct {
+	CfRefundID      string                   `json:"cf_refund_id"`
+	RefundID        string                   `json:"refund_id"`
+	RefundStatus    string                   `json:"refund_status"`
+	RefundAmount    float64                  `json:"refund_amount"`
+	RefundNote      string                   `json:"refund_note"`
+	ProcessedAt     string                   `json:"processed_at"`
+	RefundReversals []map[string]interface{} `json:"refund_reversals"`
+}
+
+// CreateOrderRequest structure
+type CreateOrderRequest struct {
+	Currency      string                 `json:"currency" binding:"required,len=3"`
+	ServiceID     uuid.UUID              `json:"service_id" binding:"required"`
+	StartTime     time.Time              `json:"start_time" binding:"required"`
+	EndTime       time.Time              `json:"end_time" binding:"required"`
+	UpiID         string                 `json:"upi_id"`
+	PaymentMethod map[string]interface{} `json:"payment_method"`
+}
+
+// CreateRefundRequest structure
+type CreateRefundRequest struct {
+	Amount float64 `json:"amount" binding:"required,gt=0"`
+	Note   string  `json:"note"`
 }
