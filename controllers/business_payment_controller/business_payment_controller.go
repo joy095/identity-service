@@ -116,7 +116,145 @@ type WebhookPayload struct {
 	EventTime string                 `json:"event_time"`
 }
 
-// PaymentWebhook is the single entry point for all Cashfree webhooks.
+// Suggested improvements for your payment controller
+
+// 1. Add proper error handling wrapper
+func (pc *PaymentController) logAndReturnError(operation, orderID string, err error) {
+	if err != nil {
+		logger.ErrorLogger.Errorf("[%s] Error for order %s: %v", operation, orderID, err)
+	}
+}
+
+// 2. Improved webhook signature verification with better logging
+func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
+	timestamp := c.GetHeader("x-webhook-timestamp")
+	signature := c.GetHeader("x-webhook-signature")
+
+	if timestamp == "" || signature == "" {
+		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v",
+			timestamp != "", signature != "")
+		return false
+	}
+
+	// Validate timestamp format and age
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Invalid timestamp format: %s, error: %v", timestamp, err)
+		return false
+	}
+
+	timestampTime := time.Unix(ts, 0)
+	timeDiff := time.Since(timestampTime)
+
+	// Allow 5 minutes window, reject future timestamps
+	if timeDiff > 5*time.Minute || timeDiff < 0 {
+		logger.ErrorLogger.Errorf("Invalid timestamp age: %v (timestamp: %s)",
+			timeDiff, timestampTime.Format(time.RFC3339))
+		return false
+	}
+
+	// Generate expected signature
+	message := timestamp + string(bodyBytes)
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(message))
+	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	// Secure comparison
+	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
+
+	if !isValid {
+		logger.ErrorLogger.Errorf("Webhook signature verification failed")
+		// Log signature lengths for debugging (never log actual signatures)
+		logger.DebugLogger.Debugf("Expected signature length: %d, Received: %d",
+			len(expectedSignature), len(signature))
+	}
+
+	return isValid
+}
+
+// 3. Enhanced payment success handler with better error handling
+func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
+	var webhookData PaymentWebhookData
+	if err := json.Unmarshal(data, &webhookData); err != nil {
+		logger.ErrorLogger.Errorf("Failed to parse payment success data: %v", err)
+		return
+	}
+
+	orderID := webhookData.Order.OrderID
+	payment := webhookData.Payment
+
+	logger.InfoLogger.Infof("Processing payment success for order: %s, payment_id: %d",
+		orderID, payment.CfPaymentID)
+
+	// Validate required fields
+	if orderID == "" || payment.CfPaymentID == 0 {
+		logger.ErrorLogger.Errorf("Missing required fields in payment webhook: orderID=%s, paymentID=%d",
+			orderID, payment.CfPaymentID)
+		return
+	}
+
+	tx, err := pc.DB.Begin(ctx)
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
+		return
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			tx.Rollback(ctx)
+			logger.ErrorLogger.Errorf("Panic in payment success handler for order %s: %v", orderID, p)
+		}
+	}()
+
+	// Marshal payment method with error handling
+	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
+		tx.Rollback(ctx)
+		return
+	}
+
+	// Update order with payment details
+	result, err := tx.Exec(ctx,
+		`UPDATE orders 
+         SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
+         WHERE order_id = $5 AND status = $6`, // Add status check to prevent duplicate processing
+		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID, OrderStatusPending)
+
+	if err != nil {
+		logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
+		tx.Rollback(ctx)
+		return
+	}
+
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		logger.ErrorLogger.Errorf("No pending order found with order_id: %s (possible duplicate webhook)", orderID)
+		tx.Rollback(ctx)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		logger.ErrorLogger.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
+		return
+	}
+
+	logger.InfoLogger.Infof("✅ Payment success processed for order: %s (rows updated: %d)",
+		orderID, rowsAffected)
+}
+
+// 4. Add webhook event deduplication
+func (pc *PaymentController) isEventProcessed(ctx context.Context, eventType, orderID string, eventTime string) (bool, error) {
+	var count int
+	err := pc.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM webhook_events 
+         WHERE event_type = $1 AND raw_payload::json->>'order'->>'order_id' = $2 
+         AND event_time = $3 AND processed = true`,
+		eventType, orderID, eventTime).Scan(&count)
+
+	return count > 0, err
+}
+
+// 5. Enhanced webhook handler with deduplication
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -125,21 +263,16 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
-	// Restore body so Gin can re-use it if needed (optional but good practice)
+	// Restore body
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// Debug log raw payload (helps confirm signature mismatch cause)
-	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
-
-	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
+	// Verify signature first
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
-	// Restore body so Gin can re-use it if needed (optional but good practice)
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// 2. Parse generic event
+	// Parse event
 	var event WebhookEvent
 	if err := json.Unmarshal(bodyBytes, &event); err != nil {
 		logger.ErrorLogger.Errorf("Invalid webhook payload: %v", err)
@@ -149,22 +282,33 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// 3. Log event
-	var eventID int64
-	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO webhook_events (event_type, raw_payload, processed) VALUES ($1, $2, $3) RETURNING id`,
-		event.Type, string(bodyBytes), false).Scan(&eventID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
-	} else {
-		_, err = pc.DB.Exec(ctx,
-			`UPDATE webhook_events SET processed = true WHERE id = $1`, eventID)
-		if err != nil {
-			logger.ErrorLogger.Errorf("Failed to update webhook event as processed: %v", err)
+	// Check for duplicate events (optional)
+	var orderData map[string]interface{}
+	if err := json.Unmarshal(event.Data, &orderData); err == nil {
+		if order, ok := orderData["order"].(map[string]interface{}); ok {
+			if orderID, ok := order["order_id"].(string); ok {
+				if processed, _ := pc.isEventProcessed(ctx, event.Type, orderID, event.EventTime); processed {
+					logger.InfoLogger.Infof("Duplicate webhook event ignored: %s for order %s", event.Type, orderID)
+					c.JSON(http.StatusOK, gin.H{"status": "duplicate_ignored"})
+					return
+				}
+			}
 		}
 	}
 
-	// 4. Route event
+	// Log event
+	var eventID int64
+	err = pc.DB.QueryRow(ctx,
+		`INSERT INTO webhook_events (event_type, raw_payload, processed, event_time) 
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+		event.Type, string(bodyBytes), false, event.EventTime).Scan(&eventID)
+
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
+		// Continue processing even if logging fails
+	}
+
+	// Route event
 	switch event.Type {
 	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
 		pc.handlePaymentSuccess(ctx, event.Data)
@@ -176,101 +320,94 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
 	}
 
+	// Mark as processed
+	if eventID > 0 {
+		_, err = pc.DB.Exec(ctx,
+			`UPDATE webhook_events SET processed = true WHERE id = $1`, eventID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to update webhook event as processed: %v", err)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
-// verifyWebhookSignature validates the incoming webhook signature from Cashfree.
-func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
-	timestamp := c.GetHeader("x-webhook-timestamp")
-	signature := c.GetHeader("x-webhook-signature")
 
-	if timestamp == "" || signature == "" {
-		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
-		return false
+// 7. Add proper configuration validation
+func (pc *PaymentController) ValidateConfig() error {
+	if pc.ClientID == "" {
+		return fmt.Errorf("CASHFREE_CLIENT_ID is required")
 	}
-
-	// Validate timestamp format and age to prevent replay attacks
-	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-		timestampTime := time.Unix(ts, 0)
-		timeDiff := time.Since(timestampTime)
-
-		// Webhooks should only come from the past, allow 5 minutes window
-		if timeDiff > 5*time.Minute || timeDiff < 0 {
-			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
-			return false
-		}
-	} else {
-		logger.ErrorLogger.Errorf("Invalid timestamp format: %s", timestamp)
-		return false
+	if pc.ClientSecret == "" {
+		return fmt.Errorf("CASHFREE_CLIENT_SECRET is required")
 	}
-
-	// Message is timestamp concatenated with the body (NO DOT)
-	message := timestamp + string(bodyBytes)
-
-	// Generate the expected HMAC-SHA256 signature using WebhookSecret
-	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(message))
-	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	// Use a secure constant-time comparison to prevent timing attacks
-	return hmac.Equal([]byte(expectedSignature), []byte(signature))
+	if pc.APIVersion == "" {
+		return fmt.Errorf("CASHFREE_API_VERSION is required")
+	}
+	if pc.WebhookSecret == "" {
+		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET is required")
+	}
+	if len(pc.WebhookSecret) < 32 {
+		return fmt.Errorf("CASHFREE_WEBHOOK_SECRET should be at least 32 characters")
+	}
+	return nil
 }
 
 // --- Webhook Handler Implementations ---
 
 // --- Webhook Handler Implementations ---
 
-func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
-	var webhookData PaymentWebhookData
-	if err := json.Unmarshal(data, &webhookData); err != nil {
-		fmt.Errorf("Failed to parse payment success data: %v", err)
-		return
-	}
+// func (pc *PaymentController) handlePaymentSuccess(ctx context.Context, data json.RawMessage) {
+// 	var webhookData PaymentWebhookData
+// 	if err := json.Unmarshal(data, &webhookData); err != nil {
+// 		fmt.Errorf("Failed to parse payment success data: %v", err)
+// 		return
+// 	}
 
-	orderID := webhookData.Order.OrderID
-	payment := webhookData.Payment
+// 	orderID := webhookData.Order.OrderID
+// 	payment := webhookData.Payment
 
-	fmt.Printf("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
+// 	fmt.Printf("Processing payment success for order: %s, payment_id: %d", orderID, payment.CfPaymentID)
 
-	tx, err := pc.DB.Begin(ctx)
-	if err != nil {
-		fmt.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
-		return
-	}
-	defer tx.Rollback(ctx)
+// 	tx, err := pc.DB.Begin(ctx)
+// 	if err != nil {
+// 		fmt.Errorf("[TX_BEGIN_FAIL] PaymentSuccess for %s: %v", orderID, err)
+// 		return
+// 	}
+// 	defer tx.Rollback(ctx)
 
-	// FIX: Marshal the payment_method map to a JSON string for consistency
-	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
-	if err != nil {
-		fmt.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
-		return
-	}
+// 	// FIX: Marshal the payment_method map to a JSON string for consistency
+// 	paymentMethodJSON, err := json.Marshal(payment.PaymentMethod)
+// 	if err != nil {
+// 		fmt.Errorf("Failed to marshal payment method for order %s: %v", orderID, err)
+// 		return
+// 	}
 
-	// Update order with payment details
-	result, err := tx.Exec(ctx,
-		`UPDATE orders 
-		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
-		 WHERE order_id = $5`,
-		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID)
+// 	// Update order with payment details
+// 	result, err := tx.Exec(ctx,
+// 		`UPDATE orders 
+// 		 SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
+// 		 WHERE order_id = $5`,
+// 		payment.CfPaymentID, paymentMethodJSON, payment.BankReference, OrderStatusPaid, orderID)
 
-	if err != nil {
-		fmt.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
-		return
-	}
+// 	if err != nil {
+// 		fmt.Errorf("[TX_EXEC_FAIL] Update order for success failed for %s: %v", orderID, err)
+// 		return
+// 	}
 
-	rowsAffected := result.RowsAffected()
-	if rowsAffected == 0 {
-		fmt.Errorf("No order found with order_id: %s", orderID)
-		return
-	}
+// 	rowsAffected := result.RowsAffected()
+// 	if rowsAffected == 0 {
+// 		fmt.Errorf("No order found with order_id: %s", orderID)
+// 		return
+// 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		fmt.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
-		return
-	}
+// 	if err := tx.Commit(ctx); err != nil {
+// 		fmt.Errorf("[TX_COMMIT_FAIL] PaymentSuccess for %s: %v", orderID, err)
+// 		return
+// 	}
 
-	fmt.Printf("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
-}
+// 	fmt.Printf("✅ Payment success processed for order: %s (rows updated: %d)", orderID, rowsAffected)
+// }
 
 type RefundWebhookData struct {
 	Order  OrderData  `json:"order"`
