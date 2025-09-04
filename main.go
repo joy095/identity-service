@@ -2,11 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"embed"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -48,22 +44,6 @@ func main() {
 		logger.ErrorLogger.Fatalf("Failed to load bad words: %v", err)
 	}
 	logger.InfoLogger.Info("Bad words loaded successfully!")
-
-	//
-
-	webhookSecret := "your-sandbox-webhook-secret"
-	timestamp := "1756915924"
-	body := `{"data":{"test_object":{"test_key":"test_value"}},"type":"WEBHOOK","event_time":"2025-09-03T16:12:03.622Z"}`
-	var temp interface{}
-	json.Unmarshal([]byte(body), &temp)
-	normalizedBody, _ := json.Marshal(temp)
-	signStr := timestamp + string(normalizedBody)
-	mac := hmac.New(sha256.New, []byte(webhookSecret))
-	mac.Write([]byte(signStr))
-	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	fmt.Printf("Computed signature: %s\n", expectedSignature)
-	fmt.Printf("Received signature: rc+Ua7+2RCfZzx2awn2wn6FpIkYKbD+PtCo6J2f59+8=\n")
-	//
 
 	r := gin.Default()
 	r.Use(cors.CorsMiddleware())
