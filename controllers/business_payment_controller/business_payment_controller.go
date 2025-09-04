@@ -227,52 +227,18 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
 
-	fmt.Printf("Received headers - x-webhook-timestamp: %s, x-webhook-signature: %s\n", timestamp, signature)
-	fmt.Printf("Raw body: %s\n", string(bodyBytes))
-
 	if timestamp == "" || signature == "" {
-		fmt.Println("Missing webhook headers")
 		return false
 	}
 
-	tsInt, err := strconv.ParseInt(timestamp, 10, 64)
-	if err != nil {
-		fmt.Printf("Invalid timestamp: %s, err: %v\n", timestamp, err)
-		return false
-	}
+	// Use raw body directly. No parsing/unmarshalling
+	signedPayload := timestamp + string(bodyBytes)
 
-	if time.Since(time.Unix(tsInt, 0)) > 10*time.Minute {
-		fmt.Printf("Webhook timestamp expired: %v\n", time.Since(time.Unix(tsInt, 0)))
-		return false
-	}
-
-	// Parse into struct to enforce field order
-	var payload WebhookPayload
-	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-		fmt.Printf("Failed to parse JSON body: %v\n", err)
-		return false
-	}
-	normalizedBody, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Printf("Failed to normalize JSON body: %v\n", err)
-		return false
-	}
-
-	signStr := timestamp + string(normalizedBody)
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(signStr))
+	mac.Write([]byte(signedPayload))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	fmt.Printf("Normalized signing string: %s\n", signStr)
-	fmt.Printf("Expected signature: %s\n", expectedSignature)
-	fmt.Printf("Received signature: %s\n", signature)
-
-	if !hmac.Equal([]byte(expectedSignature), []byte(signature)) {
-		fmt.Printf("Signature mismatch - check webhook secret or JSON formatting\n")
-		return false
-	}
-
-	return true
+	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
 
 // --- Webhook Handler Implementations ---
