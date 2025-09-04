@@ -232,7 +232,17 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 		return false
 	}
 
-	signedPayload := timestamp + string(bodyBytes)
+	// Check if timestamp is a Unix timestamp (numeric)
+	var signedPayload string
+	if unixTs, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
+		// Convert Unix timestamp to ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
+		ts := time.Unix(unixTs, 0).UTC()
+		signedPayload = ts.Format("2006-01-02T15:04:05Z") + string(bodyBytes)
+	} else {
+		// Use timestamp as-is (assuming ISO 8601)
+		signedPayload = timestamp + string(bodyBytes)
+	}
+
 	fmt.Printf("Timestamp: %s\n", timestamp)
 	fmt.Printf("Raw body: %s\n", string(bodyBytes))
 	fmt.Printf("Signed payload: %s\n", signedPayload)
