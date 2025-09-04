@@ -120,143 +120,103 @@ type WebhookPayload struct {
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		fmt.Printf("Failed to read webhook body: %v\n", err)
+		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	bodyBytes = bytes.TrimSpace(bodyBytes)                          // Remove leading/trailing whitespace
-	bodyBytes = bytes.TrimPrefix(bodyBytes, []byte("\xEF\xBB\xBF")) // Remove BOM
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))       // Restore body
 
-	fmt.Printf("Raw body: %s\n", string(bodyBytes))
+	// Restore body so Gin can re-use it if needed (optional but good practice)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// Verify webhook signature
+	// Debug log raw payload (helps confirm signature mismatch cause)
+	fmt.Printf("Webhook Raw Payload: %s", string(bodyBytes))
+
+	// 1. Verify webhook signature FIRST (CRITICAL SECURITY STEP)
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
-		fmt.Printf("Webhook signature verification failed\n")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
-	fmt.Printf("✅ Webhook signature verified successfully\n")
+	// Restore body so Gin can re-use it if needed (optional but good practice)
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// Parse generic event
+	// 2. Parse generic event
 	var event WebhookEvent
 	if err := json.Unmarshal(bodyBytes, &event); err != nil {
-		fmt.Printf("Invalid webhook payload: %v\n", err)
+		logger.ErrorLogger.Errorf("Invalid webhook payload: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
-	fmt.Printf("Webhook event type: %s\n", event.Type)
 
 	ctx := c.Request.Context()
 
-	// Begin transaction
-	tx, err := pc.DB.Begin(ctx)
+	// 3. Log event
+	var eventID int64
+	err = pc.DB.QueryRow(ctx,
+		`INSERT INTO webhook_events (event_type, raw_payload, processed) VALUES ($1, $2, $3) RETURNING id`,
+		event.Type, string(bodyBytes), false).Scan(&eventID)
 	if err != nil {
-		fmt.Printf("[TX_BEGIN_FAIL] Webhook processing for event %s: %v\n", event.Type, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "database connection error"})
-		return
-	}
-	defer tx.Rollback(ctx)
-
-	// Log event
-	_, err = tx.Exec(ctx,
-		`INSERT INTO webhook_events (event_type, raw_payload, processed, created_at, updated_at)
-         VALUES ($1, $2, false, NOW(), NOW())`,
-		event.Type, string(bodyBytes))
-	if err != nil {
-		fmt.Printf("[TX_EXEC_FAIL] Failed to log webhook event to database: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to log event"})
-		return
+		logger.ErrorLogger.Errorf("Failed to log webhook event: %v", err)
+	} else {
+		_, err = pc.DB.Exec(ctx,
+			`UPDATE webhook_events SET processed = true WHERE id = $1`, eventID)
+		if err != nil {
+			logger.ErrorLogger.Errorf("Failed to update webhook event as processed: %v", err)
+		}
 	}
 
-	// Process event
+	// 4. Route event
 	switch event.Type {
-	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID", "PAYMENT_CHARGES_WEBHOOK":
-		fmt.Printf("Processing payment success event in transaction\n")
-		var webhookData PaymentWebhookData
-		if err := json.Unmarshal(event.Data, &webhookData); err != nil {
-			fmt.Printf("Failed to parse payment success data: %v\n", err)
-			return
-		}
-
-		paymentMethodJSON, err := json.Marshal(webhookData.Payment.PaymentMethod)
-		if err != nil {
-			fmt.Printf("Failed to marshal payment method for order %s: %v\n", webhookData.Order.OrderID, err)
-			return
-		}
-
-		result, err := tx.Exec(ctx,
-			`UPDATE orders
-             SET cf_payment_id = $1, payment_method = $2, bank_reference = $3, status = $4, updated_at = NOW()
-             WHERE order_id = $5 AND status = $6`,
-			webhookData.Payment.CfPaymentID, paymentMethodJSON, webhookData.Payment.BankReference, OrderStatusPaid, webhookData.Order.OrderID, OrderStatusPending)
-		if err != nil {
-			fmt.Printf("[TX_EXEC_FAIL] Update order for success failed for %s: %v\n", webhookData.Order.OrderID, err)
-			return
-		}
-		if result.RowsAffected() == 0 {
-			fmt.Printf("No pending order found or already updated for order_id: %s\n", webhookData.Order.OrderID)
-		} else {
-			fmt.Printf("Order %s updated successfully.\n", webhookData.Order.OrderID)
-		}
-
-	case "WEBHOOK":
-		fmt.Printf("Received test webhook, logging and marking as processed\n")
-		_, err = tx.Exec(ctx,
-			`UPDATE webhook_events SET processed = true WHERE event_type = $1 AND raw_payload = $2`,
-			event.Type, string(bodyBytes))
-		if err != nil {
-			fmt.Printf("Failed to mark test webhook as processed: %v\n", err)
-		}
-
+	case "PAYMENT_SUCCESS_WEBHOOK", "ORDER_PAID":
+		pc.handlePaymentSuccess(ctx, event.Data)
+	case "REFUND_SUCCESS_WEBHOOK":
+		pc.handleRefundSuccess(ctx, event.Data)
+	case "REFUND_FAILURE_WEBHOOK", "REFUND_REVERSED_WEBHOOK":
+		pc.handleRefundFailure(ctx, event.Data, event.Type)
 	default:
-		fmt.Printf("Unhandled webhook event type received: %s\n", event.Type)
+		logger.InfoLogger.Infof("Unhandled webhook event type received: %s", event.Type)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		fmt.Printf("[TX_COMMIT_FAIL] Webhook processing for event %s: %v\n", event.Type, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit changes"})
-		return
-	}
-
-	fmt.Printf("✅ Webhook event %s processed and committed successfully.\n", event.Type)
 	c.JSON(http.StatusOK, gin.H{"status": "processed"})
 }
 
+// verifyWebhookSignature validates the incoming webhook signature from Cashfree.
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
 
 	if timestamp == "" || signature == "" {
-		fmt.Println("Missing webhook headers")
+		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v", timestamp != "", signature != "")
 		return false
 	}
 
-	// Check if timestamp is a Unix timestamp (numeric)
-	var signedPayload string
-	if unixTs, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
-		// Convert Unix timestamp to ISO 8601 format (YYYY-MM-DDThh:mm:ssZ)
-		ts := time.Unix(unixTs, 0).UTC()
-		signedPayload = ts.Format("2006-01-02T15:04:05Z") + string(bodyBytes)
+	// Validate timestamp format and age to prevent replay attacks
+	if ts, err := strconv.ParseInt(timestamp, 10, 64); err == nil {
+		timestampTime := time.Unix(ts, 0)
+		timeDiff := time.Since(timestampTime)
+
+		// Webhooks should only come from the past, allow 5 minutes window
+		if timeDiff > 5*time.Minute || timeDiff < 0 {
+			logger.ErrorLogger.Errorf("Invalid timestamp age: %v", timeDiff)
+			return false
+		}
 	} else {
-		// Use timestamp as-is (assuming ISO 8601)
-		signedPayload = timestamp + string(bodyBytes)
+		logger.ErrorLogger.Errorf("Invalid timestamp format: %s", timestamp)
+		return false
 	}
 
-	fmt.Printf("Timestamp: %s\n", timestamp)
-	fmt.Printf("Raw body: %s\n", string(bodyBytes))
-	fmt.Printf("Signed payload: %s\n", signedPayload)
-	fmt.Printf("Webhook secret length: %d\n", len(pc.WebhookSecret))
+	// Message is timestamp concatenated with the body (NO DOT)
+	message := timestamp + string(bodyBytes)
 
+	// Generate the expected HMAC-SHA256 signature using WebhookSecret
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
-	mac.Write([]byte(signedPayload))
+	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	fmt.Printf("Computed signature: %s\n", expectedSignature)
-	fmt.Printf("Received signature: %s\n", signature)
-
+	// Use a secure constant-time comparison to prevent timing attacks
 	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
+
+// --- Webhook Handler Implementations ---
 
 // --- Webhook Handler Implementations ---
 
