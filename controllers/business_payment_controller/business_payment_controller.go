@@ -228,15 +228,17 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	signature := c.GetHeader("x-webhook-signature")
 
 	if timestamp == "" || signature == "" {
+		fmt.Println("Missing webhook headers")
 		return false
 	}
 
-	// Use raw body directly. No parsing/unmarshalling
 	signedPayload := timestamp + string(bodyBytes)
-
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(signedPayload))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	fmt.Printf("Computed signature: %s\n", expectedSignature)
+	fmt.Printf("Received signature: %s\n", signature)
 
 	return hmac.Equal([]byte(expectedSignature), []byte(signature))
 }
