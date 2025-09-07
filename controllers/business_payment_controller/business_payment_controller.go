@@ -129,10 +129,14 @@ func (pc *PaymentController) makeRequest(ctx context.Context, method, path strin
 	return pc.HttpClient.Do(req)
 }
 
-// verifyWebhookSignature verifies the webhook signature
+// verifyWebhookSignature verifies the webhook signature with enhanced debugging
 func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []byte) bool {
 	timestamp := c.GetHeader("x-webhook-timestamp")
 	signature := c.GetHeader("x-webhook-signature")
+
+	// Log received headers for debugging
+	logger.InfoLogger.Infof("Webhook headers - timestamp present: %v, signature present: %v",
+		timestamp != "", signature != "")
 
 	if timestamp == "" || signature == "" {
 		logger.ErrorLogger.Errorf("Missing webhook headers - timestamp: %v, signature: %v",
@@ -163,16 +167,60 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	mac.Write([]byte(message))
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
+	// Enhanced debugging - log signature details (be careful in production)
+	logger.DebugLogger.Debugf("Signature verification details:")
+	logger.DebugLogger.Debugf("- Timestamp: %s", timestamp)
+	logger.DebugLogger.Debugf("- Message length: %d bytes", len(message))
+	logger.DebugLogger.Debugf("- Secret length: %d chars", len(pc.WebhookSecret))
+	logger.DebugLogger.Debugf("- Expected signature: %s", expectedSignature)
+	logger.DebugLogger.Debugf("- Received signature: %s", signature)
+
+	// Log first few chars of signatures for comparison (safe for production)
+	if len(expectedSignature) > 10 && len(signature) > 10 {
+		logger.InfoLogger.Infof("Signature comparison - Expected starts with: %s..., Received starts with: %s...",
+			expectedSignature[:10], signature[:10])
+	}
+
 	// Secure comparison
 	isValid := hmac.Equal([]byte(expectedSignature), []byte(signature))
 
 	if !isValid {
 		logger.ErrorLogger.Errorf("Webhook signature verification failed")
-		logger.DebugLogger.Debugf("Expected signature length: %d, Received: %d",
+		logger.ErrorLogger.Errorf("Expected signature length: %d, Received: %d",
 			len(expectedSignature), len(signature))
+
+		// Additional debug: check if signatures are similar but not exact
+		if expectedSignature == signature {
+			logger.ErrorLogger.Errorf("Signatures match as strings but HMAC.Equal failed - possible encoding issue")
+		}
+	} else {
+		logger.InfoLogger.Infof("Webhook signature verified successfully")
 	}
 
 	return isValid
+}
+
+// TestWebhookSecret tests webhook signature generation with a sample payload
+// Add this as a test endpoint temporarily for debugging
+func (pc *PaymentController) TestWebhookSecret(c *gin.Context) {
+	// Sample test data from Cashfree documentation
+	testTimestamp := "1234567890"
+	testBody := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{}}`
+
+	// Generate signature using your configured secret
+	message := testTimestamp + "." + testBody
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(message))
+	generatedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	c.JSON(http.StatusOK, gin.H{
+		"webhook_secret_configured": pc.WebhookSecret != "",
+		"secret_length":             len(pc.WebhookSecret),
+		"test_timestamp":            testTimestamp,
+		"test_body":                 testBody,
+		"generated_signature":       generatedSignature,
+		"instructions":              "Compare this signature with what Cashfree generates for the same timestamp and body",
+	})
 }
 
 // isEventProcessed checks if the webhook event has already been processed
@@ -193,6 +241,12 @@ func (pc *PaymentController) isEventProcessed(ctx context.Context, eventType, or
 
 // PaymentWebhook handles incoming Cashfree webhooks
 func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
+	// Log all headers for debugging
+	logger.InfoLogger.Infof("Webhook request received from IP: %s", c.ClientIP())
+	logger.InfoLogger.Infof("Webhook headers: x-webhook-timestamp=%s, x-webhook-signature=%s",
+		c.GetHeader("x-webhook-timestamp"),
+		c.GetHeader("x-webhook-signature"))
+
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to read webhook body: %v", err)
@@ -200,16 +254,28 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		return
 	}
 
-	// Restore body
+	// Log body details (be careful with sensitive data in production)
+	logger.InfoLogger.Infof("Webhook body size: %d bytes", len(bodyBytes))
+	if len(bodyBytes) > 0 {
+		// Log first 100 chars of body for debugging
+		bodyPreview := string(bodyBytes)
+		if len(bodyPreview) > 100 {
+			bodyPreview = bodyPreview[:100] + "..."
+		}
+		logger.DebugLogger.Debugf("Webhook body preview: %s", bodyPreview)
+	}
+
+	// Restore body for potential further processing
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-	// Verify signature first
+	// Verify signature with enhanced logging
 	if !pc.verifyWebhookSignature(c, bodyBytes) {
-		logger.ErrorLogger.Errorf("Invalid webhook signature")
+		logger.ErrorLogger.Errorf("Invalid webhook signature for request from IP: %s", c.ClientIP())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}
 
+	// Rest of your webhook processing...
 	// Parse event
 	var event WebhookEvent
 	if err := json.Unmarshal(bodyBytes, &event); err != nil {
@@ -217,6 +283,8 @@ func (pc *PaymentController) PaymentWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
 		return
 	}
+
+	logger.InfoLogger.Infof("Successfully verified webhook: type=%s, time=%s", event.Type, event.EventTime)
 
 	ctx := c.Request.Context()
 
