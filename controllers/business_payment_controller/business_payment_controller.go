@@ -200,26 +200,90 @@ func (pc *PaymentController) verifyWebhookSignature(c *gin.Context, bodyBytes []
 	return isValid
 }
 
-// TestWebhookSecret tests webhook signature generation with a sample payload
-// Add this as a test endpoint temporarily for debugging
+// Test endpoint to validate webhook secret configuration
 func (pc *PaymentController) TestWebhookSecret(c *gin.Context) {
-	// Sample test data from Cashfree documentation
-	testTimestamp := "1234567890"
-	testBody := `{"type":"PAYMENT_SUCCESS_WEBHOOK","data":{}}`
+	// Test with the exact same data format as your failing webhook
+	testTimestamp := "1757255424"
+	testBody := `{"data":{"test_object":{"test_key":"test_value"}},"type":"WEBHOOK","event_time":"2025-09-07T14:30:23.000Z"}`
 
-	// Generate signature using your configured secret
+	// Generate signature using your webhook secret
 	message := testTimestamp + "." + testBody
 	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 	mac.Write([]byte(message))
 	generatedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
-	c.JSON(http.StatusOK, gin.H{
+	// Test alternative formats
+	altMessage := testTimestamp + testBody // No dot
+	mac2 := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac2.Write([]byte(altMessage))
+	altSignature := base64.StdEncoding.EncodeToString(mac2.Sum(nil))
+
+	// Hex format
+	mac3 := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac3.Write([]byte(message))
+	hexSignature := fmt.Sprintf("%x", mac3.Sum(nil))
+
+	response := gin.H{
 		"webhook_secret_configured": pc.WebhookSecret != "",
 		"secret_length":             len(pc.WebhookSecret),
-		"test_timestamp":            testTimestamp,
-		"test_body":                 testBody,
-		"generated_signature":       generatedSignature,
-		"instructions":              "Compare this signature with what Cashfree generates for the same timestamp and body",
+		"test_data": gin.H{
+			"timestamp": testTimestamp,
+			"body":      testBody,
+			"message":   message,
+		},
+		"signatures": gin.H{
+			"standard_format":    generatedSignature,
+			"no_dot_format":      altSignature,
+			"hex_format":         hexSignature,
+			"received_signature": "c4Ig8a7Z4zprGeCWw/bymghwRVln6tVzbEa/gQKsMfw=",
+		},
+		"matches": gin.H{
+			"standard": generatedSignature == "c4Ig8a7Z4zprGeCWw/bymghwRVln6tVzbEa/gQKsMfw=",
+			"no_dot":   altSignature == "c4Ig8a7Z4zprGeCWw/bymghwRVln6tVzbEa/gQKsMfw=",
+			"hex":      hexSignature == "c4Ig8a7Z4zprGeCWw/bymghwRVln6tVzbEa/gQKsMfw=",
+		},
+		"debug_info": gin.H{
+			"message_length": len(message),
+			"body_length":    len(testBody),
+		},
+		"troubleshooting": gin.H{
+			"step_1": "Check if webhook secret in env matches Cashfree dashboard",
+			"step_2": "Verify webhook URL is correctly configured in Cashfree",
+			"step_3": "Ensure webhook secret has no extra spaces or special characters",
+			"step_4": "Check if you're using sandbox vs production endpoints",
+		},
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// Additional debugging endpoint to test webhook with custom data
+func (pc *PaymentController) TestCustomWebhook(c *gin.Context) {
+	var req struct {
+		Timestamp string `json:"timestamp" binding:"required"`
+		Body      string `json:"body" binding:"required"`
+		Signature string `json:"signature" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	// Test signature generation with custom data
+	message := req.Timestamp + "." + req.Body
+	mac := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+	mac.Write([]byte(message))
+	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	isValid := hmac.Equal([]byte(expectedSignature), []byte(req.Signature))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":            message,
+		"expected_signature": expectedSignature,
+		"received_signature": req.Signature,
+		"signature_valid":    isValid,
+		"webhook_secret_len": len(pc.WebhookSecret),
 	})
 }
 
