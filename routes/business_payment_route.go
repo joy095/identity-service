@@ -17,28 +17,22 @@ func RegisterBusinessPaymentRoutes(router *gin.Engine) error {
 		return fmt.Errorf("payment routes init: %w", err)
 	}
 
-	// Public webhook endpoints (no auth required)
-	webhook := router.Group("/webhook")
-	{
-		webhook.POST("/payment", paymentController.PaymentWebhook)
-		webhook.GET("/health", paymentController.WebhookHealthCheck)
-	}
-
 	// Protected payment endpoints (require authentication)
 	api := router.Group("")
 	api.Use(auth.AuthMiddleware())
 	{
 		// Order management
-		api.POST("/orders", paymentController.CreateOrder)
+		api.POST("/orders-and-pay", paymentController.CreateOrderAndPayment)
 		api.GET("/orders/history", paymentController.GetOrderHistory)
 		api.GET("/orders/:order_id", paymentController.GetOrder)
 
 		// Refunds (initiates refund, status updated via webhook)
 		api.POST("/orders/:order_id/refunds", paymentController.CreateRefund)
 
-		// Schedule slot availability
-		api.GET("/public/services/:service_id/unavailable-times", paymentController.GetUnavailableTimes) // /public/services/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 	}
+
+	// Schedule slot availability
+	router.GET("/public/services/:service_id/unavailable-times", paymentController.GetUnavailableTimes) // /public/services/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 
 	return nil
 }

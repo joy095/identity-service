@@ -43,6 +43,7 @@ func GetBookedTimesForServiceDate(ctx context.Context, db *pgxpool.Pool, service
 		 FROM orders 
 		 WHERE service_id = $1 AND status = $2 
 		 AND start_time < $3 AND end_time > $4 
+		 AND status = 'paid'
 		 ORDER BY start_time ASC`,
 		serviceID, OrderStatusPaid, endOfDay, startOfDay)
 	if err != nil {
