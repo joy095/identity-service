@@ -150,10 +150,15 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		return
 	}
 
-	if req.StartTime.After(req.EndTime) || req.StartTime.Equal(req.EndTime) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Start time must be before end time"})
+	// get service
+	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, req.ServiceID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get service %s: %v", req.ServiceID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
 		return
 	}
+
+	EndTime := req.StartTime.Add(time.Duration(service.Duration) * time.Second)
 
 	now := time.Now().UTC()
 	if req.StartTime.Before(now) {
@@ -161,8 +166,13 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		return
 	}
 
+	if req.Currency != "INR" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		return
+	}
+
 	// check slot overlap
-	hasOverlap, err := payment_models.HasBookingOverlap(ctx, pc.DB, req.ServiceID, req.StartTime, req.EndTime)
+	hasOverlap, err := payment_models.HasBookingOverlap(ctx, pc.DB, req.ServiceID, req.StartTime, EndTime)
 	if err != nil {
 		logger.ErrorLogger.Errorf("Failed to check overlap for service %s: %v", req.ServiceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check availability"})
@@ -186,14 +196,6 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 				"upi_id":  req.UpiID,
 			},
 		}
-	}
-
-	// get service
-	service, err := service_models.GetServiceByIDModel(ctx, pc.DB, req.ServiceID)
-	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to get service %s: %v", req.ServiceID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get service"})
-		return
 	}
 
 	// create Cashfree order
@@ -244,7 +246,7 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
          RETURNING id`,
-		cfOrderID, customerID, req.ServiceID, req.StartTime.UTC(), req.EndTime.UTC(), service.Price, req.Currency,
+		cfOrderID, customerID, req.ServiceID, req.StartTime.UTC(), EndTime.UTC(), service.Price, req.Currency,
 		cfOrderID, cfPaymentSessionID, OrderStatusPending,
 	).Scan(&dbOrderID)
 
@@ -279,7 +281,6 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		"payment_session_id": cfPaymentSessionID,
 		"status":             OrderStatusPending,
 	})
-
 }
 
 // CreateRefund creates a refund for an order
@@ -702,7 +703,6 @@ type CreateOrderRequest struct {
 	Currency      string                 `json:"currency" binding:"required,len=3"`
 	ServiceID     uuid.UUID              `json:"service_id" binding:"required"`
 	StartTime     time.Time              `json:"start_time" binding:"required"`
-	EndTime       time.Time              `json:"end_time" binding:"required"`
 	UpiID         string                 `json:"upi_id"`
 	PaymentMethod map[string]interface{} `json:"payment_method"`
 }
