@@ -3,6 +3,9 @@ package business_payment_controller
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -46,6 +50,7 @@ type PaymentController struct {
 	APIVersion   string
 	BaseURL      string
 	HttpClient   *http.Client // Shared HTTP client for performance
+	WebhookSecret string
 }
 
 // NewPaymentController creates a new payment controller
@@ -53,6 +58,7 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 	clientID := os.Getenv("CASHFREE_CLIENT_ID")
 	clientSecret := os.Getenv("CASHFREE_CLIENT_SECRET")
 	apiVersion := os.Getenv("CASHFREE_API_VERSION")
+	webhookSecret := os.Getenv("CASHFREE_WEBHOOK_SECRET")
 
 	if clientID == "" || clientSecret == "" || apiVersion == "" {
 		return nil, fmt.Errorf("required Cashfree environment variables not set")
@@ -77,6 +83,7 @@ func NewPaymentController(db *pgxpool.Pool) (*PaymentController, error) {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+		WebhookSecret: webhookSecret,
 	}
 
 	if err := pc.ValidateConfig(); err != nil {
@@ -98,6 +105,167 @@ func (pc *PaymentController) ValidateConfig() error {
 		return fmt.Errorf("CASHFREE_API_VERSION is required")
 	}
 	return nil
+}
+
+// CashfreeWebhook handles asynchronous webhook callbacks from Cashfree
+func (pc *PaymentController) CashfreeWebhook(c *gin.Context) {
+	// Read raw body
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	// Verify signature if secret is configured
+	signature := c.GetHeader("x-webhook-signature")
+	if pc.WebhookSecret != "" {
+		if signature == "" {
+			logger.ErrorLogger.Errorf("cashfree webhook: missing signature header")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "signature required"})
+			return
+		}
+
+		expectedMAC := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+		expectedMAC.Write(body)
+		calcSig := base64.StdEncoding.EncodeToString(expectedMAC.Sum(nil))
+		if !hmac.Equal([]byte(calcSig), []byte(signature)) {
+			logger.ErrorLogger.Errorf("cashfree webhook: signature mismatch")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+			return
+		}
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		logger.ErrorLogger.Errorf("cashfree webhook: invalid json: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json"})
+		return
+	}
+
+	// Extract fields in a defensive way (Cashfree sends different schemas per event)
+	getString := func(m map[string]interface{}, key string) string {
+		if v, ok := m[key]; ok {
+			if s, ok := v.(string); ok {
+				return s
+			}
+		}
+		return ""
+	}
+
+	eventType := strings.ToUpper(getString(payload, "type"))
+	dataMap, _ := payload["data"].(map[string]interface{})
+	orderMap, _ := payload["order"].(map[string]interface{})
+	if orderMap == nil && dataMap != nil {
+		// Some events nest order under data.order
+		if om, ok := dataMap["order"].(map[string]interface{}); ok {
+			orderMap = om
+		}
+	}
+
+	orderID := getString(payload, "order_id")
+	if orderID == "" && orderMap != nil {
+		orderID = getString(orderMap, "order_id")
+	}
+	if orderID == "" && dataMap != nil {
+		orderID = getString(dataMap, "order_id")
+	}
+
+	orderStatus := strings.ToUpper(getString(payload, "order_status"))
+	if orderStatus == "" && orderMap != nil {
+		orderStatus = strings.ToUpper(getString(orderMap, "order_status"))
+	}
+	if orderStatus == "" && dataMap != nil {
+		orderStatus = strings.ToUpper(getString(dataMap, "order_status"))
+	}
+
+	cfPaymentID := getString(payload, "cf_payment_id")
+	if cfPaymentID == "" && dataMap != nil {
+		cfPaymentID = getString(dataMap, "cf_payment_id")
+	}
+
+	paymentStatus := strings.ToUpper(getString(payload, "payment_status"))
+	if paymentStatus == "" && dataMap != nil {
+		paymentStatus = strings.ToUpper(getString(dataMap, "payment_status"))
+	}
+
+	if orderID == "" {
+		logger.ErrorLogger.Errorf("cashfree webhook: missing order_id, event=%s", eventType)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id missing"})
+		return
+	}
+
+	// Determine if payment is successful
+	isPaid := false
+	if orderStatus == "PAID" {
+		isPaid = true
+	}
+	if paymentStatus == "SUCCESS" || paymentStatus == "COMPLETED" || paymentStatus == "PAID" {
+		isPaid = true
+	}
+	if strings.Contains(eventType, "PAYMENT") && paymentStatus == "SUCCESS" {
+		isPaid = true
+	}
+
+	ctx := c.Request.Context()
+	if isPaid {
+		// Update order to paid and set cf_payment_id if provided
+		query := `UPDATE orders SET status = $1, updated_at = NOW()`
+		args := []interface{}{OrderStatusPaid, orderID}
+		if cfPaymentID != "" {
+			query += `, cf_payment_id = $3`
+			args = append(args, cfPaymentID)
+		}
+		query += ` WHERE order_id = $2 AND status <> $1`
+
+		if _, err := pc.DB.Exec(ctx, query, args...); err != nil {
+			logger.ErrorLogger.Errorf("cashfree webhook: failed to update order %s: %v", orderID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+			return
+		}
+		logger.InfoLogger.Infof("cashfree webhook: order %s marked paid", orderID)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+		return
+	}
+
+	// For non-paid events, acknowledge without changes
+	logger.InfoLogger.Infof("cashfree webhook: event %s for order %s status=%s payment_status=%s", eventType, orderID, orderStatus, paymentStatus)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// CashfreeWebhookHealth is a simple health endpoint to verify routing and readiness
+func (pc *PaymentController) CashfreeWebhookHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"status":          "ok",
+		"webhook_secured": pc.WebhookSecret != "",
+	})
+}
+
+// CashfreeWebhookTest validates signature and parses body without DB writes
+func (pc *PaymentController) CashfreeWebhookTest(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	signature := c.GetHeader("x-webhook-signature")
+	verified := false
+	if pc.WebhookSecret != "" {
+		expectedMAC := hmac.New(sha256.New, []byte(pc.WebhookSecret))
+		expectedMAC.Write(body)
+		calcSig := base64.StdEncoding.EncodeToString(expectedMAC.Sum(nil))
+		verified = hmac.Equal([]byte(calcSig), []byte(signature))
+	}
+
+	var payload map[string]interface{}
+	_ = json.Unmarshal(body, &payload)
+
+	c.JSON(http.StatusOK, gin.H{
+		"received":  true,
+		"verified":  verified,
+		"signature": signature,
+		"payload":   payload,
+	})
 }
 
 // HTTP client helper
@@ -451,6 +619,7 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 	}
 
 	ctx := c.Request.Context()
+	var dbCustomerID uuid.UUID
 	var order struct {
 		ID               uuid.UUID `db:"id"`
 		OrderID          string    `db:"order_id"`
@@ -465,24 +634,34 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 		CFPaymentID      *string   `db:"cf_payment_id"`
 	}
 
-	// fetch from DB
+	// fetch order and its owner in one query
 	err = pc.DB.QueryRow(ctx,
-		`SELECT id, order_id, service_id, start_time, end_time, amount, payment_session_id, currency, created_at, status, cf_payment_id
-         FROM orders 
-         WHERE customer_id = $1 AND order_id = $2`,
-		customerID, orderID).Scan(
+		`SELECT customer_id, id, order_id, service_id, start_time, end_time, amount, 
+			payment_session_id, currency, created_at, status, cf_payment_id
+			FROM orders
+     	WHERE order_id = $1`,
+		orderID).Scan(
+		&dbCustomerID,
 		&order.ID, &order.OrderID, &order.ServiceID, &order.StartTime, &order.EndTime,
 		&order.Amount, &order.PaymentSessionID, &order.Currency, &order.CreatedAt,
 		&order.Status, &order.CFPaymentID,
 	)
+
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		} else {
-			logger.ErrorLogger.Errorf("Failed to get order %s for customer %s: %v", orderID, customerID, err)
+			logger.ErrorLogger.Errorf("Failed to get order %s: %v", orderID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return err
+	}
+
+	// check ownership
+	if dbCustomerID != customerID {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to view this order"})
+		logger.ErrorLogger.Errorf("unauthorized access to order %s by customer %s", orderID, customerID)
+		return nil
 	}
 
 	// poll status from Cashfree

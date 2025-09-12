@@ -31,6 +31,11 @@ func RegisterBusinessPaymentRoutes(router *gin.Engine) error {
 
 	}
 
+	// Public webhook endpoint for Cashfree (no auth)
+	router.POST("/webhooks/cashfree", paymentController.CashfreeWebhook)
+	router.GET("/webhooks/cashfree/health", paymentController.CashfreeWebhookHealth)
+	router.POST("/webhooks/cashfree/test", paymentController.CashfreeWebhookTest)
+
 	// Schedule slot availability
 	router.GET("/public/services/:service_id/unavailable-times", paymentController.GetUnavailableTimes) // /public/services/abc12345-.../unavailable-times?date=2025-04-05&=1&limit=10
 
