@@ -341,7 +341,7 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		return
 	}
 
-	EndTime := req.StartTime.Add(time.Duration(service.Duration) * time.Second)
+	EndTime := req.StartTime.Add(time.Duration(service.Duration) * time.Minute) // Adding service duration in minutes
 
 	now := time.Now().UTC()
 	if req.StartTime.Before(now) {
@@ -383,8 +383,9 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 
 	// create Cashfree order
 	payload := map[string]interface{}{
-		"order_amount":   service.Price,
-		"order_currency": req.Currency,
+		"order_amount":      service.Price,
+		"order_currency":    req.Currency,
+		"order_expiry_time": time.Now().Add(16 * time.Minute), // Expiry time will be more than 15 minutes
 		"customer_details": map[string]string{
 			"customer_id":    customerID.String(),
 			"customer_phone": *user.Phone,
