@@ -44,12 +44,12 @@ const (
 
 // PaymentController handles all payment operations
 type PaymentController struct {
-	DB           *pgxpool.Pool
-	ClientID     string
-	ClientSecret string
-	APIVersion   string
-	BaseURL      string
-	HttpClient   *http.Client // Shared HTTP client for performance
+	DB            *pgxpool.Pool
+	ClientID      string
+	ClientSecret  string
+	APIVersion    string
+	BaseURL       string
+	HttpClient    *http.Client // Shared HTTP client for performance
 	WebhookSecret string
 }
 
@@ -118,20 +118,35 @@ func (pc *PaymentController) CashfreeWebhook(c *gin.Context) {
 
 	// Verify signature if secret is configured
 	signature := c.GetHeader("x-webhook-signature")
+	if signature == "" {
+		// Try common alternate header names used by Cashfree integrations
+		signature = c.GetHeader("x-cashfree-signature")
+		if signature == "" {
+			signature = c.GetHeader("x-verify")
+		}
+	}
 	if pc.WebhookSecret != "" {
 		if signature == "" {
-			logger.ErrorLogger.Errorf("cashfree webhook: missing signature header")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "signature required"})
-			return
+			if strings.EqualFold(os.Getenv("CASHFREE_WEBHOOK_ALLOW_UNVERIFIED"), "true") {
+				logger.ErrorLogger.Errorf("cashfree webhook: missing signature header, proceeding due to CASHFREE_WEBHOOK_ALLOW_UNVERIFIED=true")
+			} else {
+				logger.ErrorLogger.Errorf("cashfree webhook: missing signature header")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "signature required"})
+				return
+			}
 		}
 
 		expectedMAC := hmac.New(sha256.New, []byte(pc.WebhookSecret))
 		expectedMAC.Write(body)
 		calcSig := base64.StdEncoding.EncodeToString(expectedMAC.Sum(nil))
-		if !hmac.Equal([]byte(calcSig), []byte(signature)) {
-			logger.ErrorLogger.Errorf("cashfree webhook: signature mismatch")
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
-			return
+		if signature != "" && !hmac.Equal([]byte(calcSig), []byte(signature)) {
+			if strings.EqualFold(os.Getenv("CASHFREE_WEBHOOK_ALLOW_UNVERIFIED"), "true") {
+				logger.ErrorLogger.Errorf("cashfree webhook: signature mismatch, proceeding due to CASHFREE_WEBHOOK_ALLOW_UNVERIFIED=true")
+			} else {
+				logger.ErrorLogger.Errorf("cashfree webhook: signature mismatch")
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
+				return
+			}
 		}
 	}
 
@@ -373,6 +388,8 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 		"customer_details": map[string]string{
 			"customer_id":    customerID.String(),
 			"customer_phone": *user.Phone,
+			"customer_email": user.Email,
+			"customer_name":  user.FirstName + " " + user.LastName,
 		},
 	}
 
