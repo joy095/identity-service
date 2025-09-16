@@ -1,7 +1,9 @@
 package booking_controller
 
 import (
+	"math"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -80,4 +82,63 @@ func (bc *BookingController) GetBookingId(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"order": order})
+}
+
+// Owners get all orders
+func (bc *BookingController) GetSellerOrders(c *gin.Context) {
+	ownerID, err := utils.GetUserIDFromContext(c)
+	if err != nil {
+		logger.ErrorLogger.Error("User ID not found in context")
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+
+	// Get pagination parameters
+	pageStr := c.DefaultQuery("page", "1")
+	limitStr := c.DefaultQuery("limit", "10")
+	status := c.Query("status")
+	dateRange := c.Query("date")
+
+	page, err := strconv.Atoi(pageStr)
+	if err != nil || page < 1 {
+		page = 1
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit < 1 || limit > 100 {
+		limit = 10
+	}
+
+	offset := (page - 1) * limit
+
+	// Get orders with pagination
+	orders, totalOrders, err := booking_models.GetBookingByOwnerModels(
+		c.Request.Context(),
+		bc.DB,
+		ownerID,
+		booking_models.OrderFilter{
+			Status:    status,
+			DateRange: dateRange,
+			Limit:     limit,
+			Offset:    offset,
+		},
+	)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Failed to get booking: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve booking"})
+		return
+	}
+
+	// Calculate total pages
+	totalPages := 0
+	if limit > 0 {
+		totalPages = int(math.Ceil(float64(totalOrders) / float64(limit)))
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"orders":      orders,
+		"totalPages":  totalPages,
+		"currentPage": page,
+		"totalOrders": totalOrders,
+	})
 }

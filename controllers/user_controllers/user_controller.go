@@ -348,7 +348,15 @@ func (uc *UserController) Register(c *gin.Context) {
 		return
 	}
 
-	user, err := user_models.CreateUser(db.DB, req.Email, req.Password, req.FirstName, req.LastName)
+	usernameID, err := shared_utils.GenerateTinyID(8)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create username"})
+		return
+	}
+
+	username := strings.ReplaceAll(req.FirstName, " ", "") + usernameID
+
+	user, err := user_models.CreateUser(db.DB, req.Email, req.Password, req.FirstName, req.LastName, username)
 	if err != nil {
 		logger.ErrorLogger.Error(fmt.Errorf("failed to create user in database for '%s': %w", req.Email, err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
@@ -388,6 +396,7 @@ func (uc *UserController) Register(c *gin.Context) {
 		"email":     user.Email,
 		"firstName": user.FirstName,
 		"lastName":  user.LastName,
+		"username":  username,
 	})
 }
 

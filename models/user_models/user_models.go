@@ -43,6 +43,7 @@ type User struct {
 	OTPHash         *string
 	FirstName       string
 	LastName        string
+	Username        string
 	IsVerifiedEmail bool
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
@@ -173,7 +174,7 @@ func ValidateAccessToken(tokenString string) (*jwt.Token, jwt.MapClaims, error) 
 }
 
 // Create user if the user not verified that case will delete the user (after 15 minutes of creation)
-func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (*User, error) {
+func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName, username string) (*User, error) {
 	logger.InfoLogger.Info("CreateUser called on models")
 
 	passwordHash, err := HashPassword(password)
@@ -189,12 +190,12 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 			  AND is_verified_email = FALSE
 			  AND created_at < NOW() - INTERVAL '15 minutes'
 		)
-		INSERT INTO users (email, password_hash, first_name, last_name)
+		INSERT INTO users (email, password_hash, first_name, last_name, username)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id
 	`
 	var returnedID uuid.UUID
-	err = db.QueryRow(context.Background(), insertQuery, email, passwordHash, firstName, lastName).Scan(&returnedID)
+	err = db.QueryRow(context.Background(), insertQuery, email, passwordHash, firstName, lastName, username).Scan(&returnedID)
 	if err != nil {
 		// Check if it's a unique constraint violation
 		if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
@@ -214,6 +215,7 @@ func CreateUser(db *pgxpool.Pool, email, password, firstName, lastName string) (
 		PasswordHash: passwordHash,
 		FirstName:    firstName,
 		LastName:     lastName,
+		Username:     username,
 	}
 
 	return user, nil
