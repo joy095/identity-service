@@ -242,33 +242,66 @@ func GetBusinessIdOnly(ctx context.Context, db *pgxpool.Pool, publicId string) (
 	return businessID, nil
 }
 
+type BusinessCreatedAt struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// GetBusinessCreatedAt fetches created_at and id for a business
+func GetBusinessCreatedAt(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) (*BusinessCreatedAt, error) {
+	logger.InfoLogger.Infof("Attempting to fetch business with ID: %s", businessID)
+
+	query := `
+		SELECT id, created_at
+		FROM businesses
+		WHERE id = $1;
+	`
+
+	var bus BusinessCreatedAt
+	err := db.QueryRow(ctx, query, businessID).Scan(
+		&bus.ID,
+		&bus.CreatedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("No business found for ID: %s", businessID)
+			return nil, nil
+		}
+		logger.ErrorLogger.Errorf("Failed to fetch business %s: %v", businessID, err)
+		return nil, fmt.Errorf("database error fetching business: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Business with ID %s fetched successfully", businessID)
+	return &bus, nil
+}
+
 // GetBusinessByPublicId fetches a business record by its public ID (client-facing).
 func GetBusinessByPublicId(ctx context.Context, db *pgxpool.Pool, publicId string) (*Business, error) {
 	logger.InfoLogger.Infof("Attempting to fetch business with public ID: %s", publicId)
 
 	business := &Business{}
 	query := `SELECT
-				b.id,
-				b.name,
-				b.category,
-				b.address,
-				b.city,
-				b.state,
-				b.country,
-				b.postal_code,
-				b.tax_id,
-				b.about,
-				b.location_latitude,
-				b.location_longitude,
-				b.created_at,
-				b.updated_at,
-				b.is_active,
-				b.owner_id,
-				b.public_id
+				id,
+				name,
+				category,
+				address,
+				city,
+				state,
+				country,
+				postal_code,
+				tax_id,
+				about,
+				location_latitude,
+				location_longitude,
+				created_at,
+				updated_at,
+				is_active,
+				owner_id,
+				public_id
 			FROM
-				businesses AS b
+				businesses
 			WHERE
-				b.public_id = $1;
+				public_id = $1;
 	`
 
 	err := db.QueryRow(ctx, query, publicId).Scan(

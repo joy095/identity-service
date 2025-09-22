@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joy095/identity/logger"
+	"github.com/joy095/identity/models/business_models"
 	"github.com/joy095/identity/models/payment_models"
 	"github.com/joy095/identity/models/service_models"
 	"github.com/joy095/identity/models/user_models"
@@ -40,6 +41,7 @@ const (
 	OrderStatusPending  = "pending"
 	OrderStatusPaid     = "paid"
 	OrderStatusRefunded = "refunded"
+	OrderStatusFailed   = "failed"
 )
 
 // PaymentController handles all payment operations
@@ -426,14 +428,38 @@ func (pc *PaymentController) CreateOrderAndPayment(c *gin.Context) {
 	cfOrderID, _ := cfOrderResp["order_id"].(string)
 	cfPaymentSessionID, _ := cfOrderResp["payment_session_id"].(string)
 
+	businessId, err := service_models.GetBusinessIdByService(ctx, pc.DB, service.ID)
+	if err != nil {
+		logger.ErrorLogger.Error("Business not found with the serviceId: %v", service.ID)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "business not found with the serviceId"})
+		return
+	}
+
+	businessCreated, err := business_models.GetBusinessCreatedAt(ctx, pc.DB, businessId.BusinessID)
+	if err != nil {
+		logger.ErrorLogger.Errorf("Business error: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Internal server error"})
+		return
+	}
+
+	// Calculate how long ago the business was created
+	age := time.Since(businessCreated.CreatedAt)
+
+	var fee int
+	if age > (90 * 24 * time.Hour) {
+		fee = 5
+	} else {
+		fee = 1
+	}
+
 	// save to DB
 	var dbOrderID uuid.UUID
 	err = pc.DB.QueryRow(ctx,
-		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+		`INSERT INTO orders (order_id, customer_id, service_id, start_time, end_time, amount, currency, cf_order_id, payment_session_id, status, platform_fee_percentage, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
          RETURNING id`,
 		cfOrderID, customerID, req.ServiceID, req.StartTime.UTC(), EndTime.UTC(), service.Price, req.Currency,
-		cfOrderID, cfPaymentSessionID, OrderStatusPending,
+		cfOrderID, cfPaymentSessionID, OrderStatusPending, fee,
 	).Scan(&dbOrderID)
 
 	if err != nil {
@@ -621,7 +647,10 @@ func (pc *PaymentController) CreateRefund(c *gin.Context) {
 
 // getOrderInternal retrieves and updates order (no refunds)
 func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) error {
+	logger.InfoLogger.Infof("[GET_ORDER_INTERNAL] Request received for order_id: %s", orderID)
+
 	if orderID == "" {
+		logger.ErrorLogger.Errorf("[VALIDATION_ERROR] Missing order_id")
 		c.JSON(http.StatusBadRequest, gin.H{"error": "order_id required"})
 		return nil
 	}
@@ -629,8 +658,10 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 	customerID, err := utils.GetUserIDFromContext(c)
 	if err != nil {
 		if err.Error() == "unauthorized" {
+			logger.ErrorLogger.Errorf("[UNAUTHORIZED] Customer unauthorized for order %s", orderID)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		} else {
+			logger.ErrorLogger.Errorf("[INTERNAL_ERROR] Failed to get customer ID: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 		}
 		return err
@@ -652,7 +683,7 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 		CFPaymentID      *string   `db:"cf_payment_id"`
 	}
 
-	// fetch order and its owner in one query
+	logger.InfoLogger.Infof("[DB_FETCH] Fetching order %s from DB", orderID)
 	err = pc.DB.QueryRow(ctx,
 		`SELECT customer_id, id, order_id, service_id, start_time, end_time, amount, 
 			payment_session_id, currency, created_at, status, cf_payment_id
@@ -667,9 +698,10 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			logger.ErrorLogger.Errorf("[DB_NOT_FOUND] Order %s not found in DB", orderID)
 			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		} else {
-			logger.ErrorLogger.Errorf("Failed to get order %s: %v", orderID, err)
+			logger.ErrorLogger.Errorf("[DB_ERROR] Failed to fetch order %s: %v", orderID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
 		}
 		return err
@@ -677,70 +709,91 @@ func (pc *PaymentController) getOrderInternal(c *gin.Context, orderID string) er
 
 	// check ownership
 	if dbCustomerID != customerID {
+		logger.ErrorLogger.Errorf("[UNAUTHORIZED_ACCESS] Unauthorized access to order %s by customer %s", orderID, customerID)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized to view this order"})
-		logger.ErrorLogger.Errorf("unauthorized access to order %s by customer %s", orderID, customerID)
-		return nil
+		return fmt.Errorf("unauthorized access to order %s by customer %s", orderID, customerID)
 	}
 
-	// poll status from Cashfree
+	logger.InfoLogger.Infof("[CASHFREE_POLL] Polling Cashfree for order %s", orderID)
 	orderStatusResp, err := pc.makeRequest(ctx, "GET", "/orders/"+orderID, nil)
 	if err != nil {
-		logger.ErrorLogger.Errorf("Failed to fetch order status for %s: %v", orderID, err)
+		logger.ErrorLogger.Errorf("[CASHFREE_POLL_FAIL] Failed to fetch order status for %s: %v", orderID, err)
 	} else {
 		defer orderStatusResp.Body.Close()
 		if orderStatusResp.StatusCode == http.StatusOK {
 			var orderStatusData map[string]interface{}
-			if err := json.NewDecoder(orderStatusResp.Body).Decode(&orderStatusData); err == nil {
+			if err := json.NewDecoder(orderStatusResp.Body).Decode(&orderStatusData); err != nil {
+				logger.ErrorLogger.Errorf("[CASHFREE_DECODE_FAIL] Failed to decode Cashfree response for %s: %v", orderID, err)
+			} else {
 				orderStatus, _ := orderStatusData["order_status"].(string)
 				cfPaymentID, _ := orderStatusData["cf_payment_id"].(string)
+
+				logger.InfoLogger.Infof("[CASHFREE_RESPONSE] Order %s status: %s | cf_payment_id: %s", orderID, orderStatus, cfPaymentID)
 
 				var newOrderStatus string
 				switch orderStatus {
 				case "PAID":
 					newOrderStatus = OrderStatusPaid
-				case "TERMINATED", "FAILED":
-					newOrderStatus = OrderStatusPending
+				case "FAILED", "TERMINATED":
+					newOrderStatus = OrderStatusFailed
 				default:
 					newOrderStatus = OrderStatusPending
 				}
 
+				logger.InfoLogger.Infof("[STATUS_COMPARE] DB status: %s | Cashfree status: %s | New status: %s", order.Status, orderStatus, newOrderStatus)
+
+				// Only update if status changed or cf_payment_id is missing
 				if newOrderStatus != order.Status || (cfPaymentID != "" && (order.CFPaymentID == nil || *order.CFPaymentID != cfPaymentID)) {
+					logger.InfoLogger.Infof("[DB_UPDATE] Updating order %s to status: %s", orderID, newOrderStatus)
+
 					tx, err := pc.DB.Begin(ctx)
 					if err != nil {
-						logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] Update order status for %s: %v", orderID, err)
+						logger.ErrorLogger.Errorf("[TX_BEGIN_FAIL] Failed to begin DB transaction for %s: %v", orderID, err)
 					} else {
-						query := `UPDATE orders 
-                                  SET status = $1, updated_at = NOW()`
-						args := []interface{}{newOrderStatus, orderID, OrderStatusPending}
+						var query string
+						var args []interface{}
+
 						if cfPaymentID != "" {
-							query += `, cf_payment_id = $4`
-							args = append(args, cfPaymentID)
+							query = `UPDATE orders 
+									SET status = $1, updated_at = NOW(), cf_payment_id = $4 
+									WHERE order_id = $2`
+							args = []interface{}{newOrderStatus, orderID, OrderStatusPending, cfPaymentID}
+						} else {
+							query = `UPDATE orders 
+									SET status = $1, updated_at = NOW() 
+									WHERE order_id = $2`
+							args = []interface{}{newOrderStatus, orderID}
 						}
-						query += ` WHERE order_id = $2 AND status = $3`
 
 						result, err := tx.Exec(ctx, query, args...)
 						if err != nil {
-							logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Update order status for %s: %v", orderID, err)
+							logger.ErrorLogger.Errorf("[TX_EXEC_FAIL] Failed to update order %s: %v", orderID, err)
 							tx.Rollback(ctx)
 						} else {
 							if rowsAffected := result.RowsAffected(); rowsAffected > 0 {
 								_ = tx.Commit(ctx)
-								logger.InfoLogger.Infof("Order %s updated to %s via GetOrder API poll", orderID, newOrderStatus)
+								logger.InfoLogger.Infof("[DB_UPDATE_SUCCESS] Order %s updated to %s via GetOrder API poll", orderID, newOrderStatus)
 								order.Status = newOrderStatus
 								if cfPaymentID != "" {
 									order.CFPaymentID = &cfPaymentID
 								}
 							} else {
 								_ = tx.Rollback(ctx)
+								logger.InfoLogger.Infof("[DB_UPDATE_NO_ROWS] No rows updated for order %s", orderID)
 							}
 						}
 					}
+				} else {
+					logger.InfoLogger.Infof("[NO_UPDATE_NEEDED] Order %s already up-to-date", orderID)
 				}
 			}
+		} else {
+			logger.ErrorLogger.Errorf("[CASHFREE_BAD_STATUS] Cashfree returned non-200 status for %s: %d", orderID, orderStatusResp.StatusCode)
 		}
 	}
 
 	// return response
+	logger.InfoLogger.Infof("[RESPONSE] Returning order details for %s", orderID)
 	c.JSON(http.StatusOK, gin.H{
 		"order_id":           order.OrderID,
 		"service_id":         order.ServiceID,

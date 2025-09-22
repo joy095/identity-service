@@ -58,6 +58,8 @@ func main() {
 	routes.RegisterWorkingHoursRoutes(r)
 	routes.RegisterBusinessPaymentRoutes(r)
 	routes.RegisterBookingRoutes(r)
+	routes.RegisterPayoutRoutes(r, db.DB)
+	routes.RegisterBankAccountRoutes(r, db.DB)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "ok from identity service"})

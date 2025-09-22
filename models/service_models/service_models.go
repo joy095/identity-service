@@ -268,6 +268,38 @@ func GetAllServicesModel(ctx context.Context, db *pgxpool.Pool, businessID uuid.
 	return services, nil
 }
 
+// Service represents a service record (you can extend this struct)
+type BusinessID struct {
+	BusinessID uuid.UUID `json:"business_id"`
+}
+
+// GetBusinessIdByService fetches the business_id for a given service ID
+func GetBusinessIdByService(ctx context.Context, db *pgxpool.Pool, serviceID uuid.UUID) (*BusinessID, error) {
+	logger.InfoLogger.Infof("Attempting to fetch business with service ID: %s", serviceID)
+
+	query := `
+		SELECT business_id
+		FROM services
+		WHERE id = $1
+	`
+
+	// Single row query (since you only expect one business_id per service_id)
+	row := db.QueryRow(ctx, query, serviceID)
+
+	var bus BusinessID
+	if err := row.Scan(&bus.BusinessID); err != nil {
+		if err == pgx.ErrNoRows {
+			logger.InfoLogger.Infof("No business found for service ID: %s", serviceID)
+			return nil, nil // not found
+		}
+		logger.ErrorLogger.Errorf("Failed to scan business for service %s: %v", serviceID, err)
+		return nil, fmt.Errorf("failed to fetch business_id: %w", err)
+	}
+
+	logger.InfoLogger.Infof("Successfully fetched business_id %s for service ID: %s", bus.BusinessID, serviceID)
+	return &bus, nil
+}
+
 // GetServicesByBusinessID fetches all services for a given business ID.
 func GetServicesByBusinessID(ctx context.Context, db *pgxpool.Pool, businessID uuid.UUID) ([]Service, error) {
 	logger.InfoLogger.Infof("Attempting to fetch services for Business ID: %s", businessID)
