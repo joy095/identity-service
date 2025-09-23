@@ -17,9 +17,9 @@ func RegisterBookingRoutes(router *gin.Engine) {
 		protected.GET("/:id", bookingController.GetBookingId)
 	}
 
-	seller := router.Group("/seller/orders")
+	seller := router.Group("/seller")
 	seller.Use(auth.AuthMiddleware())
 	{
-		seller.GET("", bookingController.GetSellerOrders)
+		seller.GET("/orders", bookingController.GetSellerOrders)
 	}
 }
