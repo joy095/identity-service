@@ -1,13 +1,14 @@
 FROM golang:1.24-alpine AS builder
 
-WORKDIR /app/identity_service
+WORKDIR /app
 
-COPY ./identity_service/go.mod ./identity_service/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY /identity_service .
+COPY . .
 
-RUN go build -o main cmd/main.go
+# Build the binary from the cmd package
+RUN go build -o main .
 
 EXPOSE 8081
 

@@ -2,15 +2,15 @@ package routes
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joy095/identity/config/db"
 	"github.com/joy095/identity/controllers/business_payout_controller"
 	"github.com/joy095/identity/logger"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
 // RegisterPayoutRoutes registers routes for payout-related operations
-func RegisterPayoutRoutes(r *gin.Engine, db *pgxpool.Pool) {
-	payoutController, err := business_payout_controller.NewPayoutController(db)
+func RegisterPayoutRoutes(r *gin.Engine) {
+	payoutController, err := business_payout_controller.NewPayoutController(db.DB)
 	if err != nil {
 		logger.ErrorLogger.Fatalf("failed to initialize payout controller: %v", err)
 	}

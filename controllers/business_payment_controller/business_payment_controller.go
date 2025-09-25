@@ -852,9 +852,9 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 
 	ctx := c.Request.Context()
 	rows, err := pc.DB.Query(ctx,
-		`SELECT id, order_id, service_id, start_time, end_time, amount, currency, created_at
+		`SELECT id, order_id, service_id, start_time, end_time, amount, currency, created_at, status
          FROM orders 
-         WHERE customer_id = $1 
+         WHERE customer_id = $1 AND status != 'pending'
          ORDER BY created_at DESC 
          LIMIT $2 OFFSET $3`,
 		customerID, limit, offset)
@@ -875,13 +875,14 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 		var amount float64
 		var currency string
 		var createdAt time.Time
+		var status string
 
-		if err := rows.Scan(&id, &orderID, &serviceID, &startTime, &endTime, &amount, &currency, &createdAt); err != nil {
+		if err := rows.Scan(&id, &orderID, &serviceID, &startTime, &endTime, &amount, &currency, &createdAt, &status); err != nil {
 			logger.ErrorLogger.Errorf("Failed to scan order row: %v", err)
 			continue
 		}
 
-		orders = append(orders, map[string]interface{}{
+		order := map[string]interface{}{
 			"id":         id,
 			"order_id":   orderID,
 			"service_id": serviceID,
@@ -890,7 +891,16 @@ func (pc *PaymentController) GetOrderHistory(c *gin.Context) {
 			"amount":     amount,
 			"currency":   currency,
 			"created_at": createdAt,
-		})
+			"status":     status,
+		}
+
+		orders = append(orders, order)
+	}
+
+	if err = rows.Err(); err != nil {
+		logger.ErrorLogger.Errorf("Error iterating over rows: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database error"})
+		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
