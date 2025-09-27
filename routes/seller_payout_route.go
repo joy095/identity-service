@@ -5,13 +5,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/joy095/identity/config/db"
-	"github.com/joy095/identity/controllers/cancel_book_controller"
+	"github.com/joy095/identity/controllers/seller_payout_controller"
 	"github.com/joy095/identity/middlewares/auth"
 )
 
-func RegisterCancelBookRoutes(router *gin.Engine) {
+func RegisterSellerPayoutRoutes(router *gin.Engine) {
 
-	controller, err := cancel_book_controller.NewCancelBookController(db.DB)
+	controller, err := seller_payout_controller.NewSellerPaymentController(db.DB)
 	if err != nil {
 		panic(fmt.Errorf("failed to initialize service controller: %w", err))
 	}
@@ -20,6 +20,6 @@ func RegisterCancelBookRoutes(router *gin.Engine) {
 	protected := router.Group("/user")
 	protected.Use(auth.AuthMiddleware())
 	{
-		protected.POST("/bookings/cancel", controller.CancelBook)
+		protected.POST("/bookings/cancel", controller.SellerPayout)
 	}
 }
