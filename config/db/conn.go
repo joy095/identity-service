@@ -1,4 +1,3 @@
-// db/db.go
 package db
 
 import (
@@ -7,58 +6,69 @@ import (
 	"os"
 	"time"
 
-	"github.com/joy095/identity/logger"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joy095/identity/logger"
 )
 
 var DB *pgxpool.Pool
 
 func Connect() {
-
 	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		logger.ErrorLogger.Error("DATABASE_URL not set")
+		fmt.Println("DATABASE_URL not set")
+		os.Exit(1)
+	}
 
-	// Parse config to allow setting pool options
+	// Parse and configure the pool
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		logger.ErrorLogger.Error("Unable to parse database URL:", err)
-		fmt.Println("Unable to parse database URL:", err)
+		logger.ErrorLogger.Errorf("Unable to parse DATABASE_URL: %v", err)
 		os.Exit(1)
 	}
 
-	// Optional: Configure pool settings for better resilience
-	// These are good defaults, but you can adjust based on your needs.
-	cfg.MaxConns = 10                      // Maximum number of connections in the pool
-	cfg.MinConns = 2                       // Minimum number of idle connections to keep open
-	cfg.MaxConnLifetime = time.Hour        // Max duration a connection can be used
-	cfg.MaxConnIdleTime = 30 * time.Minute // Max duration a connection can be idle before closing
+	// Recommended defaults
+	cfg.MaxConns = 10
+	cfg.MinConns = 2
+	cfg.MaxConnLifetime = time.Hour
+	cfg.MaxConnIdleTime = 30 * time.Minute
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg) // Use NewWithConfig
+	start := time.Now()
+
+	// Context timeout ensures we don’t block for 30–40 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		logger.ErrorLogger.Error("Unable to connect to database:", err)
-		fmt.Println("Unable to connect to database:", err)
+		logger.ErrorLogger.Errorf("Database connection error: %v", err)
+		fmt.Println("Database connection error:", err)
 		os.Exit(1)
 	}
 
-	// Ping the database to verify the connection
-	err = pool.Ping(context.Background())
-	if err != nil {
-		pool.Close() // Close the pool immediately if ping fails
-		logger.ErrorLogger.Error("Could not ping database:", err)
-		fmt.Println("Could not ping database:", err)
-		os.Exit(1)
-	}
+	// Try pinging once, but don’t block server startup
+	go func() {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer pingCancel()
+
+		if err := pool.Ping(pingCtx); err != nil {
+			logger.ErrorLogger.Warnf("Database cold start or unreachable: %v", err)
+			fmt.Println("Database cold start or unreachable:", err)
+		} else {
+			logger.InfoLogger.Infof("Database ready (ping ok in %v)", time.Since(start))
+			fmt.Println("Database ready (ping ok in):", time.Since(start))
+		}
+	}()
 
 	DB = pool
-	logger.InfoLogger.Info("Connected to PostgreSQL!")
-	fmt.Println("Connected to PostgreSQL!")
+	logger.InfoLogger.Info("Connected to PostgreSQL pool (async ping).")
+	fmt.Println("Connected to PostgreSQL pool (async ping).")
 }
 
-// Close disconnects the database pool.
 func Close() {
 	if DB != nil {
 		DB.Close()
-		logger.InfoLogger.Info("Disconnected from PostgreSQL!")
-		fmt.Println("Disconnected from PostgreSQL!")
+		logger.InfoLogger.Info("Disconnected from PostgreSQL.")
+		fmt.Println("Disconnected from PostgreSQL.")
 	}
 }
