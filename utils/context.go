@@ -13,7 +13,7 @@ import (
 // It assumes the user ID is set in the context as a STRING under the key "sub"
 // by an authentication middleware and then parses it into a uuid.UUID.
 func GetUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
-	ownerUserID, exists := c.Get("sub") // Use "sub" as per your code
+	ownerUserID, exists := c.Get("sub") // Use "sub"
 	if !exists {
 		logger.ErrorLogger.Error("User ID not found in context.")
 		return uuid.Nil, fmt.Errorf("authentication required: user ID not found")
