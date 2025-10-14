@@ -3,6 +3,7 @@ package booking_models
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ type Booking struct {
 	ObjectName   *string   `json:"objectName"`
 	ServiceName  *string   `json:"serviceName"`
 	BusinessName *string   `json:"businessName"`
+	CreatedAt    time.Time `json:"createdAt"`
 }
 
 type Order struct {
@@ -145,6 +147,7 @@ func GetBookingByUserModels(ctx context.Context, db *pgxpool.Pool, userID uuid.U
 			o.service_id, 
 			o.amount, 
 			o.status,
+			o.created_at,
 			i.object_name,
 			s.name,
 			b.name AS business_name
@@ -166,7 +169,7 @@ func GetBookingByUserModels(ctx context.Context, db *pgxpool.Pool, userID uuid.U
 	for rows.Next() {
 		var b Booking
 		// Fixed: Added scanning of o.id into b.Id
-		if err := rows.Scan(&b.Id, &b.CustomerID, &b.ServiceID, &b.Amount, &b.Status, &b.ObjectName, &b.ServiceName, &b.BusinessName); err != nil {
+		if err := rows.Scan(&b.Id, &b.CustomerID, &b.ServiceID, &b.Amount, &b.Status, &b.CreatedAt, &b.ObjectName, &b.ServiceName, &b.BusinessName); err != nil {
 			return nil, fmt.Errorf("failed to scan booking row: %w", err)
 		}
 		bookings = append(bookings, &b)
